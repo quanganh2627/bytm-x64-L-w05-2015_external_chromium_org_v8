@@ -67,6 +67,7 @@ LOCAL_SRC_FILES := \
 	v8/src/extensions/free-buffer-extension.cc \
 	v8/src/extensions/gc-extension.cc \
 	v8/src/extensions/statistics-extension.cc \
+	v8/src/extensions/trigger-failure-extension.cc \
 	v8/src/factory.cc \
 	v8/src/fast-dtoa.cc \
 	v8/src/fixed-dtoa.cc \
