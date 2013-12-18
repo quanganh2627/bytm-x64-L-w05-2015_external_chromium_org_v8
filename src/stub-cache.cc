@@ -1100,6 +1100,9 @@ Handle<Code> StubCompiler::GetCodeWithFlags(Code::Flags flags,
   CodeDesc desc;
   masm_.GetCode(&desc);
   Handle<Code> code = factory()->NewCode(desc, flags, masm_.CodeObject());
+  if (code->has_major_key()) {
+    code->set_major_key(CodeStub::NoCache);
+  }
 #ifdef ENABLE_DISASSEMBLER
   if (FLAG_print_code_stubs) code->Disassemble(name);
 #endif
@@ -1110,7 +1113,7 @@ Handle<Code> StubCompiler::GetCodeWithFlags(Code::Flags flags,
 Handle<Code> StubCompiler::GetCodeWithFlags(Code::Flags flags,
                                             Handle<Name> name) {
   return (FLAG_print_code_stubs && !name.is_null() && name->IsString())
-      ? GetCodeWithFlags(flags, *Handle<String>::cast(name)->ToCString())
+      ? GetCodeWithFlags(flags, Handle<String>::cast(name)->ToCString().get())
       : GetCodeWithFlags(flags, NULL);
 }
 

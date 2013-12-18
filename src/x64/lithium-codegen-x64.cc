@@ -2843,7 +2843,17 @@ void LCodeGen::DoLoadNamedField(LLoadNamedField* instr) {
     __ movq(result, FieldOperand(object, JSObject::kPropertiesOffset));
     object = result;
   }
-  __ Load(result, FieldOperand(object, offset), access.representation());
+
+  Representation representation = access.representation();
+  if (representation.IsSmi() &&
+      instr->hydrogen()->representation().IsInteger32()) {
+    // Read int value directly from upper half of the smi.
+    STATIC_ASSERT(kSmiTag == 0);
+    STATIC_ASSERT(kSmiTagSize + kSmiShiftSize == 32);
+    offset += kPointerSize / 2;
+    representation = Representation::Integer32();
+  }
+  __ Load(result, FieldOperand(object, offset), representation);
 }
 
 
@@ -3744,39 +3754,6 @@ void LCodeGen::DoMathLog(LMathLog* instr) {
   __ movsd(input_reg, Operand(rsp, 0));
   __ addq(rsp, Immediate(kDoubleSize));
   __ bind(&done);
-}
-
-
-void LCodeGen::DoMathTan(LMathTan* instr) {
-  ASSERT(ToDoubleRegister(instr->result()).is(xmm1));
-  // Set the context register to a GC-safe fake value. Clobbering it is
-  // OK because this instruction is marked as a call.
-  __ Set(rsi, 0);
-  TranscendentalCacheStub stub(TranscendentalCache::TAN,
-                               TranscendentalCacheStub::UNTAGGED);
-  CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
-}
-
-
-void LCodeGen::DoMathCos(LMathCos* instr) {
-  ASSERT(ToDoubleRegister(instr->result()).is(xmm1));
-  // Set the context register to a GC-safe fake value. Clobbering it is
-  // OK because this instruction is marked as a call.
-  __ Set(rsi, 0);
-  TranscendentalCacheStub stub(TranscendentalCache::COS,
-                               TranscendentalCacheStub::UNTAGGED);
-  CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
-}
-
-
-void LCodeGen::DoMathSin(LMathSin* instr) {
-  ASSERT(ToDoubleRegister(instr->result()).is(xmm1));
-  // Set the context register to a GC-safe fake value. Clobbering it is
-  // OK because this instruction is marked as a call.
-  __ Set(rsi, 0);
-  TranscendentalCacheStub stub(TranscendentalCache::SIN,
-                               TranscendentalCacheStub::UNTAGGED);
-  CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
 }
 
 
