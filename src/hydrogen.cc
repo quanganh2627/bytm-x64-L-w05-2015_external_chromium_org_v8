@@ -1296,7 +1296,8 @@ HValue* HGraphBuilder::BuildCheckForCapacityGrow(HValue* object,
                                                  ElementsKind kind,
                                                  HValue* length,
                                                  HValue* key,
-                                                 bool is_js_array) {
+                                                 bool is_js_array,
+                                                 bool is_store) {
   IfBuilder length_checker(this);
 
   Token::Value token = IsHoleyElementsKind(kind) ? Token::GTE : Token::EQ;
@@ -1337,6 +1338,13 @@ HValue* HGraphBuilder::BuildCheckForCapacityGrow(HValue* object,
 
     Add<HStoreNamedField>(object, HObjectAccess::ForArrayLength(kind),
                           new_length);
+  }
+
+  if (is_store && kind == FAST_SMI_ELEMENTS) {
+    HValue* checked_elements = environment()->Top();
+
+    // Write zero to ensure that the new element is initialized with some smi.
+    Add<HStoreKeyed>(checked_elements, key, graph()->GetConstant0(), kind);
   }
 
   length_checker.Else();
@@ -2102,7 +2110,7 @@ HInstruction* HGraphBuilder::BuildUncheckedMonomorphicElementAccess(
     NoObservableSideEffectsScope no_effects(this);
     elements = BuildCheckForCapacityGrow(checked_object, elements,
                                          elements_kind, length, key,
-                                         is_js_array);
+                                         is_js_array, is_store);
     checked_key = key;
   } else {
     checked_key = Add<HBoundsCheck>(key, length);
@@ -2266,7 +2274,10 @@ HInstruction* HGraphBuilder::AddElementAccess(
     if (elements_kind == EXTERNAL_PIXEL_ELEMENTS) {
       val = Add<HClampToUint8>(val);
     }
-    return Add<HStoreKeyed>(elements, checked_key, val, elements_kind);
+    return Add<HStoreKeyed>(elements, checked_key, val, elements_kind,
+                            elements_kind == FAST_SMI_ELEMENTS
+                              ? STORE_TO_INITIALIZED_ENTRY
+                              : INITIALIZING_STORE);
   }
 
   ASSERT(!is_store);
@@ -4136,45 +4147,27 @@ void HOptimizedGraphBuilder::VisitSwitchStatement(SwitchStatement* stmt) {
   ASSERT(current_block() != NULL);
   ASSERT(current_block()->HasPredecessor());
 
-  // We only optimize switch statements with smi-literal smi comparisons,
-  // with a bounded number of clauses.
+  // We only optimize switch statements with a bounded number of clauses.
   const int kCaseClauseLimit = 128;
   ZoneList<CaseClause*>* clauses = stmt->cases();
   int clause_count = clauses->length();
+  ZoneList<HBasicBlock*> body_blocks(clause_count, zone());
   if (clause_count > kCaseClauseLimit) {
     return Bailout(kSwitchStatementTooManyClauses);
   }
 
-  ASSERT(stmt->switch_type() != SwitchStatement::UNKNOWN_SWITCH);
-  if (stmt->switch_type() == SwitchStatement::GENERIC_SWITCH) {
-    return Bailout(kSwitchStatementMixedOrNonLiteralSwitchLabels);
-  }
-
   CHECK_ALIVE(VisitForValue(stmt->tag()));
   Add<HSimulate>(stmt->EntryId());
-  HValue* tag_value = Pop();
-  HBasicBlock* first_test_block = current_block();
-
-  HUnaryControlInstruction* string_check = NULL;
-  HBasicBlock* not_string_block = NULL;
-
-  // Test switch's tag value if all clauses are string literals
-  if (stmt->switch_type() == SwitchStatement::STRING_SWITCH) {
-    first_test_block = graph()->CreateBasicBlock();
-    not_string_block = graph()->CreateBasicBlock();
-    string_check = New<HIsStringAndBranch>(
-        tag_value, first_test_block, not_string_block);
-    FinishCurrentBlock(string_check);
-
-    set_current_block(first_test_block);
-  }
+  HValue* tag_value = Top();
+  Handle<Type> tag_type = stmt->tag()->bounds().lower;
 
   // 1. Build all the tests, with dangling true branches
   BailoutId default_id = BailoutId::None();
   for (int i = 0; i < clause_count; ++i) {
     CaseClause* clause = clauses->at(i);
     if (clause->is_default()) {
-      default_id = clause->EntryId();
+      body_blocks.Add(NULL, zone());
+      if (default_id.IsNone()) default_id = clause->EntryId();
       continue;
     }
 
@@ -4182,32 +4175,22 @@ void HOptimizedGraphBuilder::VisitSwitchStatement(SwitchStatement* stmt) {
     CHECK_ALIVE(VisitForValue(clause->label()));
     HValue* label_value = Pop();
 
+    Handle<Type> label_type = clause->label()->bounds().lower;
+    Handle<Type> combined_type = clause->compare_type();
+    HControlInstruction* compare = BuildCompareInstruction(
+        Token::EQ_STRICT, tag_value, label_value, tag_type, label_type,
+        combined_type, stmt->tag()->position(), clause->label()->position(),
+        clause->id());
+
     HBasicBlock* next_test_block = graph()->CreateBasicBlock();
     HBasicBlock* body_block = graph()->CreateBasicBlock();
-
-    HControlInstruction* compare;
-
-    if (stmt->switch_type() == SwitchStatement::SMI_SWITCH) {
-      if (!clause->compare_type()->Is(Type::Smi())) {
-        Add<HDeoptimize>("Non-smi switch type", Deoptimizer::SOFT);
-      }
-
-      HCompareNumericAndBranch* compare_ =
-          New<HCompareNumericAndBranch>(tag_value,
-                                        label_value,
-                                        Token::EQ_STRICT);
-      compare_->set_observed_input_representation(
-          Representation::Smi(), Representation::Smi());
-      compare = compare_;
-    } else {
-      compare = New<HStringCompareAndBranch>(tag_value,
-                                             label_value,
-                                             Token::EQ_STRICT);
-    }
-
+    body_blocks.Add(body_block, zone());
     compare->SetSuccessorAt(0, body_block);
     compare->SetSuccessorAt(1, next_test_block);
     FinishCurrentBlock(compare);
+
+    set_current_block(body_block);
+    Drop(1);  // tag_value
 
     set_current_block(next_test_block);
   }
@@ -4215,15 +4198,10 @@ void HOptimizedGraphBuilder::VisitSwitchStatement(SwitchStatement* stmt) {
   // Save the current block to use for the default or to join with the
   // exit.
   HBasicBlock* last_block = current_block();
-
-  if (not_string_block != NULL) {
-    BailoutId join_id = !default_id.IsNone() ? default_id : stmt->ExitId();
-    last_block = CreateJoin(last_block, not_string_block, join_id);
-  }
+  Drop(1);  // tag_value
 
   // 2. Loop over the clauses and the linked list of tests in lockstep,
   // translating the clause bodies.
-  HBasicBlock* curr_test_block = first_test_block;
   HBasicBlock* fall_through_block = NULL;
 
   BreakAndContinueInfo break_info(stmt);
@@ -4235,40 +4213,16 @@ void HOptimizedGraphBuilder::VisitSwitchStatement(SwitchStatement* stmt) {
       // goes to.
       HBasicBlock* normal_block = NULL;
       if (clause->is_default()) {
-        if (last_block != NULL) {
-          normal_block = last_block;
-          last_block = NULL;  // Cleared to indicate we've handled it.
-        }
+        if (last_block == NULL) continue;
+        normal_block = last_block;
+        last_block = NULL;  // Cleared to indicate we've handled it.
       } else {
-        // If the current test block is deoptimizing due to an unhandled clause
-        // of the switch, the test instruction is in the next block since the
-        // deopt must end the current block.
-        if (curr_test_block->IsDeoptimizing()) {
-          ASSERT(curr_test_block->end()->SecondSuccessor() == NULL);
-          curr_test_block = curr_test_block->end()->FirstSuccessor();
-        }
-        normal_block = curr_test_block->end()->FirstSuccessor();
-        curr_test_block = curr_test_block->end()->SecondSuccessor();
+        normal_block = body_blocks[i];
       }
 
-      // Identify a block to emit the body into.
-      if (normal_block == NULL) {
-        if (fall_through_block == NULL) {
-          // (a) Unreachable.
-          if (clause->is_default()) {
-            continue;  // Might still be reachable clause bodies.
-          } else {
-            break;
-          }
-        } else {
-          // (b) Reachable only as fall through.
-          set_current_block(fall_through_block);
-        }
-      } else if (fall_through_block == NULL) {
-        // (c) Reachable only normally.
+      if (fall_through_block == NULL) {
         set_current_block(normal_block);
       } else {
-        // (d) Reachable both ways.
         HBasicBlock* join = CreateJoin(fall_through_block,
                                        normal_block,
                                        clause->EntryId());
@@ -5263,9 +5217,9 @@ HInstruction* HOptimizedGraphBuilder::BuildStoreNamedField(
     }
   } else {
     // This is a normal store.
-    instr = New<HStoreNamedField>(checked_object->ActualValue(),
-                                  field_access,
-                                  value);
+    instr = New<HStoreNamedField>(
+        checked_object->ActualValue(), field_access, value,
+        transition_to_field ? INITIALIZING_STORE : STORE_TO_INITIALIZED_ENTRY);
   }
 
   if (transition_to_field) {
@@ -9152,9 +9106,6 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
   Handle<Type> left_type = expr->left()->bounds().lower;
   Handle<Type> right_type = expr->right()->bounds().lower;
   Handle<Type> combined_type = expr->combined_type();
-  Representation combined_rep = Representation::FromType(combined_type);
-  Representation left_rep = Representation::FromType(left_type);
-  Representation right_rep = Representation::FromType(right_type);
 
   CHECK_ALIVE(VisitForValue(expr->left()));
   CHECK_ALIVE(VisitForValue(expr->right()));
@@ -9219,6 +9170,24 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
     return ast_context()->ReturnInstruction(result, expr->id());
   }
 
+  HControlInstruction* compare = BuildCompareInstruction(
+      op, left, right, left_type, right_type, combined_type,
+      expr->left()->position(), expr->right()->position(), expr->id());
+  if (compare == NULL) return;  // Bailed out.
+  return ast_context()->ReturnControl(compare, expr->id());
+}
+
+
+HControlInstruction* HOptimizedGraphBuilder::BuildCompareInstruction(
+    Token::Value op,
+    HValue* left,
+    HValue* right,
+    Handle<Type> left_type,
+    Handle<Type> right_type,
+    Handle<Type> combined_type,
+    int left_position,
+    int right_position,
+    BailoutId bailout_id) {
   // Cases handled below depend on collected type feedback. They should
   // soft deoptimize when there is no type feedback.
   if (combined_type->Is(Type::None())) {
@@ -9228,34 +9197,36 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
     combined_type = left_type = right_type = handle(Type::Any(), isolate());
   }
 
+  Representation left_rep = Representation::FromType(left_type);
+  Representation right_rep = Representation::FromType(right_type);
+  Representation combined_rep = Representation::FromType(combined_type);
+
   if (combined_type->Is(Type::Receiver())) {
-    switch (op) {
-      case Token::EQ:
-      case Token::EQ_STRICT: {
-        // Can we get away with map check and not instance type check?
-        if (combined_type->IsClass()) {
-          Handle<Map> map = combined_type->AsClass();
-          AddCheckMap(left, map);
-          AddCheckMap(right, map);
-          HCompareObjectEqAndBranch* result =
-              New<HCompareObjectEqAndBranch>(left, right);
-          if (FLAG_emit_opt_code_positions) {
-            result->set_operand_position(zone(), 0, expr->left()->position());
-            result->set_operand_position(zone(), 1, expr->right()->position());
-          }
-          return ast_context()->ReturnControl(result, expr->id());
-        } else {
-          BuildCheckHeapObject(left);
-          Add<HCheckInstanceType>(left, HCheckInstanceType::IS_SPEC_OBJECT);
-          BuildCheckHeapObject(right);
-          Add<HCheckInstanceType>(right, HCheckInstanceType::IS_SPEC_OBJECT);
-          HCompareObjectEqAndBranch* result =
-              New<HCompareObjectEqAndBranch>(left, right);
-          return ast_context()->ReturnControl(result, expr->id());
+    if (Token::IsEqualityOp(op)) {
+      // Can we get away with map check and not instance type check?
+      HValue* operand_to_check =
+          left->block()->block_id() < right->block()->block_id() ? left : right;
+      if (combined_type->IsClass()) {
+        Handle<Map> map = combined_type->AsClass();
+        AddCheckMap(operand_to_check, map);
+        HCompareObjectEqAndBranch* result =
+            New<HCompareObjectEqAndBranch>(left, right);
+        if (FLAG_emit_opt_code_positions) {
+          result->set_operand_position(zone(), 0, left_position);
+          result->set_operand_position(zone(), 1, right_position);
         }
+        return result;
+      } else {
+        BuildCheckHeapObject(operand_to_check);
+        Add<HCheckInstanceType>(operand_to_check,
+                                HCheckInstanceType::IS_SPEC_OBJECT);
+        HCompareObjectEqAndBranch* result =
+            New<HCompareObjectEqAndBranch>(left, right);
+        return result;
       }
-      default:
-        return Bailout(kUnsupportedNonPrimitiveCompare);
+    } else {
+      Bailout(kUnsupportedNonPrimitiveCompare);
+      return NULL;
     }
   } else if (combined_type->Is(Type::InternalizedString()) &&
              Token::IsEqualityOp(op)) {
@@ -9265,7 +9236,7 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
     Add<HCheckInstanceType>(right, HCheckInstanceType::IS_INTERNALIZED_STRING);
     HCompareObjectEqAndBranch* result =
         New<HCompareObjectEqAndBranch>(left, right);
-    return ast_context()->ReturnControl(result, expr->id());
+    return result;
   } else if (combined_type->Is(Type::String())) {
     BuildCheckHeapObject(left);
     Add<HCheckInstanceType>(left, HCheckInstanceType::IS_STRING);
@@ -9273,23 +9244,28 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
     Add<HCheckInstanceType>(right, HCheckInstanceType::IS_STRING);
     HStringCompareAndBranch* result =
         New<HStringCompareAndBranch>(left, right, op);
-    return ast_context()->ReturnControl(result, expr->id());
+    return result;
   } else {
     if (combined_rep.IsTagged() || combined_rep.IsNone()) {
-      HCompareGeneric* result = New<HCompareGeneric>(left, right, op);
+      HCompareGeneric* result = Add<HCompareGeneric>(left, right, op);
       result->set_observed_input_representation(1, left_rep);
       result->set_observed_input_representation(2, right_rep);
-      return ast_context()->ReturnInstruction(result, expr->id());
+      if (result->HasObservableSideEffects()) {
+        Push(result);
+        AddSimulate(bailout_id, REMOVABLE_SIMULATE);
+        Drop(1);
+      }
+      // TODO(jkummerow): Can we make this more efficient?
+      HBranch* branch = New<HBranch>(result);
+      return branch;
     } else {
       HCompareNumericAndBranch* result =
           New<HCompareNumericAndBranch>(left, right, op);
       result->set_observed_input_representation(left_rep, right_rep);
       if (FLAG_emit_opt_code_positions) {
-        result->SetOperandPositions(zone(),
-                                    expr->left()->position(),
-                                    expr->right()->position());
+        result->SetOperandPositions(zone(), left_position, right_position);
       }
-      return ast_context()->ReturnControl(result, expr->id());
+      return result;
     }
   }
 }
@@ -9476,7 +9452,7 @@ void HOptimizedGraphBuilder::BuildEmitInObjectProperties(
       Add<HStoreNamedField>(object, access, result);
     } else {
       Representation representation = details.representation();
-      HInstruction* value_instruction = Add<HConstant>(value);
+      HInstruction* value_instruction;
 
       if (representation.IsDouble()) {
         // Allocate a HeapNumber box and store the value into it.
@@ -9491,8 +9467,12 @@ void HOptimizedGraphBuilder::BuildEmitInObjectProperties(
         AddStoreMapConstant(double_box,
             isolate()->factory()->heap_number_map());
         Add<HStoreNamedField>(double_box, HObjectAccess::ForHeapNumberValue(),
-            value_instruction);
+                              Add<HConstant>(value));
         value_instruction = double_box;
+      } else if (representation.IsSmi() && value->IsUninitialized()) {
+        value_instruction = graph()->GetConstant0();
+      } else {
+        value_instruction = Add<HConstant>(value);
       }
 
       Add<HStoreNamedField>(object, access, value_instruction);
@@ -10146,11 +10126,10 @@ void HOptimizedGraphBuilder::GenerateMathPow(CallRuntime* call) {
 
 
 void HOptimizedGraphBuilder::GenerateMathLog(CallRuntime* call) {
-  ASSERT_EQ(1, call->arguments()->length());
-  CHECK_ALIVE(VisitArgumentList(call->arguments()));
-  HCallStub* result = New<HCallStub>(CodeStub::TranscendentalCache, 1);
-  result->set_transcendental_type(TranscendentalCache::LOG);
-  Drop(1);
+  ASSERT(call->arguments()->length() == 1);
+  CHECK_ALIVE(VisitForValue(call->arguments()->at(0)));
+  HValue* value = Pop();
+  HInstruction* result = NewUncasted<HUnaryMathOperation>(value, kMathLog);
   return ast_context()->ReturnInstruction(result, call->id());
 }
 

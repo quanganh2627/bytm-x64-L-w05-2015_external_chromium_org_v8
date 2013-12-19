@@ -56,7 +56,6 @@ namespace internal {
   V(RecordWrite)                         \
   V(StoreBufferOverflow)                 \
   V(RegExpExec)                          \
-  V(TranscendentalCache)                 \
   V(Instanceof)                          \
   V(ConvertToDouble)                     \
   V(WriteInt32ToHeapNumber)              \
@@ -742,6 +741,7 @@ class ArrayConstructorStub: public PlatformCodeStub {
  private:
   void GenerateDispatchToArrayStub(MacroAssembler* masm,
                                    AllocationSiteOverrideMode mode);
+  virtual void PrintName(StringStream* stream);
 
   virtual CodeStub::Major MajorKey() { return ArrayConstructor; }
   virtual int MinorKey() { return argument_count_; }
@@ -1176,10 +1176,6 @@ class ICCompareStub: public PlatformCodeStub {
                              CompareIC::State* right_state,
                              CompareIC::State* handler_state,
                              Token::Value* op);
-
-  static CompareIC::State CompareState(int minor_key) {
-    return static_cast<CompareIC::State>(HandlerStateField::decode(minor_key));
-  }
 
   virtual InlineCacheState GetICState();
 
@@ -1938,6 +1934,9 @@ class ArrayConstructorStubBase : public HydrogenCodeStub {
   static const int kConstructor = 0;
   static const int kPropertyCell = 1;
 
+ protected:
+  void BasePrintName(const char* name, StringStream* stream);
+
  private:
   int NotMissMinorKey() { return bit_field_; }
 
@@ -1973,6 +1972,10 @@ class ArrayNoArgumentConstructorStub : public ArrayConstructorStubBase {
  private:
   Major MajorKey() { return ArrayNoArgumentConstructor; }
 
+  virtual void PrintName(StringStream* stream) {
+    BasePrintName("ArrayNoArgumentConstructorStub", stream);
+  }
+
   DISALLOW_COPY_AND_ASSIGN(ArrayNoArgumentConstructorStub);
 };
 
@@ -1995,6 +1998,10 @@ class ArraySingleArgumentConstructorStub : public ArrayConstructorStubBase {
  private:
   Major MajorKey() { return ArraySingleArgumentConstructor; }
 
+  virtual void PrintName(StringStream* stream) {
+    BasePrintName("ArraySingleArgumentConstructorStub", stream);
+  }
+
   DISALLOW_COPY_AND_ASSIGN(ArraySingleArgumentConstructorStub);
 };
 
@@ -2016,6 +2023,10 @@ class ArrayNArgumentsConstructorStub : public ArrayConstructorStubBase {
 
  private:
   Major MajorKey() { return ArrayNArgumentsConstructor; }
+
+  virtual void PrintName(StringStream* stream) {
+    BasePrintName("ArrayNArgumentsConstructorStub", stream);
+  }
 
   DISALLOW_COPY_AND_ASSIGN(ArrayNArgumentsConstructorStub);
 };
