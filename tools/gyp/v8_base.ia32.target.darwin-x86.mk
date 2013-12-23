@@ -55,7 +55,6 @@ LOCAL_SRC_FILES := \
 	v8/src/dateparser.cc \
 	v8/src/debug-agent.cc \
 	v8/src/debug.cc \
-	v8/src/default-platform.cc \
 	v8/src/deoptimizer.cc \
 	v8/src/disassembler.cc \
 	v8/src/diy-fp.cc \
@@ -113,6 +112,9 @@ LOCAL_SRC_FILES := \
 	v8/src/interpreter-irregexp.cc \
 	v8/src/isolate.cc \
 	v8/src/jsregexp.cc \
+	v8/src/libplatform/default-platform.cc \
+	v8/src/libplatform/task-queue.cc \
+	v8/src/libplatform/worker-thread.cc \
 	v8/src/lithium-allocator.cc \
 	v8/src/lithium-codegen.cc \
 	v8/src/lithium.cc \
