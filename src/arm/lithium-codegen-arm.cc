@@ -979,6 +979,10 @@ void LCodeGen::RecordSafepoint(
       safepoint.DefinePointerRegister(ToRegister(pointer), zone());
     }
   }
+  if (FLAG_enable_ool_constant_pool && (kind & Safepoint::kWithRegisters)) {
+    // Register pp always contains a pointer to the constant pool.
+    safepoint.DefinePointerRegister(pp, zone());
+  }
 }
 
 
@@ -2958,10 +2962,9 @@ void LCodeGen::DoLoadGlobalGeneric(LLoadGlobalGeneric* instr) {
   ASSERT(ToRegister(instr->result()).is(r0));
 
   __ mov(r2, Operand(instr->name()));
-  RelocInfo::Mode mode = instr->for_typeof() ? RelocInfo::CODE_TARGET
-                                             : RelocInfo::CODE_TARGET_CONTEXT;
-  Handle<Code> ic = isolate()->builtins()->LoadIC_Initialize();
-  CallCode(ic, mode, instr);
+  ContextualMode mode = instr->for_typeof() ? NOT_CONTEXTUAL : CONTEXTUAL;
+  Handle<Code> ic = LoadIC::initialize_stub(isolate(), mode);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr);
 }
 
 
@@ -2996,10 +2999,10 @@ void LCodeGen::DoStoreGlobalGeneric(LStoreGlobalGeneric* instr) {
   ASSERT(ToRegister(instr->value()).is(r0));
 
   __ mov(r2, Operand(instr->name()));
-  Handle<Code> ic = (instr->strict_mode_flag() == kStrictMode)
-      ? isolate()->builtins()->StoreIC_Initialize_Strict()
-      : isolate()->builtins()->StoreIC_Initialize();
-  CallCode(ic, RelocInfo::CODE_TARGET_CONTEXT, instr);
+  Handle<Code> ic = StoreIC::initialize_stub(isolate(),
+                                             instr->strict_mode_flag(),
+                                             CONTEXTUAL);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr);
 }
 
 
@@ -3092,7 +3095,7 @@ void LCodeGen::DoLoadNamedGeneric(LLoadNamedGeneric* instr) {
 
   // Name is always in r2.
   __ mov(r2, Operand(instr->name()));
-  Handle<Code> ic = isolate()->builtins()->LoadIC_Initialize();
+  Handle<Code> ic = LoadIC::initialize_stub(isolate(), NOT_CONTEXTUAL);
   CallCode(ic, RelocInfo::CODE_TARGET, instr, NEVER_INLINE_TARGET_ADDRESS);
 }
 
@@ -3491,11 +3494,8 @@ void LCodeGen::DoWrapReceiver(LWrapReceiver* instr) {
   __ b(&result_in_receiver);
 
   __ bind(&global_object);
+  CallStubCompiler::FetchGlobalProxy(masm(), receiver, function);
 
-  __ ldr(result, MemOperand(fp, StandardFrameConstants::kContextOffset));
-  __ ldr(result, ContextOperand(result, Context::GLOBAL_OBJECT_INDEX));
-  __ ldr(result,
-         FieldMemOperand(result, JSGlobalObject::kGlobalReceiverOffset));
   if (result.is(receiver)) {
     __ bind(&result_in_receiver);
   } else {
@@ -3979,11 +3979,10 @@ void LCodeGen::DoCallNamed(LCallNamed* instr) {
   ASSERT(ToRegister(instr->result()).is(r0));
 
   int arity = instr->arity();
-  RelocInfo::Mode mode = RelocInfo::CODE_TARGET;
   Handle<Code> ic =
-      isolate()->stub_cache()->ComputeCallInitialize(arity, mode);
+      isolate()->stub_cache()->ComputeCallInitialize(arity, NOT_CONTEXTUAL);
   __ mov(r2, Operand(instr->name()));
-  CallCode(ic, mode, instr, NEVER_INLINE_TARGET_ADDRESS);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, NEVER_INLINE_TARGET_ADDRESS);
 }
 
 
@@ -3993,7 +3992,10 @@ void LCodeGen::DoCallFunction(LCallFunction* instr) {
   ASSERT(ToRegister(instr->result()).is(r0));
 
   int arity = instr->arity();
-  CallFunctionStub stub(arity, NO_CALL_FUNCTION_FLAGS);
+  CallFunctionFlags flags =
+      instr->hydrogen()->IsContextualCall() ?
+          RECEIVER_IS_IMPLICIT : NO_CALL_FUNCTION_FLAGS;
+  CallFunctionStub stub(arity, flags);
   if (instr->hydrogen()->IsTailCall()) {
     if (NeedsEagerFrame()) __ mov(sp, fp);
     __ Jump(stub.GetCode(isolate()), RelocInfo::CODE_TARGET);
@@ -4008,11 +4010,10 @@ void LCodeGen::DoCallGlobal(LCallGlobal* instr) {
   ASSERT(ToRegister(instr->result()).is(r0));
 
   int arity = instr->arity();
-  RelocInfo::Mode mode = RelocInfo::CODE_TARGET_CONTEXT;
   Handle<Code> ic =
-      isolate()->stub_cache()->ComputeCallInitialize(arity, mode);
+      isolate()->stub_cache()->ComputeCallInitialize(arity, CONTEXTUAL);
   __ mov(r2, Operand(instr->name()));
-  CallCode(ic, mode, instr, NEVER_INLINE_TARGET_ADDRESS);
+  CallCode(ic, RelocInfo::CODE_TARGET, instr, NEVER_INLINE_TARGET_ADDRESS);
 }
 
 
@@ -4209,9 +4210,9 @@ void LCodeGen::DoStoreNamedGeneric(LStoreNamedGeneric* instr) {
 
   // Name is always in r2.
   __ mov(r2, Operand(instr->name()));
-  Handle<Code> ic = (instr->strict_mode_flag() == kStrictMode)
-      ? isolate()->builtins()->StoreIC_Initialize_Strict()
-      : isolate()->builtins()->StoreIC_Initialize();
+  Handle<Code> ic = StoreIC::initialize_stub(isolate(),
+                                             instr->strict_mode_flag(),
+                                             NOT_CONTEXTUAL);
   CallCode(ic, RelocInfo::CODE_TARGET, instr, NEVER_INLINE_TARGET_ADDRESS);
 }
 
