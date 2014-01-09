@@ -209,6 +209,7 @@ MY_CFLAGS_Debug := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-funwind-tables \
 	-Wno-format \
 	-m32 \
 	-mmmx \
@@ -310,6 +311,7 @@ MY_CFLAGS_Release := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-funwind-tables \
 	-Wno-format \
 	-m32 \
 	-mmmx \
@@ -336,8 +338,6 @@ MY_CFLAGS_Release := \
 	-fdata-sections \
 	-ffunction-sections \
 	-fomit-frame-pointer \
-	-fno-unwind-tables \
-	-fno-asynchronous-unwind-tables \
 	-fdata-sections \
 	-ffunction-sections \
 	-O2
