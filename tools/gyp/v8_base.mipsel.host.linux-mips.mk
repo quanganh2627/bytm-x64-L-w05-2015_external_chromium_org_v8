@@ -219,8 +219,7 @@ MY_CFLAGS_Debug := \
 	-g \
 	-fomit-frame-pointer \
 	-fdata-sections \
-	-ffunction-sections \
-	-funwind-tables
+	-ffunction-sections
 
 MY_DEFS_Debug := \
 	'-DV8_DEPRECATION_WARNINGS' \
@@ -294,7 +293,6 @@ MY_CFLAGS_Release := \
 	-fdata-sections \
 	-ffunction-sections \
 	-fomit-frame-pointer \
-	-funwind-tables \
 	-fdata-sections \
 	-ffunction-sections \
 	-O2
