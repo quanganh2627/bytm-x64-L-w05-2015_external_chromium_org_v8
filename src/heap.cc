@@ -768,6 +768,18 @@ bool Heap::CollectGarbage(AllocationSpace space,
   allocation_timeout_ = Max(6, FLAG_gc_interval);
 #endif
 
+  // There may be an allocation memento behind every object in new space.
+  // If we evacuate a not full new space or if we are on the last page of
+  // the new space, then there may be uninitialized memory behind the top
+  // pointer of the new space page. We store a filler object there to
+  // identify the unused space.
+  Address from_top = new_space_.top();
+  Address from_limit = new_space_.limit();
+  if (from_top < from_limit) {
+    int remaining_in_page = static_cast<int>(from_limit - from_top);
+    CreateFillerObjectAt(from_top, remaining_in_page);
+  }
+
   if (collector == SCAVENGER && !incremental_marking()->IsStopped()) {
     if (FLAG_trace_incremental_marking) {
       PrintF("[IncrementalMarking] Scavenge during marking.\n");
@@ -3062,12 +3074,6 @@ void Heap::CreateFixedStubs() {
 }
 
 
-void Heap::CreateStubsRequiringBuiltins() {
-  HandleScope scope(isolate());
-  CodeStub::GenerateStubsRequiringBuiltinsAheadOfTime(isolate());
-}
-
-
 bool Heap::CreateInitialObjects() {
   Object* obj;
 
@@ -3978,9 +3984,6 @@ MaybeObject* Heap::CreateCode(const CodeDesc& desc,
   code->set_flags(flags);
   code->set_raw_kind_specific_flags1(0);
   code->set_raw_kind_specific_flags2(0);
-  if (code->is_call_stub() || code->is_keyed_call_stub()) {
-    code->set_check_type(RECEIVER_MAP_CHECK);
-  }
   code->set_is_crankshafted(crankshafted);
   code->set_deoptimization_data(empty_fixed_array(), SKIP_WRITE_BARRIER);
   code->set_raw_type_feedback_info(undefined_value());
