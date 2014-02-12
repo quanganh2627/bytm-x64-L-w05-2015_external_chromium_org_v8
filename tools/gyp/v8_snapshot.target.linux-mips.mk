@@ -77,6 +77,7 @@ MY_CFLAGS_Debug := \
 	-Wno-extra \
 	-Wno-ignored-qualifiers \
 	-Wno-type-limits \
+	-Wno-unused-but-set-variable \
 	-Wno-address \
 	-Wno-format-security \
 	-Wno-return-type \
@@ -175,6 +176,7 @@ MY_CFLAGS_Release := \
 	-Wno-extra \
 	-Wno-ignored-qualifiers \
 	-Wno-type-limits \
+	-Wno-unused-but-set-variable \
 	-Wno-address \
 	-Wno-format-security \
 	-Wno-return-type \
