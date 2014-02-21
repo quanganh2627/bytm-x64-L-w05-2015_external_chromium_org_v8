@@ -346,19 +346,13 @@ void MacroAssembler::Asr(const Register& rd,
 
 void MacroAssembler::B(Label* label) {
   b(label);
+  CheckVeneers(false);
 }
 
 
 void MacroAssembler::B(Condition cond, Label* label) {
   ASSERT(allow_macro_instructions_);
   B(label, cond);
-}
-
-
-void MacroAssembler::B(Label* label, Condition cond) {
-  ASSERT(allow_macro_instructions_);
-  ASSERT((cond != al) && (cond != nv));
-  b(label, cond);
 }
 
 
@@ -411,18 +405,6 @@ void MacroAssembler::Br(const Register& xn) {
 void MacroAssembler::Brk(int code) {
   ASSERT(allow_macro_instructions_);
   brk(code);
-}
-
-
-void MacroAssembler::Cbnz(const Register& rt, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  cbnz(rt, label);
-}
-
-
-void MacroAssembler::Cbz(const Register& rt, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  cbz(rt, label);
 }
 
 
@@ -1032,6 +1014,7 @@ void MacroAssembler::Ret(const Register& xn) {
   ASSERT(allow_macro_instructions_);
   ASSERT(!xn.IsZero());
   ret(xn);
+  CheckVeneers(false);
 }
 
 
@@ -1186,18 +1169,6 @@ void MacroAssembler::Sxtw(const Register& rd, const Register& rn) {
 }
 
 
-void MacroAssembler::Tbnz(const Register& rt, unsigned bit_pos, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  tbnz(rt, bit_pos, label);
-}
-
-
-void MacroAssembler::Tbz(const Register& rt, unsigned bit_pos, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  tbz(rt, bit_pos, label);
-}
-
-
 void MacroAssembler::Ubfiz(const Register& rd,
                            const Register& rn,
                            unsigned lsb,
@@ -1255,12 +1226,6 @@ void MacroAssembler::Umsubl(const Register& rd,
 }
 
 
-void MacroAssembler::Unreachable() {
-  ASSERT(allow_macro_instructions_);
-  hlt(kImmExceptionIsUnreachable);
-}
-
-
 void MacroAssembler::Uxtb(const Register& rd, const Register& rn) {
   ASSERT(allow_macro_instructions_);
   ASSERT(!rd.IsZero());
@@ -1286,8 +1251,9 @@ void MacroAssembler::BumpSystemStackPointer(const Operand& space) {
   ASSERT(!csp.Is(sp_));
   // TODO(jbramley): Several callers rely on this not using scratch registers,
   // so we use the assembler directly here. However, this means that large
-  // immediate values of 'space' cannot be handled. Once we merge with V8, we
-  // should try to use the new scope that controls scratch register usage.
+  // immediate values of 'space' cannot be handled cleanly. Once we implement
+  // our flexible scratch register idea, we could greatly simplify this
+  // function.
   InstructionAccurateScope scope(this);
   if ((space.IsImmediate()) && !is_uint12(space.immediate())) {
     // The subtract instruction supports a 12-bit immediate, shifted left by

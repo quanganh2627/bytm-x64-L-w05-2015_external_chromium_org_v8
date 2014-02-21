@@ -52,7 +52,6 @@ class AutoRollOptions(CommonOptions):
     super(AutoRollOptions, self).__init__(options)
     self.requires_editor = False
     self.status_password = options.status_password
-    self.r = options.r
     self.c = options.c
     self.push = getattr(options, 'push', False)
     self.author = getattr(options, 'a', None)
@@ -84,10 +83,10 @@ class CheckTreeStatus(Step):
   def RunStep(self):
     status_url = "https://v8-status.appspot.com/current?format=json"
     status_json = self.ReadURL(status_url, wait_plan=[5, 20, 300, 300])
-    message = json.loads(status_json)["message"]
-    if re.search(r"nopush|no push", message, flags=re.I):
-      self.Die("Push to trunk disabled by tree state: %s" % message)
-    self.Persist("tree_message", message)
+    self["tree_message"] = json.loads(status_json)["message"]
+    if re.search(r"nopush|no push", self["tree_message"], flags=re.I):
+      self.Die("Push to trunk disabled by tree state: %s"
+               % self["tree_message"])
 
 
 class FetchLatestRevision(Step):
@@ -98,25 +97,22 @@ class FetchLatestRevision(Step):
     match = re.match(r"^r(\d+) ", log)
     if not match:
       self.Die("Could not extract current svn revision from log.")
-    self.Persist("latest", match.group(1))
+    self["latest"] = match.group(1)
 
 
 class CheckLastPush(Step):
   MESSAGE = "Checking last V8 push to trunk."
 
   def RunStep(self):
-    self.RestoreIfUnset("latest")
-    log = self.Git("svn log -1 --oneline ChangeLog").strip()
-    match = re.match(r"^r(\d+) \| Prepare push to trunk", log)
-    if match:
-      latest = int(self._state["latest"])
-      last_push = int(match.group(1))
-      # TODO(machebach): This metric counts all revisions. It could be
-      # improved by counting only the revisions on bleeding_edge.
-      if latest - last_push < 10:
-        # This makes sure the script doesn't push twice in a row when the cron
-        # job retries several times.
-        self.Die("Last push too recently: %d" % last_push)
+    last_push_hash = self.FindLastTrunkPush()
+    last_push = int(self.Git("svn find-rev %s" % last_push_hash).strip())
+
+    # TODO(machenbach): This metric counts all revisions. It could be
+    # improved by counting only the revisions on bleeding_edge.
+    if int(self["latest"]) - last_push < 10:
+      # This makes sure the script doesn't push twice in a row when the cron
+      # job retries several times.
+      self.Die("Last push too recently: %d" % last_push)
 
 
 class FetchLKGR(Step):
@@ -125,7 +121,7 @@ class FetchLKGR(Step):
   def RunStep(self):
     lkgr_url = "https://v8-status.appspot.com/lkgr"
     # Retry several times since app engine might have issues.
-    self.Persist("lkgr", self.ReadURL(lkgr_url, wait_plan=[5, 20, 300, 300]))
+    self["lkgr"] = self.ReadURL(lkgr_url, wait_plan=[5, 20, 300, 300])
 
 
 class PushToTrunk(Step):
@@ -146,11 +142,8 @@ class PushToTrunk(Step):
                  wait_plan=[5, 20])
 
   def RunStep(self):
-    self.RestoreIfUnset("latest")
-    self.RestoreIfUnset("lkgr")
-    self.RestoreIfUnset("tree_message")
-    latest = int(self._state["latest"])
-    lkgr = int(self._state["lkgr"])
+    latest = int(self["latest"])
+    lkgr = int(self["lkgr"])
     if latest == lkgr:
       print "ToT (r%d) is clean. Pushing to trunk." % latest
       self.PushTreeStatus("Tree is closed (preparing to push)")
@@ -162,11 +155,11 @@ class PushToTrunk(Step):
               RunPushToTrunk,
               push_to_trunk.CONFIG,
               PushToTrunkOptions.MakeForcedOptions(self._options.author,
-                                                   self._options.r,
+                                                   self._options.reviewer,
                                                    self._options.c),
               self._side_effect_handler)
       finally:
-        self.PushTreeStatus(self._state["tree_message"])
+        self.PushTreeStatus(self["tree_message"])
     else:
       print("ToT (r%d) is ahead of the LKGR (r%d). Skipping push to trunk."
             % (latest, lkgr))
@@ -197,7 +190,7 @@ def BuildOptions():
   result.add_option("-p", "--push",
                     help="Push to trunk if possible. Dry run if unspecified.",
                     default=False, action="store_true")
-  result.add_option("-r", "--reviewer", dest="r",
+  result.add_option("-r", "--reviewer",
                     help=("Specify the account name to be used for reviews."))
   result.add_option("-s", "--step", dest="s",
                     help="Specify the step where to start work. Default: 0.",
@@ -210,7 +203,7 @@ def BuildOptions():
 def Main():
   parser = BuildOptions()
   (options, args) = parser.parse_args()
-  if not options.a or not options.c or not options.r:
+  if not options.a or not options.c or not options.reviewer:
     print "You need to specify author, chromium src location and reviewer."
     parser.print_help()
     return 1

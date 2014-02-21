@@ -745,22 +745,25 @@ static void CompileCallLoadPropertyWithInterceptor(
 
 
 // Generate call to api function.
-static void GenerateFastApiCall(MacroAssembler* masm,
-                                const CallOptimization& optimization,
-                                Handle<Map> receiver_map,
-                                Register receiver,
-                                Register scratch,
-                                int argc,
-                                Register* values) {
+void StubCompiler::GenerateFastApiCall(MacroAssembler* masm,
+                                       const CallOptimization& optimization,
+                                       Handle<Map> receiver_map,
+                                       Register receiver,
+                                       Register scratch,
+                                       bool is_store,
+                                       int argc,
+                                       Register* values) {
   ASSERT(!AreAliased(receiver, scratch));
-  __ Push(receiver);
-  // Write the arguments to stack frame.
+
+  MacroAssembler::PushPopQueue queue(masm);
+  queue.Queue(receiver);
+  // Write the arguments to the stack frame.
   for (int i = 0; i < argc; i++) {
-    // TODO(jbramley): Push these in as few Push() calls as possible.
     Register arg = values[argc-1-i];
     ASSERT(!AreAliased(receiver, scratch, arg));
-    __ Push(arg);
+    queue.Queue(arg);
   }
+  queue.PushQueued();
 
   ASSERT(optimization.is_simple_api_call());
 
@@ -815,7 +818,7 @@ static void GenerateFastApiCall(MacroAssembler* masm,
   __ Mov(api_function_address, Operand(ref));
 
   // Jump to stub.
-  CallApiFunctionStub stub(true, call_data_undefined, argc);
+  CallApiFunctionStub stub(is_store, call_data_undefined, argc);
   __ TailCallStub(&stub);
 }
 
@@ -839,9 +842,6 @@ Register StubCompiler::CheckPrototypes(Handle<HeapType> type,
                                        Label* miss,
                                        PrototypeCheckType check) {
   Handle<Map> receiver_map(IC::TypeToMap(*type, isolate()));
-  // Make sure that the type feedback oracle harvests the receiver map.
-  // TODO(svenpanne) Remove this hack when all ICs are reworked.
-  __ Mov(scratch1, Operand(receiver_map));
 
   // object_reg and holder_reg registers can alias.
   ASSERT(!AreAliased(object_reg, scratch1, scratch2));
@@ -887,9 +887,13 @@ Register StubCompiler::CheckPrototypes(Handle<HeapType> type,
       reg = holder_reg;  // From now on the object will be in holder_reg.
       __ Ldr(reg, FieldMemOperand(scratch1, Map::kPrototypeOffset));
     } else {
-      Register map_reg = scratch1;
-      // TODO(jbramley): Skip this load when we don't need the map.
-      __ Ldr(map_reg, FieldMemOperand(reg, HeapObject::kMapOffset));
+      bool need_map = (depth != 1 || check == CHECK_ALL_MAPS) ||
+                      heap()->InNewSpace(*prototype);
+      Register map_reg = NoReg;
+      if (need_map) {
+        map_reg = scratch1;
+        __ Ldr(map_reg, FieldMemOperand(reg, HeapObject::kMapOffset));
+      }
 
       if (depth != 1 || check == CHECK_ALL_MAPS) {
         __ CheckMap(map_reg, current_map, miss, DONT_DO_SMI_CHECK);
@@ -1040,14 +1044,6 @@ void LoadStubCompiler::GenerateLoadConstant(Handle<Object> value) {
   // Return the constant value.
   __ LoadObject(x0, value);
   __ Ret();
-}
-
-
-void LoadStubCompiler::GenerateLoadCallback(
-    const CallOptimization& call_optimization,
-    Handle<Map> receiver_map) {
-  GenerateFastApiCall(
-      masm(), call_optimization, receiver_map, receiver(), scratch3(), 0, NULL);
 }
 
 
@@ -1300,28 +1296,12 @@ Handle<Code> StoreStubCompiler::CompileStoreInterceptor(
 
   ASM_LOCATION("StoreStubCompiler::CompileStoreInterceptor");
 
-  // Check that the map of the object hasn't changed.
-  __ CheckMap(receiver(), scratch1(), Handle<Map>(object->map()), &miss,
-              DO_SMI_CHECK);
-
-  // Perform global security token check if needed.
-  if (object->IsJSGlobalProxy()) {
-    __ CheckAccessGlobalProxy(receiver(), scratch1(), &miss);
-  }
-
-  // Stub is never generated for non-global objects that require access checks.
-  ASSERT(object->IsJSGlobalProxy() || !object->IsAccessCheckNeeded());
-
   __ Push(receiver(), this->name(), value());
 
   // Do tail-call to the runtime system.
   ExternalReference store_ic_property =
       ExternalReference(IC_Utility(IC::kStoreInterceptorProperty), isolate());
   __ TailCallExternalReference(store_ic_property, 3, 1);
-
-  // Handle store cache miss.
-  __ Bind(&miss);
-  TailCallBuiltin(masm(), MissBuiltin(kind()));
 
   // Return the generated code.
   return GetCode(kind(), Code::FAST, name);
@@ -1527,23 +1507,6 @@ Handle<Code> KeyedStoreStubCompiler::CompileStorePolymorphic(
 
   return GetICCode(
       kind(), Code::NORMAL, factory()->empty_string(), POLYMORPHIC);
-}
-
-
-Handle<Code> StoreStubCompiler::CompileStoreCallback(
-    Handle<JSObject> object,
-    Handle<JSObject> holder,
-    Handle<Name> name,
-    const CallOptimization& call_optimization) {
-  HandlerFrontend(IC::CurrentTypeOf(object, isolate()),
-                  receiver(), holder, name);
-
-  Register values[] = { value() };
-  GenerateFastApiCall(masm(), call_optimization, handle(object->map()),
-                      receiver(), scratch3(), 1, values);
-
-  // Return the generated code.
-  return GetCode(kind(), Code::FAST, name);
 }
 
 

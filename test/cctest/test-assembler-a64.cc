@@ -1947,6 +1947,335 @@ TEST(test_branch) {
 }
 
 
+TEST(far_branch_backward) {
+  INIT_V8();
+
+  // Test that the MacroAssembler correctly resolves backward branches to labels
+  // that are outside the immediate range of branch instructions.
+  int max_range =
+    std::max(Instruction::ImmBranchRange(TestBranchType),
+             std::max(Instruction::ImmBranchRange(CompareBranchType),
+                      Instruction::ImmBranchRange(CondBranchType)));
+
+  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label done, fail;
+  Label test_tbz, test_cbz, test_bcond;
+  Label success_tbz, success_cbz, success_bcond;
+
+  __ Mov(x0, 0);
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  __ B(&test_tbz);
+  __ Bind(&success_tbz);
+  __ Orr(x0, x0, 1 << 0);
+  __ B(&test_cbz);
+  __ Bind(&success_cbz);
+  __ Orr(x0, x0, 1 << 1);
+  __ B(&test_bcond);
+  __ Bind(&success_bcond);
+  __ Orr(x0, x0, 1 << 2);
+
+  __ B(&done);
+
+  // Generate enough code to overflow the immediate range of the three types of
+  // branches below.
+  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+    if (i % 100 == 0) {
+      // If we do land in this code, we do not want to execute so many nops
+      // before reaching the end of test (especially if tracing is activated).
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+  __ B(&fail);
+
+  __ Bind(&test_tbz);
+  __ Tbz(x10, 7, &success_tbz);
+  __ Bind(&test_cbz);
+  __ Cbz(x10, &success_cbz);
+  __ Bind(&test_bcond);
+  __ Cmp(x10, 0);
+  __ B(eq, &success_bcond);
+
+  // For each out-of-range branch instructions, at least two instructions should
+  // have been generated.
+  CHECK_GE(7 * kInstructionSize, __ SizeOfCodeGeneratedSince(&test_tbz));
+
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x7, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
+TEST(far_branch_simple_veneer) {
+  INIT_V8();
+
+  // Test that the MacroAssembler correctly emits veneers for forward branches
+  // to labels that are outside the immediate range of branch instructions.
+  int max_range =
+    std::max(Instruction::ImmBranchRange(TestBranchType),
+             std::max(Instruction::ImmBranchRange(CompareBranchType),
+                      Instruction::ImmBranchRange(CondBranchType)));
+
+  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label done, fail;
+  Label test_tbz, test_cbz, test_bcond;
+  Label success_tbz, success_cbz, success_bcond;
+
+  __ Mov(x0, 0);
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  __ Bind(&test_tbz);
+  __ Tbz(x10, 7, &success_tbz);
+  __ Bind(&test_cbz);
+  __ Cbz(x10, &success_cbz);
+  __ Bind(&test_bcond);
+  __ Cmp(x10, 0);
+  __ B(eq, &success_bcond);
+
+  // Generate enough code to overflow the immediate range of the three types of
+  // branches below.
+  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+    if (i % 100 == 0) {
+      // If we do land in this code, we do not want to execute so many nops
+      // before reaching the end of test (especially if tracing is activated).
+      // Also, the branches give the MacroAssembler the opportunity to emit the
+      // veneers.
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+  __ B(&fail);
+
+  __ Bind(&success_tbz);
+  __ Orr(x0, x0, 1 << 0);
+  __ B(&test_cbz);
+  __ Bind(&success_cbz);
+  __ Orr(x0, x0, 1 << 1);
+  __ B(&test_bcond);
+  __ Bind(&success_bcond);
+  __ Orr(x0, x0, 1 << 2);
+
+  __ B(&done);
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x7, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
+TEST(far_branch_veneer_link_chain) {
+  INIT_V8();
+
+  // Test that the MacroAssembler correctly emits veneers for forward branches
+  // that target out-of-range labels and are part of multiple instructions
+  // jumping to that label.
+  //
+  // We test the three situations with the different types of instruction:
+  // (1)- When the branch is at the start of the chain with tbz.
+  // (2)- When the branch is in the middle of the chain with cbz.
+  // (3)- When the branch is at the end of the chain with bcond.
+  int max_range =
+    std::max(Instruction::ImmBranchRange(TestBranchType),
+             std::max(Instruction::ImmBranchRange(CompareBranchType),
+                      Instruction::ImmBranchRange(CondBranchType)));
+
+  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label skip, fail, done;
+  Label test_tbz, test_cbz, test_bcond;
+  Label success_tbz, success_cbz, success_bcond;
+
+  __ Mov(x0, 0);
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  __ B(&skip);
+  // Branches at the start of the chain for situations (2) and (3).
+  __ B(&success_cbz);
+  __ B(&success_bcond);
+  __ Nop();
+  __ B(&success_bcond);
+  __ B(&success_cbz);
+  __ Bind(&skip);
+
+  __ Bind(&test_tbz);
+  __ Tbz(x10, 7, &success_tbz);
+  __ Bind(&test_cbz);
+  __ Cbz(x10, &success_cbz);
+  __ Bind(&test_bcond);
+  __ Cmp(x10, 0);
+  __ B(eq, &success_bcond);
+
+  skip.Unuse();
+  __ B(&skip);
+  // Branches at the end of the chain for situations (1) and (2).
+  __ B(&success_cbz);
+  __ B(&success_tbz);
+  __ Nop();
+  __ B(&success_tbz);
+  __ B(&success_cbz);
+  __ Bind(&skip);
+
+  // Generate enough code to overflow the immediate range of the three types of
+  // branches below.
+  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+    if (i % 100 == 0) {
+      // If we do land in this code, we do not want to execute so many nops
+      // before reaching the end of test (especially if tracing is activated).
+      // Also, the branches give the MacroAssembler the opportunity to emit the
+      // veneers.
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+  __ B(&fail);
+
+  __ Bind(&success_tbz);
+  __ Orr(x0, x0, 1 << 0);
+  __ B(&test_cbz);
+  __ Bind(&success_cbz);
+  __ Orr(x0, x0, 1 << 1);
+  __ B(&test_bcond);
+  __ Bind(&success_bcond);
+  __ Orr(x0, x0, 1 << 2);
+
+  __ B(&done);
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x7, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
+TEST(far_branch_veneer_broken_link_chain) {
+  INIT_V8();
+
+  // Check that the MacroAssembler correctly handles the situation when removing
+  // a branch from the link chain of a label and the two links on each side of
+  // the removed branch cannot be linked together (out of range).
+  //
+  // We test with tbz because it has a small range.
+  int max_range = Instruction::ImmBranchRange(TestBranchType);
+  int inter_range = max_range / 2 + max_range / 10;
+
+  SETUP_SIZE(3 * inter_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label skip, fail, done;
+  Label test_1, test_2, test_3;
+  Label far_target;
+
+  __ Mov(x0, 0);  // Indicates the origin of the branch.
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  // First instruction in the label chain.
+  __ Bind(&test_1);
+  __ Mov(x0, 1);
+  __ B(&far_target);
+
+  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+    if (i % 100 == 0) {
+      // Do not allow generating veneers. They should not be needed.
+      __ b(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+
+  // Will need a veneer to point to reach the target.
+  __ Bind(&test_2);
+  __ Mov(x0, 2);
+  __ Tbz(x10, 7, &far_target);
+
+  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+    if (i % 100 == 0) {
+      // Do not allow generating veneers. They should not be needed.
+      __ b(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+
+  // Does not need a veneer to reach the target, but the initial branch
+  // instruction is out of range.
+  __ Bind(&test_3);
+  __ Mov(x0, 3);
+  __ Tbz(x10, 7, &far_target);
+
+  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+    if (i % 100 == 0) {
+      // Allow generating veneers.
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+
+  __ B(&fail);
+
+  __ Bind(&far_target);
+  __ Cmp(x0, 1);
+  __ B(eq, &test_2);
+  __ Cmp(x0, 2);
+  __ B(eq, &test_3);
+
+  __ B(&done);
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x3, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
 TEST(ldr_str_offset) {
   INIT_V8();
   SETUP();
@@ -4940,26 +5269,26 @@ static float MinMaxHelper(float n,
   uint32_t raw_n = float_to_rawbits(n);
   uint32_t raw_m = float_to_rawbits(m);
 
-  if (isnan(n) && ((raw_n & kFP32QuietNaNMask) == 0)) {
+  if (std::isnan(n) && ((raw_n & kFP32QuietNaNMask) == 0)) {
     // n is signalling NaN.
     return n;
-  } else if (isnan(m) && ((raw_m & kFP32QuietNaNMask) == 0)) {
+  } else if (std::isnan(m) && ((raw_m & kFP32QuietNaNMask) == 0)) {
     // m is signalling NaN.
     return m;
   } else if (quiet_nan_substitute == 0.0) {
-    if (isnan(n)) {
+    if (std::isnan(n)) {
       // n is quiet NaN.
       return n;
-    } else if (isnan(m)) {
+    } else if (std::isnan(m)) {
       // m is quiet NaN.
       return m;
     }
   } else {
     // Substitute n or m if one is quiet, but not both.
-    if (isnan(n) && !isnan(m)) {
+    if (std::isnan(n) && !std::isnan(m)) {
       // n is quiet NaN: replace with substitute.
       n = quiet_nan_substitute;
-    } else if (!isnan(n) && isnan(m)) {
+    } else if (!std::isnan(n) && std::isnan(m)) {
       // m is quiet NaN: replace with substitute.
       m = quiet_nan_substitute;
     }
@@ -4982,26 +5311,26 @@ static double MinMaxHelper(double n,
   uint64_t raw_n = double_to_rawbits(n);
   uint64_t raw_m = double_to_rawbits(m);
 
-  if (isnan(n) && ((raw_n & kFP64QuietNaNMask) == 0)) {
+  if (std::isnan(n) && ((raw_n & kFP64QuietNaNMask) == 0)) {
     // n is signalling NaN.
     return n;
-  } else if (isnan(m) && ((raw_m & kFP64QuietNaNMask) == 0)) {
+  } else if (std::isnan(m) && ((raw_m & kFP64QuietNaNMask) == 0)) {
     // m is signalling NaN.
     return m;
   } else if (quiet_nan_substitute == 0.0) {
-    if (isnan(n)) {
+    if (std::isnan(n)) {
       // n is quiet NaN.
       return n;
-    } else if (isnan(m)) {
+    } else if (std::isnan(m)) {
       // m is quiet NaN.
       return m;
     }
   } else {
     // Substitute n or m if one is quiet, but not both.
-    if (isnan(n) && !isnan(m)) {
+    if (std::isnan(n) && !std::isnan(m)) {
       // n is quiet NaN: replace with substitute.
       n = quiet_nan_substitute;
-    } else if (!isnan(n) && isnan(m)) {
+    } else if (!std::isnan(n) && std::isnan(m)) {
       // m is quiet NaN: replace with substitute.
       m = quiet_nan_substitute;
     }
@@ -8110,7 +8439,8 @@ static void PushPopJsspWXOverlapHelper(int reg_count, int claim) {
   SETUP_SIZE(BUF_SIZE * 2);
 
   // Work out which registers to use, based on reg_size.
-  static RegList const allowed = ~(x8.Bit() | x9.Bit() | jssp.Bit());
+  Register tmp = x8;
+  static RegList const allowed = ~(tmp.Bit() | jssp.Bit());
   if (reg_count == kPushPopJsspMaxRegCount) {
     reg_count = CountSetBits(allowed, kNumberOfRegisters);
   }
@@ -8196,7 +8526,13 @@ static void PushPopJsspWXOverlapHelper(int reg_count, int claim) {
       int times = i % 4 + 1;
       if (i & 1) {
         // Push odd-numbered registers as W registers.
-        __ PushMultipleTimes(times, w[i]);
+        if (i & 2) {
+          __ PushMultipleTimes(w[i], times);
+        } else {
+          // Use a register to specify the count.
+          __ Mov(tmp.W(), times);
+          __ PushMultipleTimes(w[i], tmp.W());
+        }
         // Fill in the expected stack slots.
         for (int j = 0; j < times; j++) {
           if (w[i].Is(wzr)) {
@@ -8208,7 +8544,13 @@ static void PushPopJsspWXOverlapHelper(int reg_count, int claim) {
         }
       } else {
         // Push even-numbered registers as X registers.
-        __ PushMultipleTimes(times, x[i]);
+        if (i & 2) {
+          __ PushMultipleTimes(x[i], times);
+        } else {
+          // Use a register to specify the count.
+          __ Mov(tmp, times);
+          __ PushMultipleTimes(x[i], tmp);
+        }
         // Fill in the expected stack slots.
         for (int j = 0; j < times; j++) {
           if (x[i].IsZero()) {
@@ -8395,6 +8737,156 @@ TEST(push_pop_csp) {
   ASSERT_EQUAL_32(0x00000000U, w27);
   ASSERT_EQUAL_32(0x22222222U, w28);
   ASSERT_EQUAL_32(0x33333333U, w29);
+  TEARDOWN();
+}
+
+
+TEST(push_queued) {
+  INIT_V8();
+  SETUP();
+
+  START();
+
+  ASSERT(__ StackPointer().Is(csp));
+  __ Mov(jssp, __ StackPointer());
+  __ SetStackPointer(jssp);
+
+  MacroAssembler::PushPopQueue queue(&masm);
+
+  // Queue up registers.
+  queue.Queue(x0);
+  queue.Queue(x1);
+  queue.Queue(x2);
+  queue.Queue(x3);
+
+  queue.Queue(w4);
+  queue.Queue(w5);
+  queue.Queue(w6);
+
+  queue.Queue(d0);
+  queue.Queue(d1);
+
+  queue.Queue(s2);
+
+  __ Mov(x0, 0x1234000000000000);
+  __ Mov(x1, 0x1234000100010001);
+  __ Mov(x2, 0x1234000200020002);
+  __ Mov(x3, 0x1234000300030003);
+  __ Mov(w4, 0x12340004);
+  __ Mov(w5, 0x12340005);
+  __ Mov(w6, 0x12340006);
+  __ Fmov(d0, 123400.0);
+  __ Fmov(d1, 123401.0);
+  __ Fmov(s2, 123402.0);
+
+  // Actually push them.
+  queue.PushQueued();
+
+  Clobber(&masm, CPURegList(CPURegister::kRegister, kXRegSize, 0, 6));
+  Clobber(&masm, CPURegList(CPURegister::kFPRegister, kDRegSize, 0, 2));
+
+  // Pop them conventionally.
+  __ Pop(s2);
+  __ Pop(d1, d0);
+  __ Pop(w6, w5, w4);
+  __ Pop(x3, x2, x1, x0);
+
+  __ Mov(csp, __ StackPointer());
+  __ SetStackPointer(csp);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x1234000000000000, x0);
+  ASSERT_EQUAL_64(0x1234000100010001, x1);
+  ASSERT_EQUAL_64(0x1234000200020002, x2);
+  ASSERT_EQUAL_64(0x1234000300030003, x3);
+
+  ASSERT_EQUAL_32(0x12340004, w4);
+  ASSERT_EQUAL_32(0x12340005, w5);
+  ASSERT_EQUAL_32(0x12340006, w6);
+
+  ASSERT_EQUAL_FP64(123400.0, d0);
+  ASSERT_EQUAL_FP64(123401.0, d1);
+
+  ASSERT_EQUAL_FP32(123402.0, s2);
+
+  TEARDOWN();
+}
+
+
+TEST(pop_queued) {
+  INIT_V8();
+  SETUP();
+
+  START();
+
+  ASSERT(__ StackPointer().Is(csp));
+  __ Mov(jssp, __ StackPointer());
+  __ SetStackPointer(jssp);
+
+  MacroAssembler::PushPopQueue queue(&masm);
+
+  __ Mov(x0, 0x1234000000000000);
+  __ Mov(x1, 0x1234000100010001);
+  __ Mov(x2, 0x1234000200020002);
+  __ Mov(x3, 0x1234000300030003);
+  __ Mov(w4, 0x12340004);
+  __ Mov(w5, 0x12340005);
+  __ Mov(w6, 0x12340006);
+  __ Fmov(d0, 123400.0);
+  __ Fmov(d1, 123401.0);
+  __ Fmov(s2, 123402.0);
+
+  // Push registers conventionally.
+  __ Push(x0, x1, x2, x3);
+  __ Push(w4, w5, w6);
+  __ Push(d0, d1);
+  __ Push(s2);
+
+  // Queue up a pop.
+  queue.Queue(s2);
+
+  queue.Queue(d1);
+  queue.Queue(d0);
+
+  queue.Queue(w6);
+  queue.Queue(w5);
+  queue.Queue(w4);
+
+  queue.Queue(x3);
+  queue.Queue(x2);
+  queue.Queue(x1);
+  queue.Queue(x0);
+
+  Clobber(&masm, CPURegList(CPURegister::kRegister, kXRegSize, 0, 6));
+  Clobber(&masm, CPURegList(CPURegister::kFPRegister, kDRegSize, 0, 2));
+
+  // Actually pop them.
+  queue.PopQueued();
+
+  __ Mov(csp, __ StackPointer());
+  __ SetStackPointer(csp);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x1234000000000000, x0);
+  ASSERT_EQUAL_64(0x1234000100010001, x1);
+  ASSERT_EQUAL_64(0x1234000200020002, x2);
+  ASSERT_EQUAL_64(0x1234000300030003, x3);
+
+  ASSERT_EQUAL_64(0x0000000012340004, x4);
+  ASSERT_EQUAL_64(0x0000000012340005, x5);
+  ASSERT_EQUAL_64(0x0000000012340006, x6);
+
+  ASSERT_EQUAL_FP64(123400.0, d0);
+  ASSERT_EQUAL_FP64(123401.0, d1);
+
+  ASSERT_EQUAL_FP32(123402.0, s2);
+
   TEARDOWN();
 }
 
@@ -9343,107 +9835,6 @@ TEST(call_no_relocation) {
         Assembler::return_address_from_call_start(call_start));
 
   TEARDOWN();
-}
-
-
-static void ECMA262ToInt32Helper(int32_t expected, double input) {
-  SETUP();
-  START();
-
-  __ Fmov(d0, input);
-
-  __ ECMA262ToInt32(x0, d0, x10, x11, MacroAssembler::INT32_IN_W);
-  __ ECMA262ToInt32(x1, d0, x10, x11, MacroAssembler::INT32_IN_X);
-  __ ECMA262ToInt32(x2, d0, x10, x11, MacroAssembler::SMI);
-
-  // The upper bits of INT32_IN_W are undefined, so make sure we don't try to
-  // test them.
-  __ Mov(w0, w0);
-
-  END();
-
-  RUN();
-
-  int64_t expected64 = expected;
-
-  ASSERT_EQUAL_32(expected, w0);
-  ASSERT_EQUAL_64(expected64, x1);
-  ASSERT_EQUAL_64(expected64 << kSmiShift | kSmiTag, x2);
-
-  TEARDOWN();
-}
-
-
-TEST(ecma_262_to_int32) {
-  INIT_V8();
-  // ==== exponent < 64 ====
-
-  ECMA262ToInt32Helper(0, 0.0);
-  ECMA262ToInt32Helper(0, -0.0);
-  ECMA262ToInt32Helper(1, 1.0);
-  ECMA262ToInt32Helper(-1, -1.0);
-
-  // The largest representable value that is less than 1.
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * pow(2.0, -53));
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * -pow(2.0, -53));
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::denorm_min());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::denorm_min());
-
-  // The largest conversion which doesn't require the integer modulo-2^32 step.
-  ECMA262ToInt32Helper(0x7fffffff, 0x7fffffff);
-  ECMA262ToInt32Helper(-0x80000000, -0x80000000);
-
-  // The largest simple conversion, requiring module-2^32, but where the fcvt
-  // does not saturate when converting to int64_t.
-  ECMA262ToInt32Helper(0xfffffc00, 0x7ffffffffffffc00);
-  ECMA262ToInt32Helper(-0xfffffc00, 0x7ffffffffffffc00 * -1.0);
-
-  // ==== 64 <= exponent < 84 ====
-
-  // The smallest conversion where the fcvt saturates.
-  ECMA262ToInt32Helper(0, 0x8000000000000000);
-  ECMA262ToInt32Helper(0, 0x8000000000000000 * -1.0);
-
-  // The smallest conversion where the fcvt saturates, and where all the
-  // mantissa bits are '1' (to check the shift logic).
-  ECMA262ToInt32Helper(0xfffff800, 0xfffffffffffff800);
-  ECMA262ToInt32Helper(-0xfffff800, 0xfffffffffffff800 * -1.0);
-
-  // The largest conversion which doesn't produce a zero result.
-  ECMA262ToInt32Helper(0x80000000, 0x001fffffffffffff * pow(2.0, 31));
-  ECMA262ToInt32Helper(-0x80000000, 0x001fffffffffffff * -pow(2.0, 31));
-
-  // Some large conversions to check the shifting function.
-  ECMA262ToInt32Helper(0x6789abcd, 0x001123456789abcd);
-  ECMA262ToInt32Helper(0x12345678, 0x001123456789abcd * pow(2.0, -20));
-  ECMA262ToInt32Helper(0x891a2b3c, 0x001123456789abcd * pow(2.0, -21));
-  ECMA262ToInt32Helper(0x11234567, 0x001123456789abcd * pow(2.0, -24));
-  ECMA262ToInt32Helper(-0x6789abcd, 0x001123456789abcd * -1.0);
-  ECMA262ToInt32Helper(-0x12345678, 0x001123456789abcd * -pow(2.0, -20));
-  ECMA262ToInt32Helper(-0x891a2b3c, 0x001123456789abcd * -pow(2.0, -21));
-  ECMA262ToInt32Helper(-0x11234567, 0x001123456789abcd * -pow(2.0, -24));
-
-  // ==== 84 <= exponent ====
-
-  // The smallest conversion which produces a zero result by shifting the
-  // mantissa out of the int32_t range.
-  ECMA262ToInt32Helper(0, pow(2.0, 32));
-  ECMA262ToInt32Helper(0, -pow(2.0, 32));
-
-  // Some very large conversions.
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * pow(2.0, 32));
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * -pow(2.0, 32));
-  ECMA262ToInt32Helper(0, DBL_MAX);
-  ECMA262ToInt32Helper(0, -DBL_MAX);
-
-  // ==== Special values. ====
-
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::infinity());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::infinity());
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::quiet_NaN());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::quiet_NaN());
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::signaling_NaN());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::signaling_NaN());
 }
 
 

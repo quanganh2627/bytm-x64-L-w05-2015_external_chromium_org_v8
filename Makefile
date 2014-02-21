@@ -359,11 +359,12 @@ native.check: native
 	    --arch-and-mode=. $(TESTFLAGS)
 
 FASTTESTMODES = ia32.release,x64.release,ia32.optdebug,x64.optdebug,arm.optdebug
+FASTCOMPILEMODES = $(FASTTESTMODES),a64.optdebug
 
 COMMA = ,
 EMPTY =
 SPACE = $(EMPTY) $(EMPTY)
-quickcheck: $(subst $(COMMA),$(SPACE),$(FASTTESTMODES))
+quickcheck: $(subst $(COMMA),$(SPACE),$(FASTCOMPILEMODES))
 	tools/run-tests.py $(TESTJOBS) --outdir=$(OUTDIR) \
 	    --arch-and-mode=$(FASTTESTMODES) $(TESTFLAGS) --quickcheck
 qc: quickcheck
@@ -392,7 +393,7 @@ $(OUT_MAKEFILES): $(GYPFILES) $(ENVFILE)
 	build/gyp/gyp --generator-output="$(OUTDIR)" build/all.gyp \
 	              -Ibuild/standalone.gypi --depth=. \
 	              -Dv8_target_arch=$(subst .,,$(suffix $(basename $@))) \
-	              -Dv8_optimized_debug=$(if $(findstring optdebug,$@),2,0) \
+	              $(if $(findstring optdebug,$@),-Dv8_optimized_debug=2,) \
 	              -S$(suffix $(basename $@))$(suffix $@) $(GYPFLAGS)
 
 $(OUTDIR)/Makefile.native: $(GYPFILES) $(ENVFILE)
