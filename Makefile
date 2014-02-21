@@ -138,12 +138,17 @@ ifeq ($(deprecationwarnings), on)
   GYPFLAGS += -Dv8_deprecation_warnings=1
 endif 
 # arm specific flags.
-# armv7=false/true
+# arm_version=<number | "default">
+ifneq ($(strip $(arm_version)),)
+  GYPFLAGS += -Darm_version=$(arm_version)
+else
+# Deprecated (use arm_version instead): armv7=false/true
 ifeq ($(armv7), false)
-  GYPFLAGS += -Darmv7=0
+  GYPFLAGS += -Darm_version=6
 else
 ifeq ($(armv7), true)
-  GYPFLAGS += -Darmv7=1
+  GYPFLAGS += -Darm_version=7
+endif
 endif
 endif
 # vfp2=off. Deprecated, use armfpu=
@@ -218,11 +223,11 @@ endif
 
 # Architectures and modes to be compiled. Consider these to be internal
 # variables, don't override them (use the targets instead).
-ARCHES = ia32 x64 arm mipsel
+ARCHES = ia32 x64 arm a64 mipsel
 DEFAULT_ARCHES = ia32 x64 arm
 MODES = release debug optdebug
 DEFAULT_MODES = release debug
-ANDROID_ARCHES = android_ia32 android_arm android_mipsel
+ANDROID_ARCHES = android_ia32 android_arm android_a64 android_mipsel
 NACL_ARCHES = nacl_ia32 nacl_x64
 
 # List of files that trigger Makefile regeneration:
@@ -273,7 +278,7 @@ mips mips.release mips.debug:
 .SECONDEXPANSION:
 $(MODES): $(addsuffix .$$@,$(DEFAULT_ARCHES))
 
-$(ARCHES): $(addprefix $$@.,$(MODES))
+$(ARCHES): $(addprefix $$@.,$(DEFAULT_MODES))
 
 # Defines how to build a particular target (e.g. ia32.release).
 $(BUILDS): $(OUTDIR)/Makefile.$$@
@@ -368,6 +373,7 @@ $(addsuffix .clean, $(ARCHES) $(ANDROID_ARCHES) $(NACL_ARCHES)):
 	rm -f $(OUTDIR)/Makefile.$(basename $@)*
 	rm -rf $(OUTDIR)/$(basename $@).release
 	rm -rf $(OUTDIR)/$(basename $@).debug
+	rm -rf $(OUTDIR)/$(basename $@).optdebug
 	find $(OUTDIR) -regex '.*\(host\|target\)\.$(basename $@).*\.mk' -delete
 
 native.clean:
@@ -381,6 +387,7 @@ clean: $(addsuffix .clean, $(ARCHES) $(ANDROID_ARCHES) $(NACL_ARCHES)) native.cl
 OUT_MAKEFILES = $(addprefix $(OUTDIR)/Makefile.,$(BUILDS))
 $(OUT_MAKEFILES): $(GYPFILES) $(ENVFILE)
 	PYTHONPATH="$(shell pwd)/tools/generate_shim_headers:$(PYTHONPATH)" \
+	PYTHONPATH="$(shell pwd)/build/gyp/pylib:$(PYTHONPATH)" \
 	GYP_GENERATORS=make \
 	build/gyp/gyp --generator-output="$(OUTDIR)" build/all.gyp \
 	              -Ibuild/standalone.gypi --depth=. \
@@ -390,6 +397,7 @@ $(OUT_MAKEFILES): $(GYPFILES) $(ENVFILE)
 
 $(OUTDIR)/Makefile.native: $(GYPFILES) $(ENVFILE)
 	PYTHONPATH="$(shell pwd)/tools/generate_shim_headers:$(PYTHONPATH)" \
+	PYTHONPATH="$(shell pwd)/build/gyp/pylib:$(PYTHONPATH)" \
 	GYP_GENERATORS=make \
 	build/gyp/gyp --generator-output="$(OUTDIR)" build/all.gyp \
 	              -Ibuild/standalone.gypi --depth=. -S.native $(GYPFLAGS)
@@ -435,7 +443,7 @@ grokdump: ia32.release
 # Remember to keep these in sync with the DEPS file.
 dependencies:
 	svn checkout --force http://gyp.googlecode.com/svn/trunk build/gyp \
-	    --revision 1685
+	    --revision 1831
 	svn checkout --force \
 	    https://src.chromium.org/chrome/trunk/deps/third_party/icu46 \
-	    third_party/icu --revision 214189
+	    third_party/icu --revision 239289

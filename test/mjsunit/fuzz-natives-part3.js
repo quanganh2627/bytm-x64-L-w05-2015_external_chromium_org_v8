@@ -149,9 +149,9 @@ var knownProblems = {
   "PushCatchContext": true,
   "PushBlockContext": true,
   "PushModuleContext": true,
-  "LazyCompile": true,
-  "LazyRecompile": true,
-  "ConcurrentRecompile": true,
+  "CompileUnoptimized": true,
+  "CompileOptimized": true,
+  "CompileOptimizedConcurrent": true,
   "NotifyDeoptimized": true,
   "NotifyStubFailure": true,
   "NotifyOSR": true,
@@ -171,6 +171,7 @@ var knownProblems = {
 
   // Vararg with minimum number > 0.
   "Call": true,
+  "SetAllocationTimeout": true,
 
   // Requires integer arguments to be non-negative.
   "Apply": true,
@@ -215,7 +216,10 @@ var knownProblems = {
   "DataViewInitialize":true,
   "DataViewGetBuffer": true,
   "DataViewGetByteLength": true,
-  "DataViewGetByteOffset": true
+  "DataViewGetByteOffset": true,
+
+  // Only ever called internally.
+  "RunMicrotasks": true
 };
 
 var currentlyUncallable = {

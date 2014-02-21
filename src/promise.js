@@ -62,11 +62,16 @@ function IsPromise(x) {
 
 function Promise(resolver) {
   if (resolver === promiseRaw) return;
+  if (!%_IsConstructCall()) throw MakeTypeError('not_a_promise', [this]);
+  if (typeof resolver !== 'function')
+    throw MakeTypeError('resolver_not_a_function', [resolver]);
   var promise = PromiseInit(this);
-  resolver(function(x) { PromiseResolve(promise, x) },
-           function(r) { PromiseReject(promise, r) });
-  // TODO(rossberg): current draft makes exception from this call asynchronous,
-  // but that's probably a mistake.
+  try {
+    resolver(function(x) { PromiseResolve(promise, x) },
+             function(r) { PromiseReject(promise, r) });
+  } catch (e) {
+    PromiseReject(promise, e);
+  }
 }
 
 function PromiseSet(promise, status, value, onResolve, onReject) {
@@ -82,9 +87,10 @@ function PromiseInit(promise) {
 }
 
 function PromiseDone(promise, status, value, promiseQueue) {
-  if (GET_PRIVATE(promise, promiseStatus) !== 0) return;
-  PromiseEnqueue(value, GET_PRIVATE(promise, promiseQueue));
-  PromiseSet(promise, status, value);
+  if (GET_PRIVATE(promise, promiseStatus) === 0) {
+    PromiseEnqueue(value, GET_PRIVATE(promise, promiseQueue));
+    PromiseSet(promise, status, value);
+  }
 }
 
 function PromiseResolve(promise, x) {
@@ -167,37 +173,29 @@ function PromiseCatch(onReject) {
 }
 
 function PromiseEnqueue(value, tasks) {
-  promiseEvents.push(value, tasks);
+  GetMicrotaskQueue().push(function() {
+    for (var i = 0; i < tasks.length; i += 2) {
+      PromiseHandle(value, tasks[i], tasks[i + 1])
+    }
+  });
+
   %SetMicrotaskPending(true);
 }
 
-function PromiseMicrotaskRunner() {
-  var events = promiseEvents;
-  if (events.length > 0) {
-    promiseEvents = new InternalArray;
-    for (var i = 0; i < events.length; i += 2) {
-      var value = events[i];
-      var tasks = events[i + 1];
-      for (var j = 0; j < tasks.length; j += 2) {
-        var handler = tasks[j];
-        var deferred = tasks[j + 1];
-        try {
-          var result = handler(value);
-          if (result === deferred.promise)
-            throw MakeTypeError('promise_cyclic', [result]);
-          else if (IsPromise(result))
-            result.chain(deferred.resolve, deferred.reject);
-          else
-            deferred.resolve(result);
-        } catch(e) {
-          // TODO(rossberg): perhaps log uncaught exceptions below.
-          try { deferred.reject(e) } catch(e) {}
-        }
-      }
-    }
+function PromiseHandle(value, handler, deferred) {
+  try {
+    var result = handler(value);
+    if (result === deferred.promise)
+      throw MakeTypeError('promise_cyclic', [result]);
+    else if (IsPromise(result))
+      result.chain(deferred.resolve, deferred.reject);
+    else
+      deferred.resolve(result);
+  } catch(e) {
+    // TODO(rossberg): perhaps log uncaught exceptions below.
+    try { deferred.reject(e) } catch(e) {}
   }
 }
-RunMicrotasks.runners.push(PromiseMicrotaskRunner);
 
 
 // Multi-unwrapped chaining with thenable coercion.
@@ -219,25 +217,24 @@ function PromiseThen(onResolve, onReject) {
 PromiseCoerce.table = new $WeakMap;
 
 function PromiseCoerce(constructor, x) {
-  var then;
-  if (IsPromise(x)) {
-    return x;
-  } else if (!IS_NULL_OR_UNDEFINED(x) && %IsCallable(then = x.then)) {
-    if (PromiseCoerce.table.has(x)) {
-      return PromiseCoerce.table.get(x);
-    } else {
-      var deferred = constructor.deferred();
-      PromiseCoerce.table.set(x, deferred.promise);
-      try {
-        %_CallFunction(x, deferred.resolve, deferred.reject, then);
-      } catch(e) {
-        deferred.reject(e);
+  if (!(IsPromise(x) || IS_NULL_OR_UNDEFINED(x))) {
+    var then = x.then;
+    if (typeof then === 'function') {
+      if (PromiseCoerce.table.has(x)) {
+        return PromiseCoerce.table.get(x);
+      } else {
+        var deferred = %_CallFunction(constructor, PromiseDeferred);
+        PromiseCoerce.table.set(x, deferred.promise);
+        try {
+          %_CallFunction(x, deferred.resolve, deferred.reject, then);
+        } catch(e) {
+          deferred.reject(e);
+        }
+        return deferred.promise;
       }
-      return deferred.promise;
     }
-  } else {
-    return x;
   }
+  return x;
 }
 
 
@@ -245,39 +242,44 @@ function PromiseCoerce(constructor, x) {
 
 function PromiseCast(x) {
   // TODO(rossberg): cannot do better until we support @@create.
-  return IsPromise(x) ? x : this.resolved(x);
+  return IsPromise(x) ? x : this.resolve(x);
 }
 
 function PromiseAll(values) {
-  var deferred = this.deferred();
+  var deferred = %_CallFunction(this, PromiseDeferred);
   var resolutions = [];
-  var count = values.length;
-  if (count === 0) {
-    deferred.resolve(resolutions);
-  } else {
-    for (var i = 0; i < values.length; ++i) {
-      this.cast(values[i]).chain(
-        function(i, x) {
-          resolutions[i] = x;
-          if (--count === 0) deferred.resolve(resolutions);
-        }.bind(UNDEFINED, i),  // TODO(rossberg): use let loop once available
-        function(r) {
-          if (count > 0) { count = 0; deferred.reject(r) }
-        }
-      );
+  try {
+    var count = values.length;
+    if (count === 0) {
+      deferred.resolve(resolutions);
+    } else {
+      for (var i = 0; i < values.length; ++i) {
+        this.cast(values[i]).chain(
+          function(i, x) {
+            resolutions[i] = x;
+            if (--count === 0) deferred.resolve(resolutions);
+          }.bind(UNDEFINED, i),  // TODO(rossberg): use let loop once available
+          function(r) { deferred.reject(r) }
+        );
+      }
     }
+  } catch (e) {
+    deferred.reject(e)
   }
   return deferred.promise;
 }
 
-function PromiseOne(values) {  // a.k.a. race
-  var deferred = this.deferred();
-  var done = false;
-  for (var i = 0; i < values.length; ++i) {
-    this.cast(values[i]).chain(
-      function(x) { if (!done) { done = true; deferred.resolve(x) } },
-      function(r) { if (!done) { done = true; deferred.reject(r) } }
-    );
+function PromiseOne(values) {
+  var deferred = %_CallFunction(this, PromiseDeferred);
+  try {
+    for (var i = 0; i < values.length; ++i) {
+      this.cast(values[i]).chain(
+        function(x) { deferred.resolve(x) },
+        function(r) { deferred.reject(r) }
+      );
+    }
+  } catch (e) {
+    deferred.reject(e)
   }
   return deferred.promise;
 }
@@ -286,13 +288,14 @@ function PromiseOne(values) {  // a.k.a. race
 
 function SetUpPromise() {
   %CheckIsBootstrapping()
-  global.Promise = $Promise;
+  var global_receiver = %GlobalReceiver(global);
+  global_receiver.Promise = $Promise;
   InstallFunctions($Promise, DONT_ENUM, [
-    "deferred", PromiseDeferred,
-    "resolved", PromiseResolved,
-    "rejected", PromiseRejected,
+    "defer", PromiseDeferred,
+    "resolve", PromiseResolved,
+    "reject", PromiseRejected,
     "all", PromiseAll,
-    "one", PromiseOne,
+    "race", PromiseOne,
     "cast", PromiseCast
   ]);
   InstallFunctions($Promise.prototype, DONT_ENUM, [

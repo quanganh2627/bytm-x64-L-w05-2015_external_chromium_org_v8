@@ -38,6 +38,9 @@
 #elif V8_TARGET_ARCH_ARM
 #include "arm/lithium-arm.h"
 #include "arm/lithium-codegen-arm.h"
+#elif V8_TARGET_ARCH_A64
+#include "a64/lithium-a64.h"
+#include "a64/lithium-codegen-a64.h"
 #elif V8_TARGET_ARCH_MIPS
 #include "mips/lithium-mips.h"
 #include "mips/lithium-codegen-mips.h"
@@ -104,11 +107,9 @@ bool LCodeGenBase::GenerateBody() {
     GenerateBodyInstructionPre(instr);
 
     HValue* value = instr->hydrogen_value();
-    if (value->position() != RelocInfo::kNoPosition) {
-      ASSERT(!graph()->info()->IsOptimizing() ||
-             !FLAG_emit_opt_code_positions ||
-             value->position() != RelocInfo::kNoPosition);
-      RecordAndWritePosition(value->position());
+    if (!value->position().IsUnknown()) {
+      RecordAndWritePosition(
+        chunk()->graph()->SourcePositionToScriptPosition(value->position()));
     }
 
     instr->CompileToNative(codegen);
@@ -150,15 +151,26 @@ int LCodeGenBase::GetNextEmittedBlock() const {
 void LCodeGenBase::RegisterDependentCodeForEmbeddedMaps(Handle<Code> code) {
   ZoneList<Handle<Map> > maps(1, zone());
   ZoneList<Handle<JSObject> > objects(1, zone());
-  int mode_mask = RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT);
+  ZoneList<Handle<Cell> > cells(1, zone());
+  int mode_mask = RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT) |
+                  RelocInfo::ModeMask(RelocInfo::CELL);
   for (RelocIterator it(*code, mode_mask); !it.done(); it.next()) {
-    if (Code::IsWeakEmbeddedObject(code->kind(), it.rinfo()->target_object())) {
+    RelocInfo::Mode mode = it.rinfo()->rmode();
+    if (mode == RelocInfo::CELL &&
+        Code::IsWeakEmbeddedObject(code->kind(), it.rinfo()->target_cell())) {
+      Handle<Cell> cell(it.rinfo()->target_cell());
+      cells.Add(cell, zone());
+    } else if (mode == RelocInfo::EMBEDDED_OBJECT &&
+        Code::IsWeakEmbeddedObject(code->kind(), it.rinfo()->target_object())) {
       if (it.rinfo()->target_object()->IsMap()) {
         Handle<Map> map(Map::cast(it.rinfo()->target_object()));
         maps.Add(map, zone());
       } else if (it.rinfo()->target_object()->IsJSObject()) {
         Handle<JSObject> object(JSObject::cast(it.rinfo()->target_object()));
         objects.Add(object, zone());
+      } else if (it.rinfo()->target_object()->IsCell()) {
+        Handle<Cell> cell(Cell::cast(it.rinfo()->target_object()));
+        cells.Add(cell, zone());
       }
     }
   }
@@ -173,6 +185,9 @@ void LCodeGenBase::RegisterDependentCodeForEmbeddedMaps(Handle<Code> code) {
   }
   for (int i = 0; i < objects.length(); i++) {
     AddWeakObjectToCodeDependency(isolate()->heap(), objects.at(i), code);
+  }
+  for (int i = 0; i < cells.length(); i++) {
+    AddWeakObjectToCodeDependency(isolate()->heap(), cells.at(i), code);
   }
 }
 

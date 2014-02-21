@@ -37,7 +37,9 @@
 #include "property-details.h"
 #include "smart-pointers.h"
 #include "unicode-inl.h"
-#if V8_TARGET_ARCH_ARM
+#if V8_TARGET_ARCH_A64
+#include "a64/constants-a64.h"
+#elif V8_TARGET_ARCH_ARM
 #include "arm/constants-arm.h"
 #elif V8_TARGET_ARCH_MIPS
 #include "mips/constants-mips.h"
@@ -96,14 +98,14 @@
 //           - TransitionArray
 //         - FixedDoubleArray
 //         - ExternalArray
-//           - ExternalPixelArray
-//           - ExternalByteArray
-//           - ExternalUnsignedByteArray
-//           - ExternalShortArray
-//           - ExternalUnsignedShortArray
-//           - ExternalIntArray
-//           - ExternalUnsignedIntArray
-//           - ExternalFloatArray
+//           - ExternalUint8ClampedArray
+//           - ExternalInt8Array
+//           - ExternalUint8Array
+//           - ExternalInt16Array
+//           - ExternalUint16Array
+//           - ExternalInt32Array
+//           - ExternalUint32Array
+//           - ExternalFloat32Array
 //       - Name
 //         - String
 //           - SeqString
@@ -311,7 +313,7 @@ static const ExtraICState kNoExtraICState = 0;
 // Instance size sentinel for objects of variable size.
 const int kVariableSizeSentinel = 0;
 
-const int kStubMajorKeyBits = 6;
+const int kStubMajorKeyBits = 7;
 const int kStubMinorKeyBits = kBitsPerInt - kSmiTagSize - kStubMajorKeyBits;
 
 // All Maps have a field instance_type containing a InstanceType.
@@ -377,15 +379,26 @@ const int kStubMinorKeyBits = kBitsPerInt - kSmiTagSize - kStubMajorKeyBits;
   /* Note: the order of these external array */                                \
   /* types is relied upon in */                                                \
   /* Object::IsExternalArray(). */                                             \
-  V(EXTERNAL_BYTE_ARRAY_TYPE)                                                  \
-  V(EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE)                                         \
-  V(EXTERNAL_SHORT_ARRAY_TYPE)                                                 \
-  V(EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE)                                        \
-  V(EXTERNAL_INT_ARRAY_TYPE)                                                   \
-  V(EXTERNAL_UNSIGNED_INT_ARRAY_TYPE)                                          \
-  V(EXTERNAL_FLOAT_ARRAY_TYPE)                                                 \
-  V(EXTERNAL_DOUBLE_ARRAY_TYPE)                                                \
-  V(EXTERNAL_PIXEL_ARRAY_TYPE)                                                 \
+  V(EXTERNAL_INT8_ARRAY_TYPE)                                                  \
+  V(EXTERNAL_UINT8_ARRAY_TYPE)                                                 \
+  V(EXTERNAL_INT16_ARRAY_TYPE)                                                 \
+  V(EXTERNAL_UINT16_ARRAY_TYPE)                                                \
+  V(EXTERNAL_INT32_ARRAY_TYPE)                                                 \
+  V(EXTERNAL_UINT32_ARRAY_TYPE)                                                \
+  V(EXTERNAL_FLOAT32_ARRAY_TYPE)                                               \
+  V(EXTERNAL_FLOAT64_ARRAY_TYPE)                                               \
+  V(EXTERNAL_UINT8_CLAMPED_ARRAY_TYPE)                                         \
+                                                                               \
+  V(FIXED_INT8_ARRAY_TYPE)                                                     \
+  V(FIXED_UINT8_ARRAY_TYPE)                                                    \
+  V(FIXED_INT16_ARRAY_TYPE)                                                    \
+  V(FIXED_UINT16_ARRAY_TYPE)                                                   \
+  V(FIXED_INT32_ARRAY_TYPE)                                                    \
+  V(FIXED_UINT32_ARRAY_TYPE)                                                   \
+  V(FIXED_FLOAT32_ARRAY_TYPE)                                                  \
+  V(FIXED_FLOAT64_ARRAY_TYPE)                                                  \
+  V(FIXED_UINT8_CLAMPED_ARRAY_TYPE)                                            \
+                                                                               \
   V(FILLER_TYPE)                                                               \
                                                                                \
   V(DECLARED_ACCESSOR_DESCRIPTOR_TYPE)                                         \
@@ -478,7 +491,7 @@ const int kStubMinorKeyBits = kBitsPerInt - kSmiTagSize - kStubMajorKeyBits;
     ExternalAsciiString)                                                       \
   V(EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE,                                   \
     ExternalTwoByteString::kSize,                                              \
-    external_string_with_one_bytei_data,                                       \
+    external_string_with_one_byte_data,                                        \
     ExternalStringWithOneByteData)                                             \
   V(SHORT_EXTERNAL_STRING_TYPE,                                                \
     ExternalTwoByteString::kShortSize,                                         \
@@ -711,17 +724,28 @@ enum InstanceType {
   FOREIGN_TYPE,
   BYTE_ARRAY_TYPE,
   FREE_SPACE_TYPE,
-  EXTERNAL_BYTE_ARRAY_TYPE,  // FIRST_EXTERNAL_ARRAY_TYPE
-  EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE,
-  EXTERNAL_SHORT_ARRAY_TYPE,
-  EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE,
-  EXTERNAL_INT_ARRAY_TYPE,
-  EXTERNAL_UNSIGNED_INT_ARRAY_TYPE,
-  EXTERNAL_FLOAT_ARRAY_TYPE,
-  EXTERNAL_DOUBLE_ARRAY_TYPE,
-  EXTERNAL_PIXEL_ARRAY_TYPE,  // LAST_EXTERNAL_ARRAY_TYPE
+
+  EXTERNAL_INT8_ARRAY_TYPE,  // FIRST_EXTERNAL_ARRAY_TYPE
+  EXTERNAL_UINT8_ARRAY_TYPE,
+  EXTERNAL_INT16_ARRAY_TYPE,
+  EXTERNAL_UINT16_ARRAY_TYPE,
+  EXTERNAL_INT32_ARRAY_TYPE,
+  EXTERNAL_UINT32_ARRAY_TYPE,
+  EXTERNAL_FLOAT32_ARRAY_TYPE,
+  EXTERNAL_FLOAT64_ARRAY_TYPE,
+  EXTERNAL_UINT8_CLAMPED_ARRAY_TYPE,  // LAST_EXTERNAL_ARRAY_TYPE
+
+  FIXED_INT8_ARRAY_TYPE,  // FIRST_FIXED_TYPED_ARRAY_TYPE
+  FIXED_UINT8_ARRAY_TYPE,
+  FIXED_INT16_ARRAY_TYPE,
+  FIXED_UINT16_ARRAY_TYPE,
+  FIXED_INT32_ARRAY_TYPE,
+  FIXED_UINT32_ARRAY_TYPE,
+  FIXED_FLOAT32_ARRAY_TYPE,
+  FIXED_FLOAT64_ARRAY_TYPE,
+  FIXED_UINT8_CLAMPED_ARRAY_TYPE,  // LAST_FIXED_TYPED_ARRAY_TYPE
+
   FIXED_DOUBLE_ARRAY_TYPE,
-  CONSTANT_POOL_ARRAY_TYPE,
   FILLER_TYPE,  // LAST_DATA_TYPE
 
   // Structs.
@@ -752,6 +776,7 @@ enum InstanceType {
   BREAK_POINT_INFO_TYPE,
 
   FIXED_ARRAY_TYPE,
+  CONSTANT_POOL_ARRAY_TYPE,
   SHARED_FUNCTION_INFO_TYPE,
 
   JS_MESSAGE_OBJECT_TYPE,
@@ -795,8 +820,11 @@ enum InstanceType {
   LAST_UNIQUE_NAME_TYPE = SYMBOL_TYPE,
   FIRST_NONSTRING_TYPE = SYMBOL_TYPE,
   // Boundaries for testing for an external array.
-  FIRST_EXTERNAL_ARRAY_TYPE = EXTERNAL_BYTE_ARRAY_TYPE,
-  LAST_EXTERNAL_ARRAY_TYPE = EXTERNAL_PIXEL_ARRAY_TYPE,
+  FIRST_EXTERNAL_ARRAY_TYPE = EXTERNAL_INT8_ARRAY_TYPE,
+  LAST_EXTERNAL_ARRAY_TYPE = EXTERNAL_UINT8_CLAMPED_ARRAY_TYPE,
+  // Boundaries for testing for a fixed typed array.
+  FIRST_FIXED_TYPED_ARRAY_TYPE = FIXED_INT8_ARRAY_TYPE,
+  LAST_FIXED_TYPED_ARRAY_TYPE = FIXED_UINT8_CLAMPED_ARRAY_TYPE,
   // Boundary for promotion to old data space/old pointer space.
   LAST_DATA_TYPE = FILLER_TYPE,
   // Boundary for objects represented as JSReceiver (i.e. JSObject or JSProxy).
@@ -878,9 +906,13 @@ class DictionaryElementsAccessor;
 class ElementsAccessor;
 class Failure;
 class FixedArrayBase;
+class GlobalObject;
 class ObjectVisitor;
 class StringStream;
-class Type;
+// We cannot just say "class HeapType;" if it is created from a template... =8-?
+template<class> class TypeImpl;
+struct HeapTypeConfig;
+typedef TypeImpl<HeapTypeConfig> HeapType;
 
 
 // A template-ized version of the IsXXX functions.
@@ -976,15 +1008,25 @@ class MaybeObject BASE_EMBEDDED {
   V(Symbol)                                    \
                                                \
   V(ExternalArray)                             \
-  V(ExternalByteArray)                         \
-  V(ExternalUnsignedByteArray)                 \
-  V(ExternalShortArray)                        \
-  V(ExternalUnsignedShortArray)                \
-  V(ExternalIntArray)                          \
-  V(ExternalUnsignedIntArray)                  \
-  V(ExternalFloatArray)                        \
-  V(ExternalDoubleArray)                       \
-  V(ExternalPixelArray)                        \
+  V(ExternalInt8Array)                         \
+  V(ExternalUint8Array)                        \
+  V(ExternalInt16Array)                        \
+  V(ExternalUint16Array)                       \
+  V(ExternalInt32Array)                        \
+  V(ExternalUint32Array)                       \
+  V(ExternalFloat32Array)                      \
+  V(ExternalFloat64Array)                      \
+  V(ExternalUint8ClampedArray)                 \
+  V(FixedTypedArrayBase)                       \
+  V(FixedUint8Array)                           \
+  V(FixedInt8Array)                            \
+  V(FixedUint16Array)                          \
+  V(FixedInt16Array)                           \
+  V(FixedUint32Array)                          \
+  V(FixedInt32Array)                           \
+  V(FixedFloat32Array)                         \
+  V(FixedFloat64Array)                         \
+  V(FixedUint8ClampedArray)                    \
   V(ByteArray)                                 \
   V(FreeSpace)                                 \
   V(JSReceiver)                                \
@@ -998,7 +1040,6 @@ class MaybeObject BASE_EMBEDDED {
   V(DeoptimizationInputData)                   \
   V(DeoptimizationOutputData)                  \
   V(DependentCode)                             \
-  V(TypeFeedbackCells)                         \
   V(FixedArray)                                \
   V(FixedDoubleArray)                          \
   V(ConstantPoolArray)                         \
@@ -1055,110 +1096,126 @@ class MaybeObject BASE_EMBEDDED {
                                                                               \
   V(k32BitValueInRegisterIsNotZeroExtended,                                   \
     "32 bit value in register is not zero-extended")                          \
-  V(kAlignmentMarkerExpected, "alignment marker expected")                    \
+  V(kAlignmentMarkerExpected, "Alignment marker expected")                    \
   V(kAllocationIsNotDoubleAligned, "Allocation is not double aligned")        \
   V(kAPICallReturnedInvalidObject, "API call returned invalid object")        \
   V(kArgumentsObjectValueInATestContext,                                      \
-    "arguments object value in a test context")                               \
-  V(kArrayBoilerplateCreationFailed, "array boilerplate creation failed")     \
-  V(kArrayIndexConstantValueTooBig, "array index constant value too big")     \
-  V(kAssignmentToArguments, "assignment to arguments")                        \
+    "Arguments object value in a test context")                               \
+  V(kArrayBoilerplateCreationFailed, "Array boilerplate creation failed")     \
+  V(kArrayIndexConstantValueTooBig, "Array index constant value too big")     \
+  V(kAssignmentToArguments, "Assignment to arguments")                        \
   V(kAssignmentToLetVariableBeforeInitialization,                             \
-    "assignment to let variable before initialization")                       \
-  V(kAssignmentToLOOKUPVariable, "assignment to LOOKUP variable")             \
+    "Assignment to let variable before initialization")                       \
+  V(kAssignmentToLOOKUPVariable, "Assignment to LOOKUP variable")             \
   V(kAssignmentToParameterFunctionUsesArgumentsObject,                        \
-    "assignment to parameter, function uses arguments object")                \
+    "Assignment to parameter, function uses arguments object")                \
   V(kAssignmentToParameterInArgumentsObject,                                  \
-    "assignment to parameter in arguments object")                            \
+    "Assignment to parameter in arguments object")                            \
   V(kAttemptToUseUndefinedCache, "Attempt to use undefined cache")            \
   V(kBadValueContextForArgumentsObjectValue,                                  \
-    "bad value context for arguments object value")                           \
+    "Bad value context for arguments object value")                           \
   V(kBadValueContextForArgumentsValue,                                        \
-    "bad value context for arguments value")                                  \
-  V(kBailedOutDueToDependencyChange, "bailed out due to dependency change")   \
-  V(kBailoutWasNotPrepared, "bailout was not prepared")                       \
+    "Bad value context for arguments value")                                  \
+  V(kBailedOutDueToDependencyChange, "Bailed out due to dependency change")   \
+  V(kBailoutWasNotPrepared, "Bailout was not prepared")                       \
   V(kBinaryStubGenerateFloatingPointCode,                                     \
     "BinaryStub_GenerateFloatingPointCode")                                   \
   V(kBothRegistersWereSmisInSelectNonSmi,                                     \
     "Both registers were smis in SelectNonSmi")                               \
   V(kCallToAJavaScriptRuntimeFunction,                                        \
-    "call to a JavaScript runtime function")                                  \
+    "Call to a JavaScript runtime function")                                  \
   V(kCannotTranslatePositionInChangedArea,                                    \
     "Cannot translate position in changed area")                              \
-  V(kCodeGenerationFailed, "code generation failed")                          \
-  V(kCodeObjectNotProperlyPatched, "code object not properly patched")        \
-  V(kCompoundAssignmentToLookupSlot, "compound assignment to lookup slot")    \
-  V(kContextAllocatedArguments, "context-allocated arguments")                \
-  V(kDebuggerIsActive, "debugger is active")                                  \
+  V(kCodeGenerationFailed, "Code generation failed")                          \
+  V(kCodeObjectNotProperlyPatched, "Code object not properly patched")        \
+  V(kCompoundAssignmentToLookupSlot, "Compound assignment to lookup slot")    \
+  V(kContextAllocatedArguments, "Context-allocated arguments")                \
+  V(kCopyBuffersOverlap, "Copy buffers overlap")                              \
+  V(kCouldNotGenerateZero, "Could not generate +0.0")                         \
+  V(kCouldNotGenerateNegativeZero, "Could not generate -0.0")                 \
+  V(kDebuggerIsActive, "Debugger is active")                                  \
   V(kDebuggerStatement, "DebuggerStatement")                                  \
   V(kDeclarationInCatchContext, "Declaration in catch context")               \
   V(kDeclarationInWithContext, "Declaration in with context")                 \
   V(kDefaultNaNModeNotSet, "Default NaN mode not set")                        \
-  V(kDeleteWithGlobalVariable, "delete with global variable")                 \
-  V(kDeleteWithNonGlobalVariable, "delete with non-global variable")          \
+  V(kDeleteWithGlobalVariable, "Delete with global variable")                 \
+  V(kDeleteWithNonGlobalVariable, "Delete with non-global variable")          \
   V(kDestinationOfCopyNotAligned, "Destination of copy not aligned")          \
   V(kDontDeleteCellsCannotContainTheHole,                                     \
     "DontDelete cells can't contain the hole")                                \
   V(kDoPushArgumentNotImplementedForDoubleType,                               \
     "DoPushArgument not implemented for double type")                         \
+  V(kEliminatedBoundsCheckFailed, "Eliminated bounds check failed")           \
   V(kEmitLoadRegisterUnsupportedDoubleImmediate,                              \
     "EmitLoadRegister: Unsupported double immediate")                         \
   V(kEval, "eval")                                                            \
   V(kExpected0AsASmiSentinel, "Expected 0 as a Smi sentinel")                 \
-  V(kExpectedAlignmentMarker, "expected alignment marker")                    \
+  V(kExpectedAlignmentMarker, "Expected alignment marker")                    \
+  V(kExpectedAllocationSite, "Expected allocation site")                      \
+  V(kExpectedFunctionObject, "Expected function object in register")          \
+  V(kExpectedHeapNumber, "Expected HeapNumber")                               \
+  V(kExpectedNativeContext, "Expected native context")                        \
+  V(kExpectedNonIdenticalObjects, "Expected non-identical objects")           \
+  V(kExpectedNonNullContext, "Expected non-null context")                     \
+  V(kExpectedPositiveZero, "Expected +0.0")                                   \
   V(kExpectedAllocationSiteInCell,                                            \
     "Expected AllocationSite in property cell")                               \
-  V(kExpectedPropertyCellInRegisterA2,                                        \
-    "Expected property cell in register a2")                                  \
-  V(kExpectedPropertyCellInRegisterEbx,                                       \
-    "Expected property cell in register ebx")                                 \
-  V(kExpectedPropertyCellInRegisterRbx,                                       \
-    "Expected property cell in register rbx")                                 \
+  V(kExpectedFixedArrayInFeedbackVector,                                      \
+    "Expected fixed array in feedback vector")                                \
+  V(kExpectedFixedArrayInRegisterA2,                                          \
+    "Expected fixed array in register a2")                                    \
+  V(kExpectedFixedArrayInRegisterEbx,                                         \
+    "Expected fixed array in register ebx")                                   \
+  V(kExpectedFixedArrayInRegisterR2,                                          \
+    "Expected fixed array in register r2")                                    \
+  V(kExpectedFixedArrayInRegisterRbx,                                         \
+    "Expected fixed array in register rbx")                                   \
+  V(kExpectedSmiOrHeapNumber, "Expected smi or HeapNumber")                   \
   V(kExpectingAlignmentForCopyBytes,                                          \
     "Expecting alignment for CopyBytes")                                      \
   V(kExportDeclaration, "Export declaration")                                 \
   V(kExternalStringExpectedButNotFound,                                       \
-    "external string expected, but not found")                                \
-  V(kFailedBailedOutLastTime, "failed/bailed out last time")                  \
+    "External string expected, but not found")                                \
+  V(kFailedBailedOutLastTime, "Failed/bailed out last time")                  \
   V(kForInStatementIsNotFastCase, "ForInStatement is not fast case")          \
   V(kForInStatementOptimizationIsDisabled,                                    \
     "ForInStatement optimization is disabled")                                \
   V(kForInStatementWithNonLocalEachVariable,                                  \
     "ForInStatement with non-local each variable")                            \
   V(kForOfStatement, "ForOfStatement")                                        \
-  V(kFrameIsExpectedToBeAligned, "frame is expected to be aligned")           \
-  V(kFunctionCallsEval, "function calls eval")                                \
-  V(kFunctionIsAGenerator, "function is a generator")                         \
-  V(kFunctionWithIllegalRedeclaration, "function with illegal redeclaration") \
+  V(kFrameIsExpectedToBeAligned, "Frame is expected to be aligned")           \
+  V(kFunctionCallsEval, "Function calls eval")                                \
+  V(kFunctionIsAGenerator, "Function is a generator")                         \
+  V(kFunctionWithIllegalRedeclaration, "Function with illegal redeclaration") \
   V(kGeneratedCodeIsTooLarge, "Generated code is too large")                  \
   V(kGeneratorFailedToResume, "Generator failed to resume")                   \
-  V(kGenerator, "generator")                                                  \
+  V(kGenerator, "Generator")                                                  \
   V(kGlobalFunctionsMustHaveInitialMap,                                       \
     "Global functions must have initial map")                                 \
   V(kHeapNumberMapRegisterClobbered, "HeapNumberMap register clobbered")      \
+  V(kHydrogenFilter, "Optimization disabled by filter")                       \
   V(kImportDeclaration, "Import declaration")                                 \
   V(kImproperObjectOnPrototypeChainForStore,                                  \
-    "improper object on prototype chain for store")                           \
+    "Improper object on prototype chain for store")                           \
   V(kIndexIsNegative, "Index is negative")                                    \
   V(kIndexIsTooLarge, "Index is too large")                                   \
-  V(kInlinedRuntimeFunctionClassOf, "inlined runtime function: ClassOf")      \
+  V(kInlinedRuntimeFunctionClassOf, "Inlined runtime function: ClassOf")      \
   V(kInlinedRuntimeFunctionFastAsciiArrayJoin,                                \
-    "inlined runtime function: FastAsciiArrayJoin")                           \
+    "Inlined runtime function: FastAsciiArrayJoin")                           \
   V(kInlinedRuntimeFunctionGeneratorNext,                                     \
-    "inlined runtime function: GeneratorNext")                                \
+    "Inlined runtime function: GeneratorNext")                                \
   V(kInlinedRuntimeFunctionGeneratorThrow,                                    \
-    "inlined runtime function: GeneratorThrow")                               \
+    "Inlined runtime function: GeneratorThrow")                               \
   V(kInlinedRuntimeFunctionGetFromCache,                                      \
-    "inlined runtime function: GetFromCache")                                 \
+    "Inlined runtime function: GetFromCache")                                 \
   V(kInlinedRuntimeFunctionIsNonNegativeSmi,                                  \
-    "inlined runtime function: IsNonNegativeSmi")                             \
-  V(kInlinedRuntimeFunctionIsRegExpEquivalent,                                \
-    "inlined runtime function: IsRegExpEquivalent")                           \
+    "Inlined runtime function: IsNonNegativeSmi")                             \
   V(kInlinedRuntimeFunctionIsStringWrapperSafeForDefaultValueOf,              \
-    "inlined runtime function: IsStringWrapperSafeForDefaultValueOf")         \
-  V(kInliningBailedOut, "inlining bailed out")                                \
+    "Inlined runtime function: IsStringWrapperSafeForDefaultValueOf")         \
+  V(kInliningBailedOut, "Inlining bailed out")                                \
   V(kInputGPRIsExpectedToHaveUpper32Cleared,                                  \
-    "input GPR is expected to have upper32 cleared")                          \
+    "Input GPR is expected to have upper32 cleared")                          \
+  V(kInputStringTooLong, "Input string too long")                             \
   V(kInstanceofStubUnexpectedCallSiteCacheCheck,                              \
     "InstanceofStub unexpected call site cache (check)")                      \
   V(kInstanceofStubUnexpectedCallSiteCacheCmp1,                               \
@@ -1172,10 +1229,11 @@ class MaybeObject BASE_EMBEDDED {
   V(kInvalidCaptureReferenced, "Invalid capture referenced")                  \
   V(kInvalidElementsKindForInternalArrayOrInternalPackedArray,                \
     "Invalid ElementsKind for InternalArray or InternalPackedArray")          \
+  V(kInvalidFullCodegenState, "invalid full-codegen state")                   \
   V(kInvalidHandleScopeLevel, "Invalid HandleScope level")                    \
-  V(kInvalidLeftHandSideInAssignment, "invalid left-hand side in assignment") \
-  V(kInvalidLhsInCompoundAssignment, "invalid lhs in compound assignment")    \
-  V(kInvalidLhsInCountOperation, "invalid lhs in count operation")            \
+  V(kInvalidLeftHandSideInAssignment, "Invalid left-hand side in assignment") \
+  V(kInvalidLhsInCompoundAssignment, "Invalid lhs in compound assignment")    \
+  V(kInvalidLhsInCountOperation, "Invalid lhs in count operation")            \
   V(kInvalidMinLength, "Invalid min_length")                                  \
   V(kJSGlobalObjectNativeContextShouldBeANativeContext,                       \
     "JSGlobalObject::native_context should be a native context")              \
@@ -1184,14 +1242,17 @@ class MaybeObject BASE_EMBEDDED {
   V(kJSObjectWithFastElementsMapHasSlowElements,                              \
     "JSObject with fast elements map has slow elements")                      \
   V(kLetBindingReInitialization, "Let binding re-initialization")             \
+  V(kLhsHasBeenClobbered, "lhs has been clobbered")                           \
   V(kLiveBytesCountOverflowChunkSize, "Live Bytes Count overflow chunk size") \
+  V(kLiveEditFrameDroppingIsNotSupportedOnA64,                                \
+    "LiveEdit frame dropping is not supported on a64")                        \
   V(kLiveEditFrameDroppingIsNotSupportedOnArm,                                \
     "LiveEdit frame dropping is not supported on arm")                        \
   V(kLiveEditFrameDroppingIsNotSupportedOnMips,                               \
     "LiveEdit frame dropping is not supported on mips")                       \
   V(kLiveEdit, "LiveEdit")                                                    \
   V(kLookupVariableInCountOperation,                                          \
-    "lookup variable in count operation")                                     \
+    "Lookup variable in count operation")                                     \
   V(kMapIsNoLongerInEax, "Map is no longer in eax")                           \
   V(kModuleDeclaration, "Module declaration")                                 \
   V(kModuleLiteral, "Module literal")                                         \
@@ -1200,26 +1261,27 @@ class MaybeObject BASE_EMBEDDED {
   V(kModuleVariable, "Module variable")                                       \
   V(kModuleUrl, "Module url")                                                 \
   V(kNativeFunctionLiteral, "Native function literal")                        \
-  V(kNoCasesLeft, "no cases left")                                            \
+  V(kNoCasesLeft, "No cases left")                                            \
   V(kNoEmptyArraysHereInEmitFastAsciiArrayJoin,                               \
     "No empty arrays here in EmitFastAsciiArrayJoin")                         \
   V(kNonInitializerAssignmentToConst,                                         \
-    "non-initializer assignment to const")                                    \
+    "Non-initializer assignment to const")                                    \
   V(kNonSmiIndex, "Non-smi index")                                            \
   V(kNonSmiKeyInArrayLiteral, "Non-smi key in array literal")                 \
   V(kNonSmiValue, "Non-smi value")                                            \
   V(kNonObject, "Non-object value")                                           \
   V(kNotEnoughVirtualRegistersForValues,                                      \
-    "not enough virtual registers for values")                                \
+    "Not enough virtual registers for values")                                \
   V(kNotEnoughSpillSlotsForOsr,                                               \
-    "not enough spill slots for OSR")                                         \
+    "Not enough spill slots for OSR")                                         \
   V(kNotEnoughVirtualRegistersRegalloc,                                       \
-    "not enough virtual registers (regalloc)")                                \
-  V(kObjectFoundInSmiOnlyArray, "object found in smi-only array")             \
+    "Not enough virtual registers (regalloc)")                                \
+  V(kObjectFoundInSmiOnlyArray, "Object found in smi-only array")             \
   V(kObjectLiteralWithComplexProperty,                                        \
     "Object literal with complex property")                                   \
   V(kOddballInStringTableIsNotUndefinedOrTheHole,                             \
-    "oddball in string table is not undefined or the hole")                   \
+    "Oddball in string table is not undefined or the hole")                   \
+  V(kOffsetOutOfRange, "Offset out of range")                                 \
   V(kOperandIsASmiAndNotAName, "Operand is a smi and not a name")             \
   V(kOperandIsASmiAndNotAString, "Operand is a smi and not a string")         \
   V(kOperandIsASmi, "Operand is a smi")                                       \
@@ -1229,38 +1291,53 @@ class MaybeObject BASE_EMBEDDED {
   V(kOperandIsNotAString, "Operand is not a string")                          \
   V(kOperandIsNotSmi, "Operand is not smi")                                   \
   V(kOperandNotANumber, "Operand not a number")                               \
-  V(kOptimizedTooManyTimes, "optimized too many times")                       \
+  V(kOptimizationDisabled, "Optimization is disabled")                        \
+  V(kOptimizedTooManyTimes, "Optimized too many times")                       \
   V(kOutOfVirtualRegistersWhileTryingToAllocateTempRegister,                  \
     "Out of virtual registers while trying to allocate temp register")        \
-  V(kParseScopeError, "parse/scope error")                                    \
-  V(kPossibleDirectCallToEval, "possible direct call to eval")                \
+  V(kParseScopeError, "Parse/scope error")                                    \
+  V(kPossibleDirectCallToEval, "Possible direct call to eval")                \
+  V(kPreconditionsWereNotMet, "Preconditions were not met")                   \
   V(kPropertyAllocationCountFailed, "Property allocation count failed")       \
   V(kReceivedInvalidReturnAddress, "Received invalid return address")         \
   V(kReferenceToAVariableWhichRequiresDynamicLookup,                          \
-    "reference to a variable which requires dynamic lookup")                  \
+    "Reference to a variable which requires dynamic lookup")                  \
   V(kReferenceToGlobalLexicalVariable,                                        \
-    "reference to global lexical variable")                                   \
-  V(kReferenceToUninitializedVariable, "reference to uninitialized variable") \
+    "Reference to global lexical variable")                                   \
+  V(kReferenceToUninitializedVariable, "Reference to uninitialized variable") \
   V(kRegisterDidNotMatchExpectedRoot, "Register did not match expected root") \
-  V(kRegisterWasClobbered, "register was clobbered")                          \
+  V(kRegisterWasClobbered, "Register was clobbered")                          \
+  V(kRememberedSetPointerInNewSpace, "Remembered set pointer is in new space") \
+  V(kReturnAddressNotFoundInFrame, "Return address not found in frame")       \
+  V(kRhsHasBeenClobbered, "Rhs has been clobbered")                           \
   V(kScopedBlock, "ScopedBlock")                                              \
   V(kSmiAdditionOverflow, "Smi addition overflow")                            \
   V(kSmiSubtractionOverflow, "Smi subtraction overflow")                      \
-  V(kStackFrameTypesMustMatch, "stack frame types must match")                \
+  V(kStackAccessBelowStackPointer, "Stack access below stack pointer")        \
+  V(kStackFrameTypesMustMatch, "Stack frame types must match")                \
   V(kSwitchStatementMixedOrNonLiteralSwitchLabels,                            \
     "SwitchStatement: mixed or non-literal switch labels")                    \
   V(kSwitchStatementTooManyClauses, "SwitchStatement: too many clauses")      \
+  V(kTheCurrentStackPointerIsBelowCsp,                                        \
+    "The current stack pointer is below csp")                                 \
   V(kTheInstructionShouldBeALui, "The instruction should be a lui")           \
   V(kTheInstructionShouldBeAnOri, "The instruction should be an ori")         \
   V(kTheInstructionToPatchShouldBeALoadFromPc,                                \
     "The instruction to patch should be a load from pc")                      \
+  V(kTheInstructionToPatchShouldBeAnLdrLiteral,                               \
+    "The instruction to patch should be a ldr literal")                       \
   V(kTheInstructionToPatchShouldBeALui,                                       \
     "The instruction to patch should be a lui")                               \
   V(kTheInstructionToPatchShouldBeAnOri,                                      \
     "The instruction to patch should be an ori")                              \
-  V(kTooManyParametersLocals, "too many parameters/locals")                   \
-  V(kTooManyParameters, "too many parameters")                                \
+  V(kTheSourceAndDestinationAreTheSame,                                       \
+    "The source and destination are the same")                                \
+  V(kTheStackWasCorruptedByMacroAssemblerCall,                                \
+    "The stack was corrupted by MacroAssembler::Call()")                      \
+  V(kTooManyParametersLocals, "Too many parameters/locals")                   \
+  V(kTooManyParameters, "Too many parameters")                                \
   V(kTooManySpillSlotsNeededForOSR, "Too many spill slots needed for OSR")    \
+  V(kToOperand32UnsupportedImmediate, "ToOperand32 unsupported immediate.")   \
   V(kToOperandIsDoubleRegisterUnimplemented,                                  \
     "ToOperand IsDoubleRegister unimplemented")                               \
   V(kToOperandUnsupportedDoubleImmediate,                                     \
@@ -1269,10 +1346,12 @@ class MaybeObject BASE_EMBEDDED {
   V(kTryFinallyStatement, "TryFinallyStatement")                              \
   V(kUnableToEncodeValueAsSmi, "Unable to encode value as smi")               \
   V(kUnalignedAllocationInNewSpace, "Unaligned allocation in new space")      \
+  V(kUnalignedCellInWriteBarrier, "Unaligned cell in write barrier")          \
   V(kUndefinedValueNotLoaded, "Undefined value not loaded")                   \
   V(kUndoAllocationOfNonAllocatedMemory,                                      \
     "Undo allocation of non allocated memory")                                \
   V(kUnexpectedAllocationTop, "Unexpected allocation top")                    \
+  V(kUnexpectedColorFound, "Unexpected color bit pattern found")              \
   V(kUnexpectedElementsKindInArrayConstructor,                                \
     "Unexpected ElementsKind in array constructor")                           \
   V(kUnexpectedFallthroughFromCharCodeAtSlowCase,                             \
@@ -1299,34 +1378,38 @@ class MaybeObject BASE_EMBEDDED {
     "Unexpected initial map for InternalArray function")                      \
   V(kUnexpectedLevelAfterReturnFromApiCall,                                   \
     "Unexpected level after return from api call")                            \
+  V(kUnexpectedNegativeValue, "Unexpected negative value")                    \
   V(kUnexpectedNumberOfPreAllocatedPropertyFields,                            \
     "Unexpected number of pre-allocated property fields")                     \
+  V(kUnexpectedSmi, "Unexpected smi value")                                   \
   V(kUnexpectedStringFunction, "Unexpected String function")                  \
   V(kUnexpectedStringType, "Unexpected string type")                          \
   V(kUnexpectedStringWrapperInstanceSize,                                     \
     "Unexpected string wrapper instance size")                                \
   V(kUnexpectedTypeForRegExpDataFixedArrayExpected,                           \
     "Unexpected type for RegExp data, FixedArray expected")                   \
+  V(kUnexpectedValue, "Unexpected value")                                     \
   V(kUnexpectedUnusedPropertiesOfStringWrapper,                               \
     "Unexpected unused properties of string wrapper")                         \
+  V(kUnimplemented, "unimplemented")                                          \
   V(kUninitializedKSmiConstantRegister, "Uninitialized kSmiConstantRegister") \
-  V(kUnknown, "unknown")                                                      \
+  V(kUnknown, "Unknown")                                                      \
   V(kUnsupportedConstCompoundAssignment,                                      \
-    "unsupported const compound assignment")                                  \
+    "Unsupported const compound assignment")                                  \
   V(kUnsupportedCountOperationWithConst,                                      \
-    "unsupported count operation with const")                                 \
-  V(kUnsupportedDoubleImmediate, "unsupported double immediate")              \
-  V(kUnsupportedLetCompoundAssignment, "unsupported let compound assignment") \
+    "Unsupported count operation with const")                                 \
+  V(kUnsupportedDoubleImmediate, "Unsupported double immediate")              \
+  V(kUnsupportedLetCompoundAssignment, "Unsupported let compound assignment") \
   V(kUnsupportedLookupSlotInDeclaration,                                      \
-    "unsupported lookup slot in declaration")                                 \
+    "Unsupported lookup slot in declaration")                                 \
   V(kUnsupportedNonPrimitiveCompare, "Unsupported non-primitive compare")     \
   V(kUnsupportedPhiUseOfArguments, "Unsupported phi use of arguments")        \
   V(kUnsupportedPhiUseOfConstVariable,                                        \
     "Unsupported phi use of const variable")                                  \
-  V(kUnsupportedTaggedImmediate, "unsupported tagged immediate")              \
+  V(kUnsupportedTaggedImmediate, "Unsupported tagged immediate")              \
   V(kVariableResolvedToWithContext, "Variable resolved to with context")      \
   V(kWeShouldNotHaveAnEmptyLexicalContext,                                    \
-    "we should not have an empty lexical context")                            \
+    "We should not have an empty lexical context")                            \
   V(kWithStatement, "WithStatement")                                          \
   V(kWrongAddressOrValuePassedToRecordWrite,                                  \
     "Wrong address or value passed to RecordWrite")                           \
@@ -2102,21 +2185,23 @@ class JSObject: public JSReceiver {
   inline bool HasFastHoleyElements();
   inline bool HasNonStrictArgumentsElements();
   inline bool HasDictionaryElements();
-  inline bool HasExternalPixelElements();
+
+  inline bool HasExternalUint8ClampedElements();
   inline bool HasExternalArrayElements();
-  inline bool HasExternalByteElements();
-  inline bool HasExternalUnsignedByteElements();
-  inline bool HasExternalShortElements();
-  inline bool HasExternalUnsignedShortElements();
-  inline bool HasExternalIntElements();
-  inline bool HasExternalUnsignedIntElements();
-  inline bool HasExternalFloatElements();
-  inline bool HasExternalDoubleElements();
+  inline bool HasExternalInt8Elements();
+  inline bool HasExternalUint8Elements();
+  inline bool HasExternalInt16Elements();
+  inline bool HasExternalUint16Elements();
+  inline bool HasExternalInt32Elements();
+  inline bool HasExternalUint32Elements();
+  inline bool HasExternalFloat32Elements();
+  inline bool HasExternalFloat64Elements();
+
+  inline bool HasFixedTypedArrayElements();
+
   bool HasFastArgumentsElements();
   bool HasDictionaryArgumentsElements();
   inline SeededNumberDictionary* element_dictionary();  // Gets slow elements.
-
-  inline bool ShouldTrackAllocationInfo();
 
   inline void set_map_and_elements(
       Map* map,
@@ -2621,7 +2706,7 @@ class JSObject: public JSReceiver {
   // don't want to be wasteful with long lived objects.
   static const int kMaxUncheckedOldFastElementsLength = 500;
 
-  // Note that Heap::MaxRegularSpaceAllocationSize() puts a limit on
+  // Note that Page::kMaxRegularHeapObjectSize puts a limit on
   // permissible values (see the ASSERT in heap.cc).
   static const int kInitialMaxFastElementArray = 100000;
 
@@ -2936,6 +3021,9 @@ class FixedArray: public FixedArrayBase {
   // Gives access to raw memory which stores the array's data.
   inline Object** data_start();
 
+  // Shrink length and insert filler objects.
+  void Shrink(int length);
+
   // Copy operations.
   MUST_USE_RESULT inline MaybeObject* Copy();
   MUST_USE_RESULT MaybeObject* CopySize(int new_length,
@@ -2955,6 +3043,11 @@ class FixedArray: public FixedArrayBase {
 
   // Code Generation support.
   static int OffsetOfElementAt(int index) { return SizeFor(index); }
+
+  // Garbage collection support.
+  Object** RawFieldOfElementAt(int index) {
+    return HeapObject::RawField(this, OffsetOfElementAt(index));
+  }
 
   // Casting.
   static inline FixedArray* cast(Object* obj);
@@ -3718,21 +3811,8 @@ class StringTable: public HashTable<StringTableShape, HashTableKey*> {
   // added.  The return value is the string table which might have
   // been enlarged.  If the return value is not a failure, the string
   // pointer *s is set to the string found.
-  MUST_USE_RESULT MaybeObject* LookupUtf8String(
-      Vector<const char> str,
-      Object** s);
-  MUST_USE_RESULT MaybeObject* LookupOneByteString(
-      Vector<const uint8_t> str,
-      Object** s);
-  MUST_USE_RESULT MaybeObject* LookupSubStringOneByteString(
-      Handle<SeqOneByteString> str,
-      int from,
-      int length,
-      Object** s);
-  MUST_USE_RESULT MaybeObject* LookupTwoByteString(
-      Vector<const uc16> str,
-      Object** s);
   MUST_USE_RESULT MaybeObject* LookupString(String* key, Object** s);
+  MUST_USE_RESULT MaybeObject* LookupKey(HashTableKey* key, Object** s);
 
   // Looks up a string that is equal to the given string and returns
   // true if it is found, assigning the string to the given output
@@ -3744,8 +3824,6 @@ class StringTable: public HashTable<StringTableShape, HashTableKey*> {
   static inline StringTable* cast(Object* obj);
 
  private:
-  MUST_USE_RESULT MaybeObject* LookupKey(HashTableKey* key, Object** s);
-
   template <bool seq_ascii> friend class JsonParser;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(StringTable);
@@ -4533,6 +4611,20 @@ class FreeSpace: public HeapObject {
 };
 
 
+// V has parameters (Type, type, TYPE, C type, element_size)
+#define TYPED_ARRAYS(V) \
+  V(Uint8, uint8, UINT8, uint8_t, 1)                                           \
+  V(Int8, int8, INT8, int8_t, 1)                                               \
+  V(Uint16, uint16, UINT16, uint16_t, 2)                                       \
+  V(Int16, int16, INT16, int16_t, 2)                                           \
+  V(Uint32, uint32, UINT32, uint32_t, 4)                                       \
+  V(Int32, int32, INT32, int32_t, 4)                                           \
+  V(Float32, float32, FLOAT32, float, 4)                                       \
+  V(Float64, float64, FLOAT64, double, 8)                                      \
+  V(Uint8Clamped, uint8_clamped, UINT8_CLAMPED, uint8_t, 1)
+
+
+
 // An ExternalArray represents a fixed-size array of primitive values
 // which live outside the JavaScript heap. Its subclasses are used to
 // implement the CanvasArray types being defined in the WebGL
@@ -4569,7 +4661,7 @@ class ExternalArray: public FixedArrayBase {
 };
 
 
-// A ExternalPixelArray represents a fixed-size byte array with special
+// A ExternalUint8ClampedArray represents a fixed-size byte array with special
 // semantics used for implementing the CanvasPixelArray object. Please see the
 // specification at:
 
@@ -4577,9 +4669,9 @@ class ExternalArray: public FixedArrayBase {
 //                      multipage/the-canvas-element.html#canvaspixelarray
 // In particular, write access clamps the value written to 0 or 255 if the
 // value written is outside this range.
-class ExternalPixelArray: public ExternalArray {
+class ExternalUint8ClampedArray: public ExternalArray {
  public:
-  inline uint8_t* external_pixel_pointer();
+  inline uint8_t* external_uint8_clamped_pointer();
 
   // Setter and getter.
   inline uint8_t get_scalar(int index);
@@ -4590,26 +4682,30 @@ class ExternalPixelArray: public ExternalArray {
   // undefined and clamps the converted value between 0 and 255.
   Object* SetValue(uint32_t index, Object* value);
 
+  static Handle<Object> SetValue(Handle<ExternalUint8ClampedArray> array,
+                                 uint32_t index,
+                                 Handle<Object> value);
+
   // Casting.
-  static inline ExternalPixelArray* cast(Object* obj);
+  static inline ExternalUint8ClampedArray* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalPixelArray)
-  DECLARE_VERIFIER(ExternalPixelArray)
+  DECLARE_PRINTER(ExternalUint8ClampedArray)
+  DECLARE_VERIFIER(ExternalUint8ClampedArray)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalPixelArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUint8ClampedArray);
 };
 
 
-class ExternalByteArray: public ExternalArray {
+class ExternalInt8Array: public ExternalArray {
  public:
   // Setter and getter.
   inline int8_t get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, int8_t value);
 
-  static Handle<Object> SetValue(Handle<ExternalByteArray> array,
+  static Handle<Object> SetValue(Handle<ExternalInt8Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4618,25 +4714,25 @@ class ExternalByteArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalByteArray* cast(Object* obj);
+  static inline ExternalInt8Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalByteArray)
-  DECLARE_VERIFIER(ExternalByteArray)
+  DECLARE_PRINTER(ExternalInt8Array)
+  DECLARE_VERIFIER(ExternalInt8Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalByteArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalInt8Array);
 };
 
 
-class ExternalUnsignedByteArray: public ExternalArray {
+class ExternalUint8Array: public ExternalArray {
  public:
   // Setter and getter.
   inline uint8_t get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, uint8_t value);
 
-  static Handle<Object> SetValue(Handle<ExternalUnsignedByteArray> array,
+  static Handle<Object> SetValue(Handle<ExternalUint8Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4645,25 +4741,25 @@ class ExternalUnsignedByteArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalUnsignedByteArray* cast(Object* obj);
+  static inline ExternalUint8Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalUnsignedByteArray)
-  DECLARE_VERIFIER(ExternalUnsignedByteArray)
+  DECLARE_PRINTER(ExternalUint8Array)
+  DECLARE_VERIFIER(ExternalUint8Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUnsignedByteArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUint8Array);
 };
 
 
-class ExternalShortArray: public ExternalArray {
+class ExternalInt16Array: public ExternalArray {
  public:
   // Setter and getter.
   inline int16_t get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, int16_t value);
 
-  static Handle<Object> SetValue(Handle<ExternalShortArray> array,
+  static Handle<Object> SetValue(Handle<ExternalInt16Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4672,25 +4768,25 @@ class ExternalShortArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalShortArray* cast(Object* obj);
+  static inline ExternalInt16Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalShortArray)
-  DECLARE_VERIFIER(ExternalShortArray)
+  DECLARE_PRINTER(ExternalInt16Array)
+  DECLARE_VERIFIER(ExternalInt16Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalShortArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalInt16Array);
 };
 
 
-class ExternalUnsignedShortArray: public ExternalArray {
+class ExternalUint16Array: public ExternalArray {
  public:
   // Setter and getter.
   inline uint16_t get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, uint16_t value);
 
-  static Handle<Object> SetValue(Handle<ExternalUnsignedShortArray> array,
+  static Handle<Object> SetValue(Handle<ExternalUint16Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4699,25 +4795,25 @@ class ExternalUnsignedShortArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalUnsignedShortArray* cast(Object* obj);
+  static inline ExternalUint16Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalUnsignedShortArray)
-  DECLARE_VERIFIER(ExternalUnsignedShortArray)
+  DECLARE_PRINTER(ExternalUint16Array)
+  DECLARE_VERIFIER(ExternalUint16Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUnsignedShortArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUint16Array);
 };
 
 
-class ExternalIntArray: public ExternalArray {
+class ExternalInt32Array: public ExternalArray {
  public:
   // Setter and getter.
   inline int32_t get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, int32_t value);
 
-  static Handle<Object> SetValue(Handle<ExternalIntArray> array,
+  static Handle<Object> SetValue(Handle<ExternalInt32Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4726,25 +4822,25 @@ class ExternalIntArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalIntArray* cast(Object* obj);
+  static inline ExternalInt32Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalIntArray)
-  DECLARE_VERIFIER(ExternalIntArray)
+  DECLARE_PRINTER(ExternalInt32Array)
+  DECLARE_VERIFIER(ExternalInt32Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalIntArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalInt32Array);
 };
 
 
-class ExternalUnsignedIntArray: public ExternalArray {
+class ExternalUint32Array: public ExternalArray {
  public:
   // Setter and getter.
   inline uint32_t get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, uint32_t value);
 
-  static Handle<Object> SetValue(Handle<ExternalUnsignedIntArray> array,
+  static Handle<Object> SetValue(Handle<ExternalUint32Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4753,25 +4849,25 @@ class ExternalUnsignedIntArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalUnsignedIntArray* cast(Object* obj);
+  static inline ExternalUint32Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalUnsignedIntArray)
-  DECLARE_VERIFIER(ExternalUnsignedIntArray)
+  DECLARE_PRINTER(ExternalUint32Array)
+  DECLARE_VERIFIER(ExternalUint32Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUnsignedIntArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalUint32Array);
 };
 
 
-class ExternalFloatArray: public ExternalArray {
+class ExternalFloat32Array: public ExternalArray {
  public:
   // Setter and getter.
   inline float get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, float value);
 
-  static Handle<Object> SetValue(Handle<ExternalFloatArray> array,
+  static Handle<Object> SetValue(Handle<ExternalFloat32Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4780,25 +4876,25 @@ class ExternalFloatArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalFloatArray* cast(Object* obj);
+  static inline ExternalFloat32Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalFloatArray)
-  DECLARE_VERIFIER(ExternalFloatArray)
+  DECLARE_PRINTER(ExternalFloat32Array)
+  DECLARE_VERIFIER(ExternalFloat32Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalFloatArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalFloat32Array);
 };
 
 
-class ExternalDoubleArray: public ExternalArray {
+class ExternalFloat64Array: public ExternalArray {
  public:
   // Setter and getter.
   inline double get_scalar(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
   inline void set(int index, double value);
 
-  static Handle<Object> SetValue(Handle<ExternalDoubleArray> array,
+  static Handle<Object> SetValue(Handle<ExternalFloat64Array> array,
                                  uint32_t index,
                                  Handle<Object> value);
 
@@ -4807,16 +4903,82 @@ class ExternalDoubleArray: public ExternalArray {
   MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
 
   // Casting.
-  static inline ExternalDoubleArray* cast(Object* obj);
+  static inline ExternalFloat64Array* cast(Object* obj);
 
   // Dispatched behavior.
-  DECLARE_PRINTER(ExternalDoubleArray)
-  DECLARE_VERIFIER(ExternalDoubleArray)
+  DECLARE_PRINTER(ExternalFloat64Array)
+  DECLARE_VERIFIER(ExternalFloat64Array)
 
  private:
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalDoubleArray);
+  DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalFloat64Array);
 };
 
+
+class FixedTypedArrayBase: public FixedArrayBase {
+ public:
+  // Casting:
+  static inline FixedTypedArrayBase* cast(Object* obj);
+
+  static const int kDataOffset = kHeaderSize;
+
+  inline int size();
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(FixedTypedArrayBase);
+};
+
+
+template <class Traits>
+class FixedTypedArray: public FixedTypedArrayBase {
+ public:
+  typedef typename Traits::ElementType ElementType;
+  static const InstanceType kInstanceType = Traits::kInstanceType;
+
+  // Casting:
+  static inline FixedTypedArray<Traits>* cast(Object* obj);
+
+  static inline int ElementOffset(int index) {
+    return kDataOffset + index * sizeof(ElementType);
+  }
+
+  static inline int SizeFor(int length) {
+    return ElementOffset(length);
+  }
+
+  inline ElementType get_scalar(int index);
+  MUST_USE_RESULT inline MaybeObject* get(int index);
+  inline void set(int index, ElementType value);
+
+  // This accessor applies the correct conversion from Smi, HeapNumber
+  // and undefined.
+  MUST_USE_RESULT MaybeObject* SetValue(uint32_t index, Object* value);
+
+  static Handle<Object> SetValue(Handle<FixedTypedArray<Traits> > array,
+                                 uint32_t index,
+                                 Handle<Object> value);
+
+  DECLARE_PRINTER(FixedTypedArray)
+  DECLARE_VERIFIER(FixedTypedArray)
+
+ private:
+  DISALLOW_IMPLICIT_CONSTRUCTORS(FixedTypedArray);
+};
+
+#define FIXED_TYPED_ARRAY_TRAITS(Type, type, TYPE, elementType, size)         \
+  class Type##ArrayTraits {                                                   \
+    public:                                                                   \
+      typedef elementType ElementType;                                        \
+      static const InstanceType kInstanceType = FIXED_##TYPE##_ARRAY_TYPE;    \
+      static const char* Designator() { return #type " array"; }              \
+      static inline MaybeObject* ToObject(Heap* heap, elementType scalar);    \
+      static elementType defaultValue() { return 0; }                         \
+  };                                                                          \
+                                                                              \
+  typedef FixedTypedArray<Type##ArrayTraits> Fixed##Type##Array;
+
+TYPED_ARRAYS(FIXED_TYPED_ARRAY_TRAITS)
+
+#undef FIXED_TYPED_ARRAY_TRAITS
 
 // DeoptimizationInputData is a fixed array used to hold the deoptimization
 // data for code generated by the Hydrogen/Lithium compiler.  It also
@@ -4833,7 +4995,8 @@ class DeoptimizationInputData: public FixedArray {
   static const int kLiteralArrayIndex = 2;
   static const int kOsrAstIdIndex = 3;
   static const int kOsrPcOffsetIndex = 4;
-  static const int kFirstDeoptEntryIndex = 5;
+  static const int kOptimizationIdIndex = 5;
+  static const int kFirstDeoptEntryIndex = 6;
 
   // Offsets of deopt entry elements relative to the start of the entry.
   static const int kAstIdRawOffset = 0;
@@ -4856,6 +5019,7 @@ class DeoptimizationInputData: public FixedArray {
   DEFINE_ELEMENT_ACCESSORS(LiteralArray, FixedArray)
   DEFINE_ELEMENT_ACCESSORS(OsrAstId, Smi)
   DEFINE_ELEMENT_ACCESSORS(OsrPcOffset, Smi)
+  DEFINE_ELEMENT_ACCESSORS(OptimizationId, Smi)
 
 #undef DEFINE_ELEMENT_ACCESSORS
 
@@ -4951,49 +5115,6 @@ class DeoptimizationOutputData: public FixedArray {
 // Forward declaration.
 class Cell;
 class PropertyCell;
-
-// TypeFeedbackCells is a fixed array used to hold the association between
-// cache cells and AST ids for code generated by the full compiler.
-// The format of the these objects is
-//   [i * 2]: Global property cell of ith cache cell.
-//   [i * 2 + 1]: Ast ID for ith cache cell.
-class TypeFeedbackCells: public FixedArray {
- public:
-  int CellCount() { return length() / 2; }
-  static int LengthOfFixedArray(int cell_count) { return cell_count * 2; }
-
-  // Accessors for AST ids associated with cache values.
-  inline TypeFeedbackId AstId(int index);
-  inline void SetAstId(int index, TypeFeedbackId id);
-
-  // Accessors for global property cells holding the cache values.
-  inline Cell* GetCell(int index);
-  inline void SetCell(int index, Cell* cell);
-
-  // The object that indicates an uninitialized cache.
-  static inline Handle<Object> UninitializedSentinel(Isolate* isolate);
-
-  // The object that indicates a megamorphic state.
-  static inline Handle<Object> MegamorphicSentinel(Isolate* isolate);
-
-  // The object that indicates a monomorphic state of Array with
-  // ElementsKind
-  static inline Handle<Object> MonomorphicArraySentinel(Isolate* isolate,
-      ElementsKind elements_kind);
-
-  // A raw version of the uninitialized sentinel that's safe to read during
-  // garbage collection (e.g., for patching the cache).
-  static inline Object* RawUninitializedSentinel(Heap* heap);
-
-  // Casting.
-  static inline TypeFeedbackCells* cast(Object* obj);
-
-  static const int kForInFastCaseMarker = 0;
-  static const int kForInSlowCaseMarker = 1;
-};
-
-
-// Forward declaration.
 class SafepointEntry;
 class TypeFeedbackInfo;
 
@@ -5015,8 +5136,6 @@ class Code: public HeapObject {
 #define IC_KIND_LIST(V) \
   V(LOAD_IC)            \
   V(KEYED_LOAD_IC)      \
-  V(CALL_IC)            \
-  V(KEYED_CALL_IC)      \
   V(STORE_IC)           \
   V(KEYED_STORE_IC)     \
   V(BINARY_OP_IC)       \
@@ -5120,16 +5239,6 @@ class Code: public HeapObject {
   inline InlineCacheState ic_state();  // Only valid for IC stubs.
   inline ExtraICState extra_ic_state();  // Only valid for IC stubs.
 
-  inline ExtraICState extended_extra_ic_state();  // Only valid for
-                                                  // non-call IC stubs.
-  static bool needs_extended_extra_ic_state(Kind kind) {
-    // TODO(danno): This is a bit of a hack right now since there are still
-    // clients of this API that pass "extra" values in for argc. These clients
-    // should be retrofitted to used ExtendedExtraICState.
-    return kind == COMPARE_NIL_IC || kind == TO_BOOLEAN_IC ||
-           kind == BINARY_OP_IC;
-  }
-
   inline StubType type();  // Only valid for monomorphic IC stubs.
   inline int arguments_count();  // Only valid for call IC stubs.
 
@@ -5141,13 +5250,14 @@ class Code: public HeapObject {
   inline bool is_keyed_load_stub() { return kind() == KEYED_LOAD_IC; }
   inline bool is_store_stub() { return kind() == STORE_IC; }
   inline bool is_keyed_store_stub() { return kind() == KEYED_STORE_IC; }
-  inline bool is_call_stub() { return kind() == CALL_IC; }
-  inline bool is_keyed_call_stub() { return kind() == KEYED_CALL_IC; }
   inline bool is_binary_op_stub() { return kind() == BINARY_OP_IC; }
   inline bool is_compare_ic_stub() { return kind() == COMPARE_IC; }
   inline bool is_compare_nil_ic_stub() { return kind() == COMPARE_NIL_IC; }
   inline bool is_to_boolean_ic_stub() { return kind() == TO_BOOLEAN_IC; }
   inline bool is_keyed_stub();
+
+  inline void set_raw_kind_specific_flags1(int value);
+  inline void set_raw_kind_specific_flags2(int value);
 
   // [major_key]: For kind STUB or BINARY_OP_IC, the major key.
   inline int major_key();
@@ -5208,11 +5318,6 @@ class Code: public HeapObject {
   inline bool back_edges_patched_for_osr();
   inline void set_back_edges_patched_for_osr(bool value);
 
-  // [check type]: For kind CALL_IC, tells how to check if the
-  // receiver is valid for the given call.
-  inline CheckType check_type();
-  inline void set_check_type(CheckType value);
-
   // [to_boolean_foo]: For kind TO_BOOLEAN_IC tells what state the stub is in.
   inline byte to_boolean_state();
 
@@ -5227,12 +5332,19 @@ class Code: public HeapObject {
   inline bool marked_for_deoptimization();
   inline void set_marked_for_deoptimization(bool flag);
 
+  // [constant_pool]: The constant pool for this function.
+  inline ConstantPoolArray* constant_pool();
+  inline void set_constant_pool(Object* constant_pool);
+
   // Get the safepoint entry for the given pc.
   SafepointEntry GetSafepointEntry(Address pc);
 
   // Find an object in a stub with a specified map
   Object* FindNthObject(int n, Map* match_map);
   void ReplaceNthObject(int n, Map* match_map, Object* replace_with);
+
+  // Find the first allocation site in an IC stub.
+  AllocationSite* FindFirstAllocationSite();
 
   // Find the first map in an IC stub.
   Map* FindFirstMap();
@@ -5267,7 +5379,7 @@ class Code: public HeapObject {
       InlineCacheState ic_state = UNINITIALIZED,
       ExtraICState extra_ic_state = kNoExtraICState,
       StubType type = NORMAL,
-      int argc = -1,
+      Kind handler_kind = STUB,
       InlineCacheHolderFlag holder = OWN_MAP);
 
   static inline Flags ComputeMonomorphicFlags(
@@ -5275,14 +5387,13 @@ class Code: public HeapObject {
       ExtraICState extra_ic_state = kNoExtraICState,
       InlineCacheHolderFlag holder = OWN_MAP,
       StubType type = NORMAL,
-      int argc = -1);
+      Kind handler_kind = STUB);
 
   static inline InlineCacheState ExtractICStateFromFlags(Flags flags);
   static inline StubType ExtractTypeFromFlags(Flags flags);
   static inline Kind ExtractKindFromFlags(Flags flags);
   static inline InlineCacheHolderFlag ExtractCacheHolderFromFlags(Flags flags);
   static inline ExtraICState ExtractExtraICStateFromFlags(Flags flags);
-  static inline ExtraICState ExtractExtendedExtraICStateFromFlags(Flags flags);
   static inline int ExtractArgumentsCountFromFlags(Flags flags);
 
   static inline Flags RemoveTypeFromFlags(Flags flags);
@@ -5353,9 +5464,10 @@ class Code: public HeapObject {
   void ClearInlineCaches();
   void ClearInlineCaches(Kind kind);
 
-  void ClearTypeFeedbackCells(Heap* heap);
+  void ClearTypeFeedbackInfo(Heap* heap);
 
   BailoutId TranslatePcOffsetToAstId(uint32_t pc_offset);
+  uint32_t TranslateAstIdToPcOffset(BailoutId ast_id);
 
 #define DECLARE_CODE_AGE_ENUM(X) k##X##CodeAge,
   enum Age {
@@ -5420,8 +5532,9 @@ class Code: public HeapObject {
       kKindSpecificFlags1Offset + kIntSize;
   // Note: We might be able to squeeze this into the flags above.
   static const int kPrologueOffset = kKindSpecificFlags2Offset + kIntSize;
+  static const int kConstantPoolOffset = kPrologueOffset + kPointerSize;
 
-  static const int kHeaderPaddingStart = kPrologueOffset + kIntSize;
+  static const int kHeaderPaddingStart = kConstantPoolOffset + kIntSize;
 
   // Add padding to align the instruction start following right after
   // the Code object header.
@@ -5430,7 +5543,6 @@ class Code: public HeapObject {
 
   // Byte offsets within kKindSpecificFlags1Offset.
   static const int kOptimizableOffset = kKindSpecificFlags1Offset;
-  static const int kCheckTypeOffset = kKindSpecificFlags1Offset;
 
   static const int kFullCodeFlags = kOptimizableOffset + 1;
   class FullCodeFlagsHasDeoptimizationSupportField:
@@ -5447,10 +5559,8 @@ class Code: public HeapObject {
   class CacheHolderField: public BitField<InlineCacheHolderFlag, 5, 1> {};
   class KindField: public BitField<Kind, 6, 4> {};
   // TODO(bmeurer): Bit 10 is available for free use. :-)
-  class ExtraICStateField: public BitField<ExtraICState, 11, 6> {};
-  class ExtendedExtraICStateField: public BitField<ExtraICState, 11,
+  class ExtraICStateField: public BitField<ExtraICState, 11,
       PlatformSmiTagging::kSmiValueSize - 11 + 1> {};  // NOLINT
-  STATIC_ASSERT(ExtraICStateField::kShift == ExtendedExtraICStateField::kShift);
 
   // KindSpecificFlags1 layout (STUB and OPTIMIZED_FUNCTION)
   static const int kStackSlotsFirstBit = 0;
@@ -5484,7 +5594,7 @@ class Code: public HeapObject {
   static const int kStubMajorKeyFirstBit = kIsCrankshaftedBit + 1;
   static const int kSafepointTableOffsetFirstBit =
       kStubMajorKeyFirstBit + kStubMajorKeyBits;
-  static const int kSafepointTableOffsetBitCount = 25;
+  static const int kSafepointTableOffsetBitCount = 24;
 
   STATIC_ASSERT(kStubMajorKeyFirstBit + kStubMajorKeyBits <= 32);
   STATIC_ASSERT(kSafepointTableOffsetFirstBit +
@@ -5510,13 +5620,6 @@ class Code: public HeapObject {
   static const int kArgumentsBits =
       PlatformSmiTagging::kSmiValueSize - Code::kArgumentsCountShift + 1;
   static const int kMaxArguments = (1 << kArgumentsBits) - 1;
-
-  // ICs can use either argument count or ExtendedExtraIC, since their storage
-  // overlaps.
-  STATIC_ASSERT(ExtraICStateField::kShift +
-                ExtraICStateField::kSize + kArgumentsBits ==
-                ExtendedExtraICStateField::kShift +
-                ExtendedExtraICStateField::kSize);
 
   // This constant should be encodable in an ARM instruction.
   static const int kFlagsNotUsedInLookup =
@@ -5618,6 +5721,9 @@ class DependentCode: public FixedArray {
 
   void DeoptimizeDependentCodeGroup(Isolate* isolate,
                                     DependentCode::DependencyGroup group);
+
+  bool MarkCodeForDeoptimization(Isolate* isolate,
+                                 DependentCode::DependencyGroup group);
 
   // The following low-level accessors should only be used by this class
   // and the mark compact collector.
@@ -5811,6 +5917,10 @@ class Map: public HeapObject {
     return IsExternalArrayElementsKind(elements_kind());
   }
 
+  inline bool has_fixed_typed_array_elements() {
+    return IsFixedTypedArrayElementsKind(elements_kind());
+  }
+
   inline bool has_dictionary_elements() {
     return IsDictionaryElementsKind(elements_kind());
   }
@@ -5853,6 +5963,8 @@ class Map: public HeapObject {
   Map* FindRootMap();
   Map* FindUpdatedMap(int verbatim, int length, DescriptorArray* descriptors);
   Map* FindLastMatchMap(int verbatim, int length, DescriptorArray* descriptors);
+
+  inline int GetInObjectPropertyOffset(int index);
 
   int NumberOfFields();
 
@@ -6038,7 +6150,10 @@ class Map: public HeapObject {
   // deprecated, it is directly returned. Otherwise, the non-deprecated version
   // is found by re-transitioning from the root of the transition tree using the
   // descriptor array of the map. Returns NULL if no updated map is found.
-  Map* CurrentMapForDeprecated();
+  // This method also applies any pending migrations along the prototype chain.
+  static Handle<Map> CurrentMapForDeprecated(Handle<Map> map);
+  // Same as above, but does not touch the prototype chain.
+  static Handle<Map> CurrentMapForDeprecatedInternal(Handle<Map> map);
 
   static Handle<Map> RawCopy(Handle<Map> map, int instance_size);
   MUST_USE_RESULT MaybeObject* RawCopy(int instance_size);
@@ -6494,12 +6609,6 @@ class Script: public Struct {
   V(Math, ceil, MathCeil)                           \
   V(Math, abs, MathAbs)                             \
   V(Math, log, MathLog)                             \
-  V(Math, sin, MathSin)                             \
-  V(Math, cos, MathCos)                             \
-  V(Math, tan, MathTan)                             \
-  V(Math, asin, MathASin)                           \
-  V(Math, acos, MathACos)                           \
-  V(Math, atan, MathATan)                           \
   V(Math, exp, MathExp)                             \
   V(Math, sqrt, MathSqrt)                           \
   V(Math, pow, MathPow)                             \
@@ -6534,14 +6643,16 @@ class SharedFunctionInfo: public HeapObject {
   // and a shared literals array or Smi(0) if none.
   DECL_ACCESSORS(optimized_code_map, Object)
 
-  // Returns index i of the entry with the specified context. At position
-  // i - 1 is the context, position i the code, and i + 1 the literals array.
-  // Returns -1 when no matching entry is found.
-  int SearchOptimizedCodeMap(Context* native_context);
+  // Returns index i of the entry with the specified context and OSR entry.
+  // At position i - 1 is the context, position i the code, and i + 1 the
+  // literals array.  Returns -1 when no matching entry is found.
+  int SearchOptimizedCodeMap(Context* native_context, BailoutId osr_ast_id);
 
   // Installs optimized code from the code map on the given closure. The
   // index has to be consistent with a search result as defined above.
-  void InstallFromOptimizedCodeMap(JSFunction* function, int index);
+  FixedArray* GetLiteralsFromOptimizedCodeMap(int index);
+
+  Code* GetCodeFromOptimizedCodeMap(int index);
 
   // Clear optimized code map.
   void ClearOptimizedCodeMap();
@@ -6555,18 +6666,28 @@ class SharedFunctionInfo: public HeapObject {
   // Add a new entry to the optimized code map.
   MUST_USE_RESULT MaybeObject* AddToOptimizedCodeMap(Context* native_context,
                                                      Code* code,
-                                                     FixedArray* literals);
+                                                     FixedArray* literals,
+                                                     BailoutId osr_ast_id);
   static void AddToOptimizedCodeMap(Handle<SharedFunctionInfo> shared,
                                     Handle<Context> native_context,
                                     Handle<Code> code,
-                                    Handle<FixedArray> literals);
+                                    Handle<FixedArray> literals,
+                                    BailoutId osr_ast_id);
 
   // Layout description of the optimized code map.
   static const int kNextMapIndex = 0;
   static const int kEntriesStart = 1;
-  static const int kEntryLength = 3;
-  static const int kFirstContextSlot = FixedArray::kHeaderSize + kPointerSize;
-  static const int kFirstCodeSlot = FixedArray::kHeaderSize + 2 * kPointerSize;
+  static const int kContextOffset = 0;
+  static const int kCachedCodeOffset = 1;
+  static const int kLiteralsOffset = 2;
+  static const int kOsrAstIdOffset = 3;
+  static const int kEntryLength = 4;
+  static const int kFirstContextSlot = FixedArray::kHeaderSize +
+      (kEntriesStart + kContextOffset) * kPointerSize;
+  static const int kFirstCodeSlot = FixedArray::kHeaderSize +
+      (kEntriesStart + kCachedCodeOffset) * kPointerSize;
+  static const int kFirstOsrAstIdSlot = FixedArray::kHeaderSize +
+      (kEntriesStart + kOsrAstIdOffset) * kPointerSize;
   static const int kSecondEntryIndex = kEntryLength + kEntriesStart;
   static const int kInitialLength = kEntriesStart + kEntryLength;
 
@@ -6925,12 +7046,6 @@ class SharedFunctionInfo: public HeapObject {
 
   void ResetForNewContext(int new_ic_age);
 
-  // Helper to compile the shared code.  Returns true on success, false on
-  // failure (e.g., stack overflow during compilation). This is only used by
-  // the debugger, it is not possible to compile without a context otherwise.
-  static bool CompileLazy(Handle<SharedFunctionInfo> shared,
-                          ClearExceptionFlag flag);
-
   // Casting.
   static inline SharedFunctionInfo* cast(Object* obj);
 
@@ -7261,29 +7376,20 @@ class JSFunction: public JSObject {
 
   // Mark this function for lazy recompilation. The function will be
   // recompiled the next time it is executed.
-  void MarkForLazyRecompilation();
-  void MarkForConcurrentRecompilation();
-  void MarkInRecompileQueue();
+  void MarkForOptimization();
+  void MarkForConcurrentOptimization();
+  void MarkInOptimizationQueue();
 
-  // Helpers to compile this function.  Returns true on success, false on
-  // failure (e.g., stack overflow during compilation).
-  static bool EnsureCompiled(Handle<JSFunction> function,
-                             ClearExceptionFlag flag);
-  static bool CompileLazy(Handle<JSFunction> function,
-                          ClearExceptionFlag flag);
-  static Handle<Code> CompileOsr(Handle<JSFunction> function,
-                                 BailoutId osr_ast_id,
-                                 ClearExceptionFlag flag);
   static bool CompileOptimized(Handle<JSFunction> function,
                                ClearExceptionFlag flag);
 
   // Tells whether or not the function is already marked for lazy
   // recompilation.
-  inline bool IsMarkedForLazyRecompilation();
-  inline bool IsMarkedForConcurrentRecompilation();
+  inline bool IsMarkedForOptimization();
+  inline bool IsMarkedForConcurrentOptimization();
 
   // Tells whether or not the function is on the concurrent recompilation queue.
-  inline bool IsInRecompileQueue();
+  inline bool IsInOptimizationQueue();
 
   // [literals_or_bindings]: Fixed array holding either
   // the materialized literals or the bindings of a bound function.
@@ -7418,6 +7524,8 @@ class JSGlobalProxy : public JSObject {
   // Casting.
   static inline JSGlobalProxy* cast(Object* obj);
 
+  inline bool IsDetachedFrom(GlobalObject* global);
+
   // Dispatched behavior.
   DECLARE_PRINTER(JSGlobalProxy)
   DECLARE_VERIFIER(JSGlobalProxy)
@@ -7486,6 +7594,8 @@ class JSGlobalObject: public GlobalObject {
   // Ensure that the global object has a cell for the given property name.
   static Handle<PropertyCell> EnsurePropertyCell(Handle<JSGlobalObject> global,
                                                  Handle<Name> name);
+
+  inline bool IsDetached();
 
   // Dispatched behavior.
   DECLARE_PRINTER(JSGlobalObject)
@@ -7674,9 +7784,6 @@ class JSMessageObject: public JSObject {
   // [script]: the script from which the error message originated.
   DECL_ACCESSORS(script, Object)
 
-  // [stack_trace]: the stack trace for this error message.
-  DECL_ACCESSORS(stack_trace, Object)
-
   // [stack_frames]: an array of stack frames for this error object.
   DECL_ACCESSORS(stack_frames, Object)
 
@@ -7699,8 +7806,7 @@ class JSMessageObject: public JSObject {
   static const int kTypeOffset = JSObject::kHeaderSize;
   static const int kArgumentsOffset = kTypeOffset + kPointerSize;
   static const int kScriptOffset = kArgumentsOffset + kPointerSize;
-  static const int kStackTraceOffset = kScriptOffset + kPointerSize;
-  static const int kStackFramesOffset = kStackTraceOffset + kPointerSize;
+  static const int kStackFramesOffset = kScriptOffset + kPointerSize;
   static const int kStartPositionOffset = kStackFramesOffset + kPointerSize;
   static const int kEndPositionOffset = kStartPositionOffset + kPointerSize;
   static const int kSize = kEndPositionOffset + kPointerSize;
@@ -8059,7 +8165,7 @@ class TypeFeedbackInfo: public Struct {
   inline void set_inlined_type_change_checksum(int checksum);
   inline bool matches_inlined_type_change_checksum(int checksum);
 
-  DECL_ACCESSORS(type_feedback_cells, TypeFeedbackCells)
+  DECL_ACCESSORS(feedback_vector, FixedArray)
 
   static inline TypeFeedbackInfo* cast(Object* obj);
 
@@ -8069,8 +8175,27 @@ class TypeFeedbackInfo: public Struct {
 
   static const int kStorage1Offset = HeapObject::kHeaderSize;
   static const int kStorage2Offset = kStorage1Offset + kPointerSize;
-  static const int kTypeFeedbackCellsOffset = kStorage2Offset + kPointerSize;
-  static const int kSize = kTypeFeedbackCellsOffset + kPointerSize;
+  static const int kFeedbackVectorOffset =
+      kStorage2Offset + kPointerSize;
+  static const int kSize = kFeedbackVectorOffset + kPointerSize;
+
+  // The object that indicates an uninitialized cache.
+  static inline Handle<Object> UninitializedSentinel(Isolate* isolate);
+
+  // The object that indicates a megamorphic state.
+  static inline Handle<Object> MegamorphicSentinel(Isolate* isolate);
+
+  // The object that indicates a monomorphic state of Array with
+  // ElementsKind
+  static inline Handle<Object> MonomorphicArraySentinel(Isolate* isolate,
+      ElementsKind elements_kind);
+
+  // A raw version of the uninitialized sentinel that's safe to read during
+  // garbage collection (e.g., for patching the cache).
+  static inline Object* RawUninitializedSentinel(Heap* heap);
+
+  static const int kForInFastCaseMarker = 0;
+  static const int kForInSlowCaseMarker = 1;
 
  private:
   static const int kTypeChangeChecksumBits = 7;
@@ -8104,11 +8229,12 @@ class AllocationSite: public Struct {
   static const int kPretenureMinimumCreated = 100;
 
   // Values for pretenure decision field.
-  enum {
+  enum PretenureDecision {
     kUndecided = 0,
     kDontTenure = 1,
     kTenure = 2,
-    kZombie = 3
+    kZombie = 3,
+    kLastPretenureDecisionValue = kZombie
   };
 
   DECL_ACCESSORS(transition_info, Object)
@@ -8116,11 +8242,8 @@ class AllocationSite: public Struct {
   // walked in a particular order. So [[1, 2], 1, 2] will have one
   // nested_site, but [[1, 2], 3, [4]] will have a list of two.
   DECL_ACCESSORS(nested_site, Object)
-  DECL_ACCESSORS(memento_found_count, Smi)
-  DECL_ACCESSORS(memento_create_count, Smi)
-  // TODO(mvstanton): we don't need a whole integer to record pretenure
-  // decision. Consider sharing space with memento_found_count.
-  DECL_ACCESSORS(pretenure_decision, Smi)
+  DECL_ACCESSORS(pretenure_data, Smi)
+  DECL_ACCESSORS(pretenure_create_count, Smi)
   DECL_ACCESSORS(dependent_code, DependentCode)
   DECL_ACCESSORS(weak_next, Object)
 
@@ -8129,18 +8252,51 @@ class AllocationSite: public Struct {
   // This method is expensive, it should only be called for reporting.
   bool IsNestedSite();
 
+  // transition_info bitfields, for constructed array transition info.
   class ElementsKindBits:       public BitField<ElementsKind, 0,  15> {};
   class UnusedBits:             public BitField<int,          15, 14> {};
   class DoNotInlineBit:         public BitField<bool,         29,  1> {};
 
-  inline void IncrementMementoFoundCount();
+  // Bitfields for pretenure_data
+  class MementoFoundCountBits:  public BitField<int,          0, 28> {};
+  class PretenureDecisionBits:  public BitField<PretenureDecision, 28, 2> {};
+  STATIC_ASSERT(PretenureDecisionBits::kMax >= kLastPretenureDecisionValue);
+
+  // Increments the mementos found counter and returns true when the first
+  // memento was found for a given allocation site.
+  inline bool IncrementMementoFoundCount();
 
   inline void IncrementMementoCreateCount();
 
-  PretenureFlag GetPretenureMode() {
-    int mode = pretenure_decision()->value();
-    // Zombie objects "decide" to be untenured.
-    return (mode == kTenure) ? TENURED : NOT_TENURED;
+  PretenureFlag GetPretenureMode();
+
+  void ResetPretenureDecision();
+
+  PretenureDecision pretenure_decision() {
+    int value = pretenure_data()->value();
+    return PretenureDecisionBits::decode(value);
+  }
+
+  void set_pretenure_decision(PretenureDecision decision) {
+    int value = pretenure_data()->value();
+    set_pretenure_data(
+        Smi::FromInt(PretenureDecisionBits::update(value, decision)),
+        SKIP_WRITE_BARRIER);
+  }
+
+  int memento_found_count() {
+    int value = pretenure_data()->value();
+    return MementoFoundCountBits::decode(value);
+  }
+
+  inline void set_memento_found_count(int count);
+
+  int memento_create_count() {
+    return pretenure_create_count()->value();
+  }
+
+  void set_memento_create_count(int count) {
+    set_pretenure_create_count(Smi::FromInt(count), SKIP_WRITE_BARRIER);
   }
 
   // The pretenuring decision is made during gc, and the zombie state allows
@@ -8148,7 +8304,7 @@ class AllocationSite: public Struct {
   // a later traversal of new space may discover AllocationMementos that point
   // to this AllocationSite.
   bool IsZombie() {
-    return pretenure_decision()->value() == kZombie;
+    return pretenure_decision() == kZombie;
   }
 
   inline void MarkZombie();
@@ -8192,8 +8348,9 @@ class AllocationSite: public Struct {
     TRANSITIONS
   };
 
-  void AddDependentCompilationInfo(Reason reason, CompilationInfo* info);
-  void AddDependentCode(Reason reason, Handle<Code> code);
+  static void AddDependentCompilationInfo(Handle<AllocationSite> site,
+                                          Reason reason,
+                                          CompilationInfo* info);
 
   DECLARE_PRINTER(AllocationSite)
   DECLARE_VERIFIER(AllocationSite)
@@ -8206,13 +8363,11 @@ class AllocationSite: public Struct {
 
   static const int kTransitionInfoOffset = HeapObject::kHeaderSize;
   static const int kNestedSiteOffset = kTransitionInfoOffset + kPointerSize;
-  static const int kMementoFoundCountOffset = kNestedSiteOffset + kPointerSize;
-  static const int kMementoCreateCountOffset =
-      kMementoFoundCountOffset + kPointerSize;
-  static const int kPretenureDecisionOffset =
-      kMementoCreateCountOffset + kPointerSize;
+  static const int kPretenureDataOffset = kNestedSiteOffset + kPointerSize;
+  static const int kPretenureCreateCountOffset =
+      kPretenureDataOffset + kPointerSize;
   static const int kDependentCodeOffset =
-      kPretenureDecisionOffset + kPointerSize;
+      kPretenureCreateCountOffset + kPointerSize;
   static const int kWeakNextOffset = kDependentCodeOffset + kPointerSize;
   static const int kSize = kWeakNextOffset + kPointerSize;
 
@@ -8229,7 +8384,7 @@ class AllocationSite: public Struct {
  private:
   inline DependentCode::DependencyGroup ToDependencyGroup(Reason reason);
   bool PretenuringDecisionMade() {
-    return pretenure_decision()->value() != kUndecided;
+    return pretenure_decision() != kUndecided;
   }
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(AllocationSite);
@@ -8255,9 +8410,6 @@ class AllocationMemento: public Struct {
   DECLARE_PRINTER(AllocationMemento)
   DECLARE_VERIFIER(AllocationMemento)
 
-  // Returns NULL if no AllocationMemento is available for object.
-  static AllocationMemento* FindForJSObject(JSObject* object,
-                                            bool in_GC = false);
   static inline AllocationMemento* cast(Object* obj);
 
  private:
@@ -8471,7 +8623,7 @@ class Name: public HeapObject {
   // kMaxCachedArrayIndexLength.
   STATIC_CHECK(IS_POWER_OF_TWO(kMaxCachedArrayIndexLength + 1));
 
-  static const int kContainsCachedArrayIndexMask =
+  static const unsigned int kContainsCachedArrayIndexMask =
       (~kMaxCachedArrayIndexLength << kArrayIndexHashLengthShift) |
       kIsNotArrayIndexMask;
 
@@ -8641,11 +8793,6 @@ class String: public Name {
   // Mark the string as an undetectable object. It only applies to
   // ASCII and two byte string types.
   bool MarkAsUndetectable();
-
-  // Return a substring.
-  MUST_USE_RESULT MaybeObject* SubString(int from,
-                                         int to,
-                                         PretenureFlag pretenure = NOT_TENURED);
 
   // String equality operations.
   inline bool Equals(String* other);
@@ -9368,8 +9515,8 @@ class Cell: public HeapObject {
 class PropertyCell: public Cell {
  public:
   // [type]: type of the global property.
-  Type* type();
-  void set_type(Type* value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+  HeapType* type();
+  void set_type(HeapType* value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   // [dependent_code]: dependent code that depends on the type of the global
   // property.
@@ -9384,8 +9531,8 @@ class PropertyCell: public Cell {
 
   // Computes the new type of the cell's contents for the given value, but
   // without actually modifying the 'type' field.
-  static Handle<Type> UpdatedType(Handle<PropertyCell> cell,
-                                  Handle<Object> value);
+  static Handle<HeapType> UpdatedType(Handle<PropertyCell> cell,
+                                      Handle<Object> value);
 
   void AddDependentCompilationInfo(CompilationInfo* info);
 

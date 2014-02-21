@@ -253,7 +253,6 @@
         '../../src/allocation-tracker.h',
         '../../src/api.cc',
         '../../src/api.h',
-        '../../src/apiutils.h',
         '../../src/arguments.cc',
         '../../src/arguments.h',
         '../../src/assembler.cc',
@@ -313,8 +312,6 @@
         '../../src/debug-agent.h',
         '../../src/debug.cc',
         '../../src/debug.h',
-        '../../src/default-platform.cc',
-        '../../src/default-platform.h',
         '../../src/deoptimizer.cc',
         '../../src/deoptimizer.h',
         '../../src/disasm.h',
@@ -340,10 +337,13 @@
         '../../src/extensions/gc-extension.h',
         '../../src/extensions/statistics-extension.cc',
         '../../src/extensions/statistics-extension.h',
+        '../../src/extensions/trigger-failure-extension.cc',
+        '../../src/extensions/trigger-failure-extension.h',
         '../../src/factory.cc',
         '../../src/factory.h',
         '../../src/fast-dtoa.cc',
         '../../src/fast-dtoa.h',
+        '../../src/feedback-slots.h',
         '../../src/fixed-dtoa.cc',
         '../../src/fixed-dtoa.h',
         '../../src/flag-definitions.h',
@@ -444,6 +444,13 @@
         '../../src/jsregexp.cc',
         '../../src/jsregexp.h',
         '../../src/lazy-instance.h',
+        # TODO(jochen): move libplatform/ files to their own target.
+        '../../src/libplatform/default-platform.cc',
+        '../../src/libplatform/default-platform.h',
+        '../../src/libplatform/task-queue.cc',
+        '../../src/libplatform/task-queue.h',
+        '../../src/libplatform/worker-thread.cc',
+        '../../src/libplatform/worker-thread.h',
         '../../src/list-inl.h',
         '../../src/list.h',
         '../../src/lithium-allocator-inl.h',
@@ -639,6 +646,53 @@
             '../../src/arm/stub-cache-arm.cc',
           ],
         }],
+        ['v8_target_arch=="a64"', {
+          'sources': [  ### gcmole(arch:a64) ###
+            '../../src/a64/assembler-a64.cc',
+            '../../src/a64/assembler-a64.h',
+            '../../src/a64/assembler-a64-inl.h',
+            '../../src/a64/builtins-a64.cc',
+            '../../src/a64/codegen-a64.cc',
+            '../../src/a64/codegen-a64.h',
+            '../../src/a64/code-stubs-a64.cc',
+            '../../src/a64/code-stubs-a64.h',
+            '../../src/a64/constants-a64.h',
+            '../../src/a64/cpu-a64.cc',
+            '../../src/a64/cpu-a64.h',
+            '../../src/a64/debug-a64.cc',
+            '../../src/a64/debugger-a64.cc',
+            '../../src/a64/debugger-a64.h',
+            '../../src/a64/decoder-a64.cc',
+            '../../src/a64/decoder-a64.h',
+            '../../src/a64/deoptimizer-a64.cc',
+            '../../src/a64/disasm-a64.cc',
+            '../../src/a64/disasm-a64.h',
+            '../../src/a64/frames-a64.cc',
+            '../../src/a64/frames-a64.h',
+            '../../src/a64/full-codegen-a64.cc',
+            '../../src/a64/ic-a64.cc',
+            '../../src/a64/instructions-a64.cc',
+            '../../src/a64/instructions-a64.h',
+            '../../src/a64/instrument-a64.cc',
+            '../../src/a64/instrument-a64.h',
+            '../../src/a64/lithium-a64.cc',
+            '../../src/a64/lithium-a64.h',
+            '../../src/a64/lithium-codegen-a64.cc',
+            '../../src/a64/lithium-codegen-a64.h',
+            '../../src/a64/lithium-gap-resolver-a64.cc',
+            '../../src/a64/lithium-gap-resolver-a64.h',
+            '../../src/a64/macro-assembler-a64.cc',
+            '../../src/a64/macro-assembler-a64.h',
+            '../../src/a64/macro-assembler-a64-inl.h',
+            '../../src/a64/regexp-macro-assembler-a64.cc',
+            '../../src/a64/regexp-macro-assembler-a64.h',
+            '../../src/a64/simulator-a64.cc',
+            '../../src/a64/simulator-a64.h',
+            '../../src/a64/stub-cache-a64.cc',
+            '../../src/a64/utils-a64.cc',
+            '../../src/a64/utils-a64.h',
+          ],
+        }],
         ['v8_target_arch=="ia32" or v8_target_arch=="mac" or OS=="mac"', {
           'sources': [  ### gcmole(arch:ia32) ###
             '../../src/ia32/assembler-ia32-inl.h',
@@ -800,6 +854,43 @@
                 'sources': [
                   '../../src/platform-linux.cc'
                 ]
+              }],
+            ],
+          },
+        ],
+        ['OS=="qnx"', {
+            'link_settings': {
+              'target_conditions': [
+                ['_toolset=="host" and host_os=="linux"', {
+                  'libraries': [
+                    '-lrt'
+                  ],
+                }],
+                ['_toolset=="target"', {
+                  'libraries': [
+                    '-lbacktrace', '-lsocket'
+                  ],
+                }],
+              ],
+            },
+            'sources': [
+              '../../src/platform-posix.cc',
+            ],
+            'target_conditions': [
+              ['_toolset=="host" and host_os=="linux"', {
+                'sources': [
+                  '../../src/platform-linux.cc'
+                ],
+              }],
+              ['_toolset=="host" and host_os=="mac"', {
+                'sources': [
+                  '../../src/platform-macos.cc'
+                ],
+              }],
+              ['_toolset=="target"', {
+                'sources': [
+                  '../../src/platform-qnx.cc'
+                ],
               }],
             ],
           },
@@ -1073,32 +1164,6 @@
           'toolsets': ['host'],
         }, {
           'toolsets': ['target'],
-        }],
-        ['v8_compress_startup_data=="bz2"', {
-          'libraries': [
-            '-lbz2',
-          ]
-        }],
-      ],
-    },
-    {
-      'target_name': 'v8_shell',
-      'type': 'executable',
-      'dependencies': [
-        'v8'
-      ],
-      'sources': [
-        '../../samples/shell.cc',
-      ],
-      'conditions': [
-        ['want_separate_host_toolset==1', {
-          'toolsets': ['host'],
-        }, {
-          'toolsets': ['target'],
-        }],
-        ['OS=="win"', {
-          # This could be gotten by not setting chromium_code, if that's OK.
-          'defines': ['_CRT_SECURE_NO_WARNINGS'],
         }],
         ['v8_compress_startup_data=="bz2"', {
           'libraries': [

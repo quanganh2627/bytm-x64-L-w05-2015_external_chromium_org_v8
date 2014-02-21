@@ -54,7 +54,6 @@ LOCAL_SRC_FILES := \
 	v8/src/dateparser.cc \
 	v8/src/debug-agent.cc \
 	v8/src/debug.cc \
-	v8/src/default-platform.cc \
 	v8/src/deoptimizer.cc \
 	v8/src/disassembler.cc \
 	v8/src/diy-fp.cc \
@@ -66,6 +65,7 @@ LOCAL_SRC_FILES := \
 	v8/src/extensions/free-buffer-extension.cc \
 	v8/src/extensions/gc-extension.cc \
 	v8/src/extensions/statistics-extension.cc \
+	v8/src/extensions/trigger-failure-extension.cc \
 	v8/src/factory.cc \
 	v8/src/fast-dtoa.cc \
 	v8/src/fixed-dtoa.cc \
@@ -111,6 +111,9 @@ LOCAL_SRC_FILES := \
 	v8/src/interpreter-irregexp.cc \
 	v8/src/isolate.cc \
 	v8/src/jsregexp.cc \
+	v8/src/libplatform/default-platform.cc \
+	v8/src/libplatform/task-queue.cc \
+	v8/src/libplatform/worker-thread.cc \
 	v8/src/lithium-allocator.cc \
 	v8/src/lithium-codegen.cc \
 	v8/src/lithium.cc \
@@ -216,10 +219,10 @@ MY_CFLAGS_Debug := \
 	-g \
 	-fomit-frame-pointer \
 	-fdata-sections \
-	-ffunction-sections
+	-ffunction-sections \
+	-funwind-tables
 
 MY_DEFS_Debug := \
-	'-DANGLE_DX11' \
 	'-DV8_DEPRECATION_WARNINGS' \
 	'-D_FILE_OFFSET_BITS=64' \
 	'-DNO_TCMALLOC' \
@@ -230,7 +233,6 @@ MY_DEFS_Debug := \
 	'-DENABLE_CONFIGURATION_POLICY' \
 	'-DDISCARDABLE_MEMORY_ALWAYS_SUPPORTED_NATIVELY' \
 	'-DSYSTEM_NATIVELY_SIGNALS_MEMORY_PRESSURE' \
-	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DUSE_OPENSSL=1' \
 	'-DENABLE_EGLIMAGE=1' \
 	'-DCLD_VERSION=1' \
@@ -239,6 +241,7 @@ MY_DEFS_Debug := \
 	'-DV8_TARGET_ARCH_MIPS' \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
+	'-D_MIPS_ARCH_MIPS32R2' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DV8_USE_DEFAULT_PLATFORM' \
@@ -290,12 +293,12 @@ MY_CFLAGS_Release := \
 	-fdata-sections \
 	-ffunction-sections \
 	-fomit-frame-pointer \
+	-funwind-tables \
 	-fdata-sections \
 	-ffunction-sections \
 	-O2
 
 MY_DEFS_Release := \
-	'-DANGLE_DX11' \
 	'-DV8_DEPRECATION_WARNINGS' \
 	'-D_FILE_OFFSET_BITS=64' \
 	'-DNO_TCMALLOC' \
@@ -306,7 +309,6 @@ MY_DEFS_Release := \
 	'-DENABLE_CONFIGURATION_POLICY' \
 	'-DDISCARDABLE_MEMORY_ALWAYS_SUPPORTED_NATIVELY' \
 	'-DSYSTEM_NATIVELY_SIGNALS_MEMORY_PRESSURE' \
-	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DUSE_OPENSSL=1' \
 	'-DENABLE_EGLIMAGE=1' \
 	'-DCLD_VERSION=1' \
@@ -315,6 +317,7 @@ MY_DEFS_Release := \
 	'-DV8_TARGET_ARCH_MIPS' \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
+	'-D_MIPS_ARCH_MIPS32R2' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DV8_USE_DEFAULT_PLATFORM' \

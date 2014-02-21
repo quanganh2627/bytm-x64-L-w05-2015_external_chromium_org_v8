@@ -262,7 +262,6 @@ class RelocInfo BASE_EMBEDDED {
     CODE_TARGET,  // Code target which is not any of the above.
     CODE_TARGET_WITH_ID,
     CONSTRUCT_CALL,  // code target that is a call to a JavaScript constructor.
-    CODE_TARGET_CONTEXT,  // Code target used for contextual loads and stores.
     DEBUG_BREAK,  // Code target for the debugger statement.
     EMBEDDED_OBJECT,
     CELL,
@@ -718,7 +717,6 @@ class ExternalReference BASE_EMBEDDED {
       Isolate* isolate);
   static ExternalReference flush_icache_function(Isolate* isolate);
   static ExternalReference perform_gc_function(Isolate* isolate);
-  static ExternalReference transcendental_cache_array_address(Isolate* isolate);
   static ExternalReference delete_handle_scope_extensions(Isolate* isolate);
 
   static ExternalReference get_date_field_function(Isolate* isolate);
@@ -784,9 +782,7 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference new_space_high_promotion_mode_active_address(
       Isolate* isolate);
 
-  static ExternalReference double_fp_operation(Token::Value operation,
-                                               Isolate* isolate);
-  static ExternalReference compare_doubles(Isolate* isolate);
+  static ExternalReference mod_two_doubles_operation(Isolate* isolate);
   static ExternalReference power_double_double_function(Isolate* isolate);
   static ExternalReference power_double_int_function(Isolate* isolate);
 
@@ -811,9 +807,6 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference address_of_the_hole_nan();
   static ExternalReference address_of_uint32_bias();
 
-  static ExternalReference math_sin_double_function(Isolate* isolate);
-  static ExternalReference math_cos_double_function(Isolate* isolate);
-  static ExternalReference math_tan_double_function(Isolate* isolate);
   static ExternalReference math_log_double_function(Isolate* isolate);
 
   static ExternalReference math_exp_constants(int constant_index);
@@ -1008,32 +1001,6 @@ class PreservePositionScope BASE_EMBEDDED {
 
 // -----------------------------------------------------------------------------
 // Utility functions
-
-inline bool is_intn(int x, int n)  {
-  return -(1 << (n-1)) <= x && x < (1 << (n-1));
-}
-
-inline bool is_int8(int x)  { return is_intn(x, 8); }
-inline bool is_int16(int x)  { return is_intn(x, 16); }
-inline bool is_int18(int x)  { return is_intn(x, 18); }
-inline bool is_int24(int x)  { return is_intn(x, 24); }
-
-inline bool is_uintn(int x, int n) {
-  return (x & -(1 << n)) == 0;
-}
-
-inline bool is_uint2(int x)  { return is_uintn(x, 2); }
-inline bool is_uint3(int x)  { return is_uintn(x, 3); }
-inline bool is_uint4(int x)  { return is_uintn(x, 4); }
-inline bool is_uint5(int x)  { return is_uintn(x, 5); }
-inline bool is_uint6(int x)  { return is_uintn(x, 6); }
-inline bool is_uint8(int x)  { return is_uintn(x, 8); }
-inline bool is_uint10(int x)  { return is_uintn(x, 10); }
-inline bool is_uint12(int x)  { return is_uintn(x, 12); }
-inline bool is_uint16(int x)  { return is_uintn(x, 16); }
-inline bool is_uint24(int x)  { return is_uintn(x, 24); }
-inline bool is_uint26(int x)  { return is_uintn(x, 26); }
-inline bool is_uint28(int x)  { return is_uintn(x, 28); }
 
 inline int NumberOfBitsSet(uint32_t x) {
   unsigned int num_bits_set;

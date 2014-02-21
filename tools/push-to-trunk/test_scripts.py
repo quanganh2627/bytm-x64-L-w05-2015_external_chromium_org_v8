@@ -28,6 +28,7 @@
 
 import os
 import tempfile
+import traceback
 import unittest
 
 import common_includes
@@ -35,6 +36,10 @@ from common_includes import *
 import push_to_trunk
 from push_to_trunk import *
 import auto_roll
+from auto_roll import AutoRollOptions
+from auto_roll import CheckLastPush
+from auto_roll import FetchLatestRevision
+from auto_roll import SETTINGS_LOCATION
 
 
 TEST_CONFIG = {
@@ -50,10 +55,12 @@ TEST_CONFIG = {
   COMMITMSG_FILE: "/tmp/test-v8-push-to-trunk-tempfile-commitmsg",
   CHROMIUM: "/tmp/test-v8-push-to-trunk-tempfile-chromium",
   DEPS_FILE: "/tmp/test-v8-push-to-trunk-tempfile-chromium/DEPS",
+  SETTINGS_LOCATION: None,
 }
 
 
-def MakeOptions(s=0, l=None, f=False, m=True, r=None, c=None):
+def MakeOptions(s=0, l=None, f=False, m=True, r=None, c=None, a=None,
+                status_password=None):
   """Convenience wrapper."""
   class Options(object):
       pass
@@ -64,6 +71,8 @@ def MakeOptions(s=0, l=None, f=False, m=True, r=None, c=None):
   options.m = m
   options.r = r
   options.c = c
+  options.a = a
+  options.status_password = status_password
   return options
 
 
@@ -228,19 +237,23 @@ class SimpleMock(object):
     # The number of arguments in the expectation must match the actual
     # arguments.
     if len(args) > len(expected_call):
-      raise Exception("When calling %s with arguments, the expectations "
-                      "must consist of at least as many arguments.")
+      raise NoRetryException("When calling %s with arguments, the "
+          "expectations must consist of at least as many arguments.")
 
     # Compare expected and actual arguments.
     for (expected_arg, actual_arg) in zip(expected_call, args):
       if expected_arg != actual_arg:
-        raise Exception("Expected: %s - Actual: %s"
-                        % (expected_arg, actual_arg))
+        raise NoRetryException("Expected: %s - Actual: %s"
+                               % (expected_arg, actual_arg))
 
     # The expectation list contains a mandatory return value and an optional
     # callback for checking the context at the time of the call.
     if len(expected_call) == len(args) + 2:
-      expected_call[len(args) + 1]()
+      try:
+        expected_call[len(args) + 1]()
+      except:
+        tb = traceback.format_exc()
+        raise NoRetryException("Caught exception from callback: %s" % tb)
     return_value = expected_call[len(args)]
 
     # If the return value is an exception, raise it instead of returning.
@@ -250,8 +263,8 @@ class SimpleMock(object):
 
   def AssertFinished(self):
     if self._index < len(self._recipe) -1:
-      raise Exception("Called %s too seldom: %d vs. %d"
-                      % (self._name, self._index, len(self._recipe)))
+      raise NoRetryException("Called %s too seldom: %d vs. %d"
+                             % (self._name, self._index, len(self._recipe)))
 
 
 class ScriptTest(unittest.TestCase):
@@ -276,7 +289,7 @@ class ScriptTest(unittest.TestCase):
 
   def MakeStep(self, step_class=Step, state=None, options=None):
     """Convenience wrapper."""
-    options = options or MakeOptions()
+    options = options or CommonOptions(MakeOptions())
     return MakeStep(step_class=step_class, number=0, state=state,
                     config=TEST_CONFIG, options=options,
                     side_effect_handler=self)
@@ -293,14 +306,20 @@ class ScriptTest(unittest.TestCase):
     "vi": LogMock,
   }
 
+  def Call(self, fun, *args, **kwargs):
+    print "Calling %s with %s and %s" % (str(fun), str(args), str(kwargs))
+
   def Command(self, cmd, args="", prefix="", pipe=True):
     return ScriptTest.MOCKS[cmd](self, cmd, args)
 
   def ReadLine(self):
     return self._rl_mock.Call()
 
-  def ReadURL(self, url):
-    return self._url_mock.Call(url)
+  def ReadURL(self, url, params):
+    if params is not None:
+      return self._url_mock.Call(url, params)
+    else:
+      return self._url_mock.Call(url)
 
   def Sleep(self, seconds):
     pass
@@ -543,34 +562,57 @@ class ScriptTest(unittest.TestCase):
     cl = GetLastChangeLogEntries(TEST_CONFIG[CHANGELOG_FILE])
     self.assertEquals(cl_chunk, cl)
 
-  def testSquashCommits(self):
+  def _TestSquashCommits(self, change_log, expected_msg):
     TEST_CONFIG[CHANGELOG_ENTRY_FILE] = self.MakeEmptyTempFile()
     with open(TEST_CONFIG[CHANGELOG_ENTRY_FILE], "w") as f:
-      f.write("1999-11-11: Version 3.22.5\n")
-      f.write("\n")
-      f.write("        Log text 1.\n")
-      f.write("        Chromium issue 12345\n")
-      f.write("\n")
-      f.write("        Performance and stability improvements on all "
-              "platforms.\n")
+      f.write(change_log)
 
     self.ExpectGit([
       ["diff svn/trunk hash1", "patch content"],
+      ["svn find-rev hash1", "123455\n"],
     ])
 
     self.MakeStep().Persist("prepare_commit_hash", "hash1")
     self.MakeStep().Persist("date", "1999-11-11")
 
     self.MakeStep(SquashCommits).Run()
-
-    msg = FileToText(TEST_CONFIG[COMMITMSG_FILE])
-    self.assertTrue(re.search(r"Version 3\.22\.5", msg))
-    self.assertTrue(re.search(r"Performance and stability", msg))
-    self.assertTrue(re.search(r"Log text 1\. Chromium issue 12345", msg))
-    self.assertFalse(re.search(r"\d+\-\d+\-\d+", msg))
+    self.assertEquals(FileToText(TEST_CONFIG[COMMITMSG_FILE]), expected_msg)
 
     patch = FileToText(TEST_CONFIG[ PATCH_FILE])
     self.assertTrue(re.search(r"patch content", patch))
+
+  def testSquashCommitsUnformatted(self):
+    change_log = """1999-11-11: Version 3.22.5
+
+        Log text 1.
+        Chromium issue 12345
+
+        Performance and stability improvements on all platforms.\n"""
+    commit_msg = """Version 3.22.5 (based on bleeding_edge revision r123455)
+
+Log text 1. Chromium issue 12345
+
+Performance and stability improvements on all platforms."""
+    self._TestSquashCommits(change_log, commit_msg)
+
+  def testSquashCommitsFormatted(self):
+    change_log = """1999-11-11: Version 3.22.5
+
+        Long commit message that fills more than 80 characters (Chromium issue
+        12345).
+
+        Performance and stability improvements on all platforms.\n"""
+    commit_msg = """Version 3.22.5 (based on bleeding_edge revision r123455)
+
+Long commit message that fills more than 80 characters (Chromium issue 12345).
+
+Performance and stability improvements on all platforms."""
+    self._TestSquashCommits(change_log, commit_msg)
+
+  def testSquashCommitsQuotationMarks(self):
+    change_log = """Line with "quotation marks".\n"""
+    commit_msg = """Line with "quotation marks"."""
+    self._TestSquashCommits(change_log, commit_msg)
 
   def _PushToTrunk(self, force=False, manual=False):
     TEST_CONFIG[DOT_GIT_LOCATION] = self.MakeEmptyTempFile()
@@ -596,13 +638,14 @@ class ScriptTest(unittest.TestCase):
       version = FileToText(TEST_CONFIG[VERSION_FILE])
       self.assertTrue(re.search(r"#define BUILD_NUMBER\s+6", version))
 
-    def CheckUpload():
-      cl = FileToText(TEST_CONFIG[CHANGELOG_FILE])
-
     def CheckSVNCommit():
       commit = FileToText(TEST_CONFIG[COMMITMSG_FILE])
-      self.assertTrue(re.search(r"Version 3.22.5", commit))
-      self.assertTrue(re.search(r"Log text 1 \(issue 321\).", commit))
+      self.assertEquals(
+"""Version 3.22.5 (based on bleeding_edge revision r123455)
+
+Log text 1 (issue 321).
+
+Performance and stability improvements on all platforms.""", commit)
       version = FileToText(TEST_CONFIG[VERSION_FILE])
       self.assertTrue(re.search(r"#define MINOR_VERSION\s+22", version))
       self.assertTrue(re.search(r"#define BUILD_NUMBER\s+5", version))
@@ -631,15 +674,18 @@ class ScriptTest(unittest.TestCase):
         "Now working on version 3.22.6.%s\"" % review_suffix),
        " 2 files changed\n",
         CheckPreparePush],
-      ["cl upload -r \"reviewer@chromium.org\" --send-mail%s" % force_flag,
+      [("cl upload --email \"author@chromium.org\" "
+        "-r \"reviewer@chromium.org\" --send-mail%s" % force_flag),
        "done\n"],
-      ["cl dcommit -f", "Closing issue\n"],
+      ["cl presubmit", "Presubmit successfull\n"],
+      ["cl dcommit -f --bypass-hooks", "Closing issue\n"],
       ["svn fetch", "fetch result\n"],
       ["checkout svn/bleeding_edge", ""],
       [("log -1 --format=%H --grep=\"Prepare push to trunk.  "
         "Now working on version 3.22.6.\""),
        "hash1\n"],
       ["diff svn/trunk hash1", "patch content\n"],
+      ["svn find-rev hash1", "123455\n"],
       ["checkout -b %s svn/trunk" % TEST_CONFIG[TRUNKBRANCH], ""],
       ["apply --index --reject  \"%s\"" % TEST_CONFIG[PATCH_FILE], ""],
       ["add \"%s\"" % TEST_CONFIG[VERSION_FILE], ""],
@@ -650,10 +696,12 @@ class ScriptTest(unittest.TestCase):
       ["checkout master", ""],
       ["pull", ""],
       ["checkout -b v8-roll-123456", ""],
-      [("commit -am \"Update V8 to version 3.22.5.\n\n"
+      [("commit -am \"Update V8 to version 3.22.5 "
+        "(based on bleeding_edge revision r123455).\n\n"
         "TBR=reviewer@chromium.org\""),
        ""],
-      ["cl upload --send-mail%s" % force_flag, ""],
+      ["cl upload --email \"author@chromium.org\" --send-mail%s" % force_flag,
+       ""],
       ["checkout -f some_branch", ""],
       ["branch -D %s" % TEST_CONFIG[TEMP_BRANCH], ""],
       ["branch -D %s" % TEST_CONFIG[BRANCHNAME], ""],
@@ -683,10 +731,10 @@ class ScriptTest(unittest.TestCase):
     if force:
       self.ExpectReadline([])
 
-    options = MakeOptions(f=force, m=manual,
+    options = MakeOptions(f=force, m=manual, a="author@chromium.org",
                           r="reviewer@chromium.org" if not manual else None,
                           c = TEST_CONFIG[CHROMIUM])
-    RunPushToTrunk(TEST_CONFIG, options, self)
+    RunPushToTrunk(TEST_CONFIG, PushToTrunkOptions(options), self)
 
     deps = FileToText(TEST_CONFIG[DEPS_FILE])
     self.assertTrue(re.search("\"v8_revision\": \"123456\"", deps))
@@ -709,31 +757,90 @@ class ScriptTest(unittest.TestCase):
   def testPushToTrunkForced(self):
     self._PushToTrunk(force=True)
 
+  def testCheckLastPushRecently(self):
+    self.ExpectGit([
+      ["svn log -1 --oneline", "r101 | Text"],
+      ["svn log -1 --oneline ChangeLog", "r99 | Prepare push to trunk..."],
+    ])
+
+    state = {}
+    self.MakeStep(FetchLatestRevision, state=state).Run()
+    self.assertRaises(Exception, self.MakeStep(CheckLastPush, state=state).Run)
+
   def testAutoRoll(self):
+    status_password = self.MakeEmptyTempFile()
+    TextToFile("PW", status_password)
     TEST_CONFIG[DOT_GIT_LOCATION] = self.MakeEmptyTempFile()
+    TEST_CONFIG[SETTINGS_LOCATION] = "~/.doesnotexist"
 
     self.ExpectReadURL([
+      ["https://v8-status.appspot.com/current?format=json",
+       "{\"message\": \"Tree is throttled\"}"],
       ["https://v8-status.appspot.com/lkgr", Exception("Network problem")],
       ["https://v8-status.appspot.com/lkgr", "100"],
+      ["https://v8-status.appspot.com/status",
+       ("username=v8-auto-roll%40chromium.org&"
+        "message=Tree+is+closed+%28preparing+to+push%29&password=PW"),
+       ""],
+      ["https://v8-status.appspot.com/status",
+       ("username=v8-auto-roll%40chromium.org&"
+        "message=Tree+is+throttled&password=PW"), ""],
     ])
 
     self.ExpectGit([
       ["status -s -uno", ""],
       ["status -s -b -uno", "## some_branch\n"],
       ["svn fetch", ""],
-      ["svn log -1 --oneline", "r101 | Text"],
+      ["svn log -1 --oneline", "r100 | Text"],
+      ["svn log -1 --oneline ChangeLog", "r65 | Prepare push to trunk..."],
     ])
 
-    auto_roll.RunAutoRoll(TEST_CONFIG, MakeOptions(m=False, f=True), self)
+    auto_roll.RunAutoRoll(TEST_CONFIG, AutoRollOptions(
+        MakeOptions(status_password=status_password)), self)
 
     self.assertEquals("100", self.MakeStep().Restore("lkgr"))
-    self.assertEquals("101", self.MakeStep().Restore("latest"))
+    self.assertEquals("100", self.MakeStep().Restore("latest"))
 
+  def testAutoRollStoppedBySettings(self):
+    TEST_CONFIG[DOT_GIT_LOCATION] = self.MakeEmptyTempFile()
+    TEST_CONFIG[SETTINGS_LOCATION] = self.MakeEmptyTempFile()
+    TextToFile("{\"enable_auto_roll\": false}", TEST_CONFIG[SETTINGS_LOCATION])
+
+    self.ExpectReadURL([])
+
+    self.ExpectGit([
+      ["status -s -uno", ""],
+      ["status -s -b -uno", "## some_branch\n"],
+      ["svn fetch", ""],
+    ])
+
+    def RunAutoRoll():
+      auto_roll.RunAutoRoll(TEST_CONFIG, AutoRollOptions(MakeOptions()), self)
+    self.assertRaises(Exception, RunAutoRoll)
+
+  def testAutoRollStoppedByTreeStatus(self):
+    TEST_CONFIG[DOT_GIT_LOCATION] = self.MakeEmptyTempFile()
+    TEST_CONFIG[SETTINGS_LOCATION] = "~/.doesnotexist"
+
+    self.ExpectReadURL([
+      ["https://v8-status.appspot.com/current?format=json",
+       "{\"message\": \"Tree is throttled (no push)\"}"],
+    ])
+
+    self.ExpectGit([
+      ["status -s -uno", ""],
+      ["status -s -b -uno", "## some_branch\n"],
+      ["svn fetch", ""],
+    ])
+
+    def RunAutoRoll():
+      auto_roll.RunAutoRoll(TEST_CONFIG, AutoRollOptions(MakeOptions()), self)
+    self.assertRaises(Exception, RunAutoRoll)
 
 class SystemTest(unittest.TestCase):
   def testReload(self):
     step = MakeStep(step_class=PrepareChangeLog, number=0, state={}, config={},
-                    options=None,
+                    options=CommonOptions(MakeOptions()),
                     side_effect_handler=DEFAULT_SIDE_EFFECT_HANDLER)
     body = step.Reload(
 """------------------------------------------------------------------------

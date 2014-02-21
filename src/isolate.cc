@@ -946,6 +946,7 @@ Failure* Isolate::ReThrow(MaybeObject* exception) {
 
 
 Failure* Isolate::ThrowIllegalOperation() {
+  if (FLAG_stack_trace_on_illegal) PrintStack(stdout);
   return Throw(heap_.illegal_access_string());
 }
 
@@ -1122,8 +1123,6 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
     // while the bootstrapper is active since the infrastructure may not have
     // been properly initialized.
     if (!bootstrapping) {
-      Handle<String> stack_trace;
-      if (FLAG_trace_exception) stack_trace = StackTraceString();
       Handle<JSArray> stack_trace_object;
       if (capture_stack_trace_for_uncaught_exceptions_) {
         if (IsErrorObject(exception_handle)) {
@@ -1163,7 +1162,6 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
           "uncaught_exception",
           location,
           HandleVector<Object>(&exception_arg, 1),
-          stack_trace,
           stack_trace_object);
       thread_local_top()->pending_message_obj_ = *message_obj;
       if (location != NULL) {
@@ -1182,7 +1180,7 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
         fatal_exception_depth++;
         PrintF(stderr,
                "%s\n\nFROM\n",
-               *MessageHandler::GetLocalizedMessage(this, message_obj));
+               MessageHandler::GetLocalizedMessage(this, message_obj).get());
         PrintCurrentStackTrace(stderr);
         OS::Abort();
       }
@@ -1197,13 +1195,13 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
       if (exception->IsString() && location->script()->name()->IsString()) {
         OS::PrintError(
             "Extension or internal compilation error: %s in %s at line %d.\n",
-            *String::cast(exception)->ToCString(),
-            *String::cast(location->script()->name())->ToCString(),
+            String::cast(exception)->ToCString().get(),
+            String::cast(location->script()->name())->ToCString().get(),
             line_number + 1);
       } else if (location->script()->name()->IsString()) {
         OS::PrintError(
             "Extension or internal compilation error in %s at line %d.\n",
-            *String::cast(location->script()->name())->ToCString(),
+            String::cast(location->script()->name())->ToCString().get(),
             line_number + 1);
       } else {
         OS::PrintError("Extension or internal compilation error.\n");
@@ -1529,10 +1527,10 @@ Isolate::Isolate()
       stats_table_(NULL),
       stub_cache_(NULL),
       deoptimizer_data_(NULL),
+      materialized_object_store_(NULL),
       capture_stack_trace_for_uncaught_exceptions_(false),
       stack_trace_for_uncaught_exceptions_frame_limit_(0),
       stack_trace_for_uncaught_exceptions_options_(StackTrace::kOverview),
-      transcendental_cache_(NULL),
       memory_allocator_(NULL),
       keyed_lookup_cache_(NULL),
       context_slot_cache_(NULL),
@@ -1551,6 +1549,7 @@ Isolate::Isolate()
       regexp_stack_(NULL),
       date_cache_(NULL),
       code_stub_interface_descriptors_(NULL),
+      call_descriptors_(NULL),
       // TODO(bmeurer) Initialized lazily because it depends on flags; can
       // be fixed once the default isolate cleanup is done.
       random_number_generator_(NULL),
@@ -1565,7 +1564,8 @@ Isolate::Isolate()
       sweeper_thread_(NULL),
       num_sweeper_threads_(0),
       max_available_threads_(0),
-      stress_deopt_count_(0) {
+      stress_deopt_count_(0),
+      next_optimization_id_(0) {
   id_ = NoBarrier_AtomicIncrement(&isolate_counter_, 1);
   TRACE_ISOLATE(constructor);
 
@@ -1581,6 +1581,7 @@ Isolate::Isolate()
   thread_manager_->isolate_ = this;
 
 #if V8_TARGET_ARCH_ARM && !defined(__arm__) || \
+    V8_TARGET_ARCH_A64 && !defined(__aarch64__) || \
     V8_TARGET_ARCH_MIPS && !defined(__mips__)
   simulator_initialized_ = false;
   simulator_i_cache_ = NULL;
@@ -1671,6 +1672,10 @@ void Isolate::Deinit() {
     delete[] sweeper_thread_;
     sweeper_thread_ = NULL;
 
+    if (FLAG_job_based_sweeping &&
+        heap_.mark_compact_collector()->IsConcurrentSweepingInProgress()) {
+      heap_.mark_compact_collector()->WaitUntilSweepingCompleted();
+    }
 
     if (FLAG_hydrogen_stats) GetHStatistics()->Print();
 
@@ -1688,7 +1693,6 @@ void Isolate::Deinit() {
     bootstrapper_->TearDown();
 
     if (runtime_profiler_ != NULL) {
-      runtime_profiler_->TearDown();
       delete runtime_profiler_;
       runtime_profiler_ = NULL;
     }
@@ -1760,6 +1764,9 @@ Isolate::~Isolate() {
   delete[] code_stub_interface_descriptors_;
   code_stub_interface_descriptors_ = NULL;
 
+  delete[] call_descriptors_;
+  call_descriptors_ = NULL;
+
   delete regexp_stack_;
   regexp_stack_ = NULL;
 
@@ -1770,12 +1777,13 @@ Isolate::~Isolate() {
   delete keyed_lookup_cache_;
   keyed_lookup_cache_ = NULL;
 
-  delete transcendental_cache_;
-  transcendental_cache_ = NULL;
   delete stub_cache_;
   stub_cache_ = NULL;
   delete stats_table_;
   stats_table_ = NULL;
+
+  delete materialized_object_store_;
+  materialized_object_store_ = NULL;
 
   delete logger_;
   logger_ = NULL;
@@ -1936,7 +1944,6 @@ bool Isolate::Init(Deserializer* des) {
   string_tracker_ = new StringTracker();
   string_tracker_->isolate_ = this;
   compilation_cache_ = new CompilationCache(this);
-  transcendental_cache_ = new TranscendentalCache(this);
   keyed_lookup_cache_ = new KeyedLookupCache();
   context_slot_cache_ = new ContextSlotCache();
   descriptor_lookup_cache_ = new DescriptorLookupCache();
@@ -1948,11 +1955,14 @@ bool Isolate::Init(Deserializer* des) {
   bootstrapper_ = new Bootstrapper(this);
   handle_scope_implementer_ = new HandleScopeImplementer(this);
   stub_cache_ = new StubCache(this);
+  materialized_object_store_ = new MaterializedObjectStore(this);
   regexp_stack_ = new RegExpStack();
   regexp_stack_->isolate_ = this;
   date_cache_ = new DateCache();
   code_stub_interface_descriptors_ =
       new CodeStubInterfaceDescriptor[CodeStub::NUMBER_OF_IDS];
+  call_descriptors_ =
+      new CallInterfaceDescriptor[NUMBER_OF_CALL_DESCRIPTORS];
   cpu_profiler_ = new CpuProfiler(this);
   heap_profiler_ = new HeapProfiler(heap());
 
@@ -1961,7 +1971,7 @@ bool Isolate::Init(Deserializer* des) {
 
   // Initialize other runtime facilities
 #if defined(USE_SIMULATOR)
-#if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_MIPS
+#if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_A64 || V8_TARGET_ARCH_MIPS
   Simulator::Initialize(this);
 #endif
 #endif
@@ -1999,8 +2009,6 @@ bool Isolate::Init(Deserializer* des) {
   bootstrapper_->Initialize(create_heap_objects);
   builtins_.SetUp(this, create_heap_objects);
 
-  if (create_heap_objects) heap_.CreateStubsRequiringBuiltins();
-
   // Set default value if not yet set.
   // TODO(yangguo): move this to ResourceConstraints::ConfigureDefaults
   // once ResourceConstraints becomes an argument to the Isolate constructor.
@@ -2009,7 +2017,10 @@ bool Isolate::Init(Deserializer* des) {
     max_available_threads_ = Max(Min(CPU::NumberOfProcessorsOnline(), 4), 1);
   }
 
-  num_sweeper_threads_ = SweeperThread::NumberOfThreads(max_available_threads_);
+  if (!FLAG_job_based_sweeping) {
+    num_sweeper_threads_ =
+        SweeperThread::NumberOfThreads(max_available_threads_);
+  }
 
   if (FLAG_trace_hydrogen || FLAG_trace_hydrogen_stubs) {
     PrintF("Concurrent recompilation has been disabled for tracing.\n");
@@ -2049,7 +2060,6 @@ bool Isolate::Init(Deserializer* des) {
   if (!create_heap_objects) Assembler::QuietNaN(heap_.nan_value());
 
   runtime_profiler_ = new RuntimeProfiler(this);
-  runtime_profiler_->SetUp();
 
   // If we are deserializing, log non-function code objects and compiled
   // functions found in the snapshot.
@@ -2096,7 +2106,6 @@ bool Isolate::Init(Deserializer* des) {
     CodeStub::GenerateFPStubs(this);
     StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime(this);
     StubFailureTrampolineStub::GenerateAheadOfTime(this);
-    StubFailureTailCallTrampolineStub::GenerateAheadOfTime(this);
     // TODO(mstarzinger): The following is an ugly hack to make sure the
     // interface descriptor is initialized even when stubs have been
     // deserialized out of the snapshot without the graph builder.
@@ -2105,14 +2114,19 @@ bool Isolate::Init(Deserializer* des) {
     stub.InitializeInterfaceDescriptor(
         this, code_stub_interface_descriptor(CodeStub::FastCloneShallowArray));
     BinaryOpICStub::InstallDescriptors(this);
+    BinaryOpWithAllocationSiteStub::InstallDescriptors(this);
     CompareNilICStub::InitializeForIsolate(this);
     ToBooleanStub::InitializeForIsolate(this);
     ArrayConstructorStubBase::InstallDescriptors(this);
     InternalArrayConstructorStubBase::InstallDescriptors(this);
     FastNewClosureStub::InstallDescriptors(this);
+    FastNewContextStub::InstallDescriptors(this);
     NumberToStringStub::InstallDescriptors(this);
-    NewStringAddStub::InstallDescriptors(this);
+    StringAddStub::InstallDescriptors(this);
+    RegExpConstructResultStub::InstallDescriptors(this);
   }
+
+  CallDescriptors::InitializeForIsolate(this);
 
   initialized_from_snapshot_ = (des != NULL);
 
@@ -2288,6 +2302,13 @@ bool Isolate::IsFastArrayConstructorPrototypeChainIntact() {
 CodeStubInterfaceDescriptor*
     Isolate::code_stub_interface_descriptor(int index) {
   return code_stub_interface_descriptors_ + index;
+}
+
+
+CallInterfaceDescriptor*
+    Isolate::call_descriptor(CallDescriptorKey index) {
+  ASSERT(0 <= index && index < NUMBER_OF_CALL_DESCRIPTORS);
+  return &call_descriptors_[index];
 }
 
 
