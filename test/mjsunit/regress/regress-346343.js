@@ -1,4 +1,4 @@
-// Copyright 2013 the V8 project authors. All rights reserved.
+// Copyright 2014 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,32 +25,18 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_A64_DEBUGGER_A64_H_
-#define V8_A64_DEBUGGER_A64_H_
+// Flags: --allow-natives-syntax
 
-#if defined(USE_SIMULATOR)
+function f(o) {
+  for (var i = 1; i < 2; ++i) {
+    var y = o.y;
+  }
+}
+f({y:1.1});
+f({y:1.1});
 
-#include "globals.h"
-#include "utils.h"
-#include "a64/constants-a64.h"
-#include "a64/simulator-a64.h"
-
-namespace v8 {
-namespace internal {
-
-
-class Debugger : public Simulator {
- public:
-  Debugger(Decoder* decoder, FILE* stream = stderr)
-    : Simulator(decoder, NULL, stream) {}
-
-  // Functions overloading.
-  void VisitException(Instruction* instr);
-};
-
-
-} }  // namespace v8::internal
-
-#endif  // USE_SIMULATOR
-
-#endif  // V8_A64_DEBUGGER_A64_H_
+function g(x) { f({z:x}); }
+g(1);
+g(2);
+%OptimizeFunctionOnNextCall(g);
+g(1);

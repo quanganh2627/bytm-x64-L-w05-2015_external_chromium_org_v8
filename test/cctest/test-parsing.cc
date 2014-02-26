@@ -324,43 +324,6 @@ TEST(StandAlonePreParserNoNatives) {
 }
 
 
-TEST(PreparsingObjectLiterals) {
-  // Regression test for a bug where the symbol stream produced by PreParser
-  // didn't match what Parser wanted to consume.
-  v8::Isolate* isolate = CcTest::isolate();
-  v8::HandleScope handles(isolate);
-  v8::Local<v8::Context> context = v8::Context::New(isolate);
-  v8::Context::Scope context_scope(context);
-  int marker;
-  CcTest::i_isolate()->stack_guard()->SetStackLimit(
-      reinterpret_cast<uintptr_t>(&marker) - 128 * 1024);
-
-  {
-    const char* source = "var myo = {if: \"foo\"}; myo.if;";
-    v8::Local<v8::Value> result = PreCompileCompileRun(source);
-    CHECK(result->IsString());
-    v8::String::Utf8Value utf8(result);
-    CHECK_EQ("foo", *utf8);
-  }
-
-  {
-    const char* source = "var myo = {\"bar\": \"foo\"}; myo[\"bar\"];";
-    v8::Local<v8::Value> result = PreCompileCompileRun(source);
-    CHECK(result->IsString());
-    v8::String::Utf8Value utf8(result);
-    CHECK_EQ("foo", *utf8);
-  }
-
-  {
-    const char* source = "var myo = {1: \"foo\"}; myo[1];";
-    v8::Local<v8::Value> result = PreCompileCompileRun(source);
-    CHECK(result->IsString());
-    v8::String::Utf8Value utf8(result);
-    CHECK_EQ("foo", *utf8);
-  }
-}
-
-
 TEST(RegressChromium62639) {
   v8::V8::Initialize();
   i::Isolate* isolate = CcTest::i_isolate();
@@ -1145,9 +1108,8 @@ enum ParserSyncTestResult {
   kError
 };
 
-template <typename Traits>
-void SetParserFlags(i::ParserBase<Traits>* parser,
-                    i::EnumSet<ParserFlag> flags) {
+
+void SetParserFlags(i::ParserBase* parser, i::EnumSet<ParserFlag> flags) {
   parser->set_allow_lazy(flags.Contains(kAllowLazy));
   parser->set_allow_natives_syntax(flags.Contains(kAllowNativesSyntax));
   parser->set_allow_harmony_scoping(flags.Contains(kAllowHarmonyScoping));
@@ -1428,7 +1390,7 @@ void RunParserSyncTest(const char* context_data[][2],
 
   static const ParserFlag flags[] = {
     kAllowLazy, kAllowHarmonyScoping, kAllowModules, kAllowGenerators,
-    kAllowForOf, kAllowNativesSyntax
+    kAllowForOf
   };
   for (int i = 0; context_data[i][0] != NULL; ++i) {
     for (int j = 0; statement_data[j] != NULL; ++j) {
@@ -2050,111 +2012,4 @@ TEST(NoErrorsTryCatchFinally) {
   };
 
   RunParserSyncTest(context_data, statement_data, kSuccess);
-}
-
-
-TEST(ErrorsRegexpLiteral) {
-  const char* context_data[][2] = {
-    {"var r = ", ""},
-    { NULL, NULL }
-  };
-
-  const char* statement_data[] = {
-    "/unterminated",
-    NULL
-  };
-
-  RunParserSyncTest(context_data, statement_data, kError);
-}
-
-
-TEST(NoErrorsRegexpLiteral) {
-  const char* context_data[][2] = {
-    {"var r = ", ""},
-    { NULL, NULL }
-  };
-
-  const char* statement_data[] = {
-    "/foo/",
-    "/foo/g",
-    "/foo/whatever",  // This is an error but not detected by the parser.
-    NULL
-  };
-
-  RunParserSyncTest(context_data, statement_data, kSuccess);
-}
-
-
-TEST(Intrinsics) {
-  const char* context_data[][2] = {
-    {"", ""},
-    { NULL, NULL }
-  };
-
-  const char* statement_data[] = {
-    "%someintrinsic(arg)",
-    NULL
-  };
-
-  // Parsing will fail or succeed depending on whether we allow natives syntax
-  // or not.
-  RunParserSyncTest(context_data, statement_data, kSuccessOrError);
-}
-
-
-TEST(NoErrorsNewExpression) {
-  const char* context_data[][2] = {
-    {"", ""},
-    {"var f =", ""},
-    { NULL, NULL }
-  };
-
-  const char* statement_data[] = {
-    "new foo",
-    "new foo();",
-    "new foo(1);",
-    "new foo(1, 2);",
-    // The first () will be processed as a part of the NewExpression and the
-    // second () will be processed as part of LeftHandSideExpression.
-    "new foo()();",
-    // The first () will be processed as a part of the inner NewExpression and
-    // the second () will be processed as a part of the outer NewExpression.
-    "new new foo()();",
-    "new foo.bar;",
-    "new foo.bar();",
-    "new foo.bar.baz;",
-    "new foo.bar().baz;",
-    "new foo[bar];",
-    "new foo[bar]();",
-    "new foo[bar][baz];",
-    "new foo[bar]()[baz];",
-    "new foo[bar].baz(baz)()[bar].baz;",
-    "new \"foo\"",  // Runtime error
-    "new 1",  // Runtime error
-    "new foo++",
-    // This even runs:
-    "(new new Function(\"this.x = 1\")).x;",
-    "new new Test_Two(String, 2).v(0123).length;",
-    NULL
-  };
-
-  RunParserSyncTest(context_data, statement_data, kSuccess);
-}
-
-
-TEST(ErrorsNewExpression) {
-  const char* context_data[][2] = {
-    {"", ""},
-    {"var f =", ""},
-    { NULL, NULL }
-  };
-
-  const char* statement_data[] = {
-    "new foo bar",
-    "new ) foo",
-    "new ++foo",
-    NULL
-  };
-
-  RunParserSyncTest(context_data, statement_data, kError);
 }
