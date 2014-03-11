@@ -1898,8 +1898,7 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
 // * function: r1 or at sp.
 //
 // An inlined call site may have been generated before calling this stub.
-// In this case the offset to the inline site to patch is passed on the stack,
-// in the safepoint slot for register r4.
+// In this case the offset to the inline site to patch is passed in r5.
 // (See LCodeGen::DoInstanceOfKnownGlobal)
 void InstanceofStub::Generate(MacroAssembler* masm) {
   // Call site inlining and patching implies arguments in registers.
@@ -1958,14 +1957,14 @@ void InstanceofStub::Generate(MacroAssembler* masm) {
     ASSERT(HasArgsInRegisters());
     // Patch the (relocated) inlined map check.
 
-    // The offset was stored in r4 safepoint slot.
-    // (See LCodeGen::DoDeferredLInstanceOfKnownGlobal)
-    __ LoadFromSafepointRegisterSlot(scratch, r4);
-    __ sub(inline_site, lr, scratch);
-    // Get the map location in scratch and patch it.
-    __ GetRelocatedValueLocation(inline_site, scratch);
-    __ ldr(scratch, MemOperand(scratch));
-    __ str(map, FieldMemOperand(scratch, Cell::kValueOffset));
+    // The offset was stored in r5
+    //   (See LCodeGen::DoDeferredLInstanceOfKnownGlobal).
+    const Register offset = r5;
+    __ sub(inline_site, lr, offset);
+    // Get the map location in r5 and patch it.
+    __ GetRelocatedValueLocation(inline_site, offset);
+    __ ldr(offset, MemOperand(offset));
+    __ str(map, FieldMemOperand(offset, Cell::kValueOffset));
   }
 
   // Register mapping: r3 is object map and r4 is function prototype.
@@ -3015,9 +3014,9 @@ static void GenerateRecordCallTarget(MacroAssembler* masm) {
   Label initialize, done, miss, megamorphic, not_array_function;
 
   ASSERT_EQ(*TypeFeedbackInfo::MegamorphicSentinel(masm->isolate()),
-            masm->isolate()->heap()->undefined_value());
+            masm->isolate()->heap()->megamorphic_symbol());
   ASSERT_EQ(*TypeFeedbackInfo::UninitializedSentinel(masm->isolate()),
-            masm->isolate()->heap()->the_hole_value());
+            masm->isolate()->heap()->uninitialized_symbol());
 
   // Load the cache state into r4.
   __ add(r4, r2, Operand::PointerOffsetFromSmiKey(r3));
@@ -3046,13 +3045,13 @@ static void GenerateRecordCallTarget(MacroAssembler* masm) {
 
   // A monomorphic miss (i.e, here the cache is not uninitialized) goes
   // megamorphic.
-  __ CompareRoot(r4, Heap::kTheHoleValueRootIndex);
+  __ CompareRoot(r4, Heap::kUninitializedSymbolRootIndex);
   __ b(eq, &initialize);
   // MegamorphicSentinel is an immortal immovable object (undefined) so no
   // write-barrier is needed.
   __ bind(&megamorphic);
   __ add(r4, r2, Operand::PointerOffsetFromSmiKey(r3));
-  __ LoadRoot(ip, Heap::kUndefinedValueRootIndex);
+  __ LoadRoot(ip, Heap::kMegamorphicSymbolRootIndex);
   __ str(ip, FieldMemOperand(r4, FixedArray::kHeaderSize));
   __ jmp(&done);
 
@@ -3099,7 +3098,8 @@ static void GenerateRecordCallTarget(MacroAssembler* masm) {
 void CallFunctionStub::Generate(MacroAssembler* masm) {
   // r1 : the function to call
   // r2 : feedback vector
-  // r3 : (only if r2 is not undefined) slot in feedback vector (Smi)
+  // r3 : (only if r2 is not the megamorphic symbol) slot in feedback
+  //      vector (Smi)
   Label slow, non_function, wrap, cont;
 
   if (NeedsChecks()) {
@@ -3155,11 +3155,11 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
     if (RecordCallTarget()) {
       // If there is a call target cache, mark it megamorphic in the
       // non-function case.  MegamorphicSentinel is an immortal immovable
-      // object (undefined) so no write barrier is needed.
+      // object (megamorphic symbol) so no write barrier is needed.
       ASSERT_EQ(*TypeFeedbackInfo::MegamorphicSentinel(masm->isolate()),
-                masm->isolate()->heap()->undefined_value());
+                masm->isolate()->heap()->megamorphic_symbol());
       __ add(r5, r2, Operand::PointerOffsetFromSmiKey(r3));
-      __ LoadRoot(ip, Heap::kUndefinedValueRootIndex);
+      __ LoadRoot(ip, Heap::kMegamorphicSymbolRootIndex);
       __ str(ip, FieldMemOperand(r5, FixedArray::kHeaderSize));
     }
     // Check for function proxy.
@@ -3204,7 +3204,8 @@ void CallConstructStub::Generate(MacroAssembler* masm) {
   // r0 : number of arguments
   // r1 : the function to call
   // r2 : feedback vector
-  // r3 : (only if r2 is not undefined) slot in feedback vector (Smi)
+  // r3 : (only if r2 is not the megamorphic symbol) slot in feedback
+  //      vector (Smi)
   Label slow, non_function_call;
 
   // Check that the function is not a smi.
@@ -5289,11 +5290,15 @@ void ArrayConstructorStub::Generate(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- r0 : argc (only if argument_count_ == ANY)
   //  -- r1 : constructor
-  //  -- r2 : feedback vector (fixed array or undefined)
+  //  -- r2 : feedback vector (fixed array or megamorphic symbol)
   //  -- r3 : slot index (if r2 is fixed array)
   //  -- sp[0] : return address
   //  -- sp[4] : last argument
   // -----------------------------------
+
+  ASSERT_EQ(*TypeFeedbackInfo::MegamorphicSentinel(masm->isolate()),
+            masm->isolate()->heap()->megamorphic_symbol());
+
   if (FLAG_debug_code) {
     // The array construct code is only set for the global and natives
     // builtin Array functions which always have maps.
@@ -5306,10 +5311,11 @@ void ArrayConstructorStub::Generate(MacroAssembler* masm) {
     __ CompareObjectType(r4, r4, r5, MAP_TYPE);
     __ Assert(eq, kUnexpectedInitialMapForArrayFunction);
 
-    // We should either have undefined in ebx or a valid fixed array.
+    // We should either have the megamorphic symbol in ebx or a valid
+    // fixed array.
     Label okay_here;
     Handle<Map> fixed_array_map = masm->isolate()->factory()->fixed_array_map();
-    __ CompareRoot(r2, Heap::kUndefinedValueRootIndex);
+    __ CompareRoot(r2, Heap::kMegamorphicSymbolRootIndex);
     __ b(eq, &okay_here);
     __ ldr(r4, FieldMemOperand(r2, 0));
     __ cmp(r4, Operand(fixed_array_map));
@@ -5323,7 +5329,7 @@ void ArrayConstructorStub::Generate(MacroAssembler* masm) {
 
   Label no_info;
   // Get the elements kind and case on that.
-  __ CompareRoot(r2, Heap::kUndefinedValueRootIndex);
+  __ CompareRoot(r2, Heap::kMegamorphicSymbolRootIndex);
   __ b(eq, &no_info);
   __ add(r2, r2, Operand::PointerOffsetFromSmiKey(r3));
   __ ldr(r2, FieldMemOperand(r2, FixedArray::kHeaderSize));

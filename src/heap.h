@@ -196,6 +196,8 @@ namespace internal {
   V(SeededNumberDictionary, empty_slow_element_dictionary,                     \
       EmptySlowElementDictionary)                                              \
   V(Symbol, observed_symbol, ObservedSymbol)                                   \
+  V(Symbol, uninitialized_symbol, UninitializedSymbol)                         \
+  V(Symbol, megamorphic_symbol, MegamorphicSymbol)                             \
   V(FixedArray, materialized_objects, MaterializedObjects)                     \
   V(FixedArray, allocation_sites_scratchpad, AllocationSitesScratchpad)        \
   V(JSObject, microtask_state, MicrotaskState)
@@ -1010,9 +1012,10 @@ class Heap {
       PretenureFlag pretenure = NOT_TENURED);
 
   MUST_USE_RESULT MaybeObject* AllocateConstantPoolArray(
-      int first_int64_index,
-      int first_ptr_index,
-      int first_int32_index);
+      int number_of_int64_entries,
+      int number_of_code_ptr_entries,
+      int number_of_heap_ptr_entries,
+      int number_of_int32_entries);
 
   // Allocates a fixed double array with uninitialized values. Returns
   // Failure::RetryAfterGC(requested_bytes, space) if the allocation failed.
