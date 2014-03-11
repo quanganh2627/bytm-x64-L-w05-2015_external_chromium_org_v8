@@ -96,7 +96,6 @@ LOCAL_SRC_FILES := \
 	v8/src/hydrogen-load-elimination.cc \
 	v8/src/hydrogen-mark-deoptimize.cc \
 	v8/src/hydrogen-mark-unreachable.cc \
-	v8/src/hydrogen-minus-zero.cc \
 	v8/src/hydrogen-osr.cc \
 	v8/src/hydrogen-range-analysis.cc \
 	v8/src/hydrogen-redundant-phi.cc \
