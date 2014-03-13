@@ -227,7 +227,7 @@ struct Register : public CPURegister {
 
   static Register from_code(int code) {
     // Always return an X register.
-    return Register::Create(code, kXRegSize);
+    return Register::Create(code, kXRegSizeInBits);
   }
 
   // End of V8 compatibility section -----------------------
@@ -264,41 +264,65 @@ struct FPRegister : public CPURegister {
   static const int kMaxNumRegisters = kNumberOfFPRegisters;
 
   // Crankshaft can use all the FP registers except:
-  //   - d29 which is used in crankshaft as a double scratch register
-  //   - d30 which is used to keep the 0 double value
+  //   - d15 which is used to keep the 0 double value
+  //   - d30 which is used in crankshaft as a double scratch register
   //   - d31 which is used in the MacroAssembler as a double scratch register
-  static const int kNumReservedRegisters = 3;
-  static const int kMaxNumAllocatableRegisters =
-      kNumberOfFPRegisters - kNumReservedRegisters;
-  static int NumAllocatableRegisters() { return kMaxNumAllocatableRegisters; }
-  static const RegList kAllocatableFPRegisters =
-      (1 << kMaxNumAllocatableRegisters) - 1;
+  static const unsigned kAllocatableLowRangeBegin = 0;
+  static const unsigned kAllocatableLowRangeEnd = 14;
+  static const unsigned kAllocatableHighRangeBegin = 16;
+  static const unsigned kAllocatableHighRangeEnd = 29;
 
-  static FPRegister FromAllocationIndex(int index) {
-    ASSERT((index >= 0) && (index < NumAllocatableRegisters()));
-    return from_code(index);
+  static const RegList kAllocatableFPRegisters = 0x3fff7fff;
+
+  // Gap between low and high ranges.
+  static const int kAllocatableRangeGapSize =
+      (kAllocatableHighRangeBegin - kAllocatableLowRangeEnd) - 1;
+
+  static const int kMaxNumAllocatableRegisters =
+      (kAllocatableLowRangeEnd - kAllocatableLowRangeBegin + 1) +
+      (kAllocatableHighRangeEnd - kAllocatableHighRangeBegin + 1);
+  static int NumAllocatableRegisters() { return kMaxNumAllocatableRegisters; }
+
+  // Return true if the register is one that crankshaft can allocate.
+  bool IsAllocatable() const {
+    return (Bit() & kAllocatableFPRegisters) != 0;
+  }
+
+  static FPRegister FromAllocationIndex(unsigned int index) {
+    ASSERT(index < static_cast<unsigned>(NumAllocatableRegisters()));
+
+    return (index <= kAllocatableLowRangeEnd)
+        ? from_code(index)
+        : from_code(index + kAllocatableRangeGapSize);
   }
 
   static const char* AllocationIndexToString(int index) {
     ASSERT((index >= 0) && (index < NumAllocatableRegisters()));
+    ASSERT((kAllocatableLowRangeBegin == 0) &&
+           (kAllocatableLowRangeEnd == 14) &&
+           (kAllocatableHighRangeBegin == 16) &&
+           (kAllocatableHighRangeEnd == 29));
     const char* const names[] = {
       "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7",
-      "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15",
+      "d8", "d9", "d10", "d11", "d12", "d13", "d14",
       "d16", "d17", "d18", "d19", "d20", "d21", "d22", "d23",
-      "d24", "d25", "d26", "d27", "d28",
+      "d24", "d25", "d26", "d27", "d28", "d29"
     };
     return names[index];
   }
 
   static int ToAllocationIndex(FPRegister reg) {
-    int code = reg.code();
-    ASSERT(code < NumAllocatableRegisters());
-    return code;
+    ASSERT(reg.IsAllocatable());
+    unsigned code = reg.code();
+
+    return (code <= kAllocatableLowRangeEnd)
+        ? code
+        : code - kAllocatableRangeGapSize;
   }
 
   static FPRegister from_code(int code) {
     // Always return a D register.
-    return FPRegister::Create(code, kDRegSize);
+    return FPRegister::Create(code, kDRegSizeInBits);
   }
   // End of V8 compatibility section -----------------------
 };
@@ -334,20 +358,23 @@ INITIALIZE_REGISTER(CPURegister, NoCPUReg, 0, 0, CPURegister::kNoRegister);
 INITIALIZE_REGISTER(Register, no_reg, 0, 0, CPURegister::kNoRegister);
 
 #define DEFINE_REGISTERS(N)                                                  \
-  INITIALIZE_REGISTER(Register, w##N, N, kWRegSize, CPURegister::kRegister); \
-  INITIALIZE_REGISTER(Register, x##N, N, kXRegSize, CPURegister::kRegister);
+  INITIALIZE_REGISTER(Register, w##N, N,                                     \
+                      kWRegSizeInBits, CPURegister::kRegister);              \
+  INITIALIZE_REGISTER(Register, x##N, N,                                     \
+                      kXRegSizeInBits, CPURegister::kRegister);
 REGISTER_CODE_LIST(DEFINE_REGISTERS)
 #undef DEFINE_REGISTERS
 
-INITIALIZE_REGISTER(Register, wcsp, kSPRegInternalCode, kWRegSize,
+INITIALIZE_REGISTER(Register, wcsp, kSPRegInternalCode, kWRegSizeInBits,
                     CPURegister::kRegister);
-INITIALIZE_REGISTER(Register, csp, kSPRegInternalCode, kXRegSize,
+INITIALIZE_REGISTER(Register, csp, kSPRegInternalCode, kXRegSizeInBits,
                     CPURegister::kRegister);
 
-#define DEFINE_FPREGISTERS(N)                         \
-  INITIALIZE_REGISTER(FPRegister, s##N, N, kSRegSize, \
-                      CPURegister::kFPRegister);      \
-  INITIALIZE_REGISTER(FPRegister, d##N, N, kDRegSize, CPURegister::kFPRegister);
+#define DEFINE_FPREGISTERS(N)                                                  \
+  INITIALIZE_REGISTER(FPRegister, s##N, N,                                     \
+                      kSRegSizeInBits, CPURegister::kFPRegister);              \
+  INITIALIZE_REGISTER(FPRegister, d##N, N,                                     \
+                      kDRegSizeInBits, CPURegister::kFPRegister);
 REGISTER_CODE_LIST(DEFINE_FPREGISTERS)
 #undef DEFINE_FPREGISTERS
 
@@ -375,10 +402,10 @@ ALIAS_REGISTER(Register, lr, x30);
 ALIAS_REGISTER(Register, xzr, x31);
 ALIAS_REGISTER(Register, wzr, w31);
 
-// Crankshaft double scratch register.
-ALIAS_REGISTER(FPRegister, crankshaft_fp_scratch, d29);
 // Keeps the 0 double value.
-ALIAS_REGISTER(FPRegister, fp_zero, d30);
+ALIAS_REGISTER(FPRegister, fp_zero, d15);
+// Crankshaft double scratch register.
+ALIAS_REGISTER(FPRegister, crankshaft_fp_scratch, d30);
 // MacroAssembler double scratch register.
 ALIAS_REGISTER(FPRegister, fp_scratch, d31);
 
@@ -496,12 +523,12 @@ class CPURegList {
   CPURegister PopHighestIndex();
 
   // AAPCS64 callee-saved registers.
-  static CPURegList GetCalleeSaved(unsigned size = kXRegSize);
-  static CPURegList GetCalleeSavedFP(unsigned size = kDRegSize);
+  static CPURegList GetCalleeSaved(unsigned size = kXRegSizeInBits);
+  static CPURegList GetCalleeSavedFP(unsigned size = kDRegSizeInBits);
 
   // AAPCS64 caller-saved registers. Note that this includes lr.
-  static CPURegList GetCallerSaved(unsigned size = kXRegSize);
-  static CPURegList GetCallerSavedFP(unsigned size = kDRegSize);
+  static CPURegList GetCallerSaved(unsigned size = kXRegSizeInBits);
+  static CPURegList GetCallerSavedFP(unsigned size = kDRegSizeInBits);
 
   // Registers saved as safepoints.
   static CPURegList GetSafepointSavedRegisters();
@@ -756,8 +783,15 @@ class Assembler : public AssemblerBase {
   inline static Address target_pointer_address_at(Address pc);
 
   // Read/Modify the code target address in the branch/call instruction at pc.
-  inline static Address target_address_at(Address pc);
-  inline static void set_target_address_at(Address pc, Address target);
+  inline static Address target_address_at(Address pc,
+                                          ConstantPoolArray* constant_pool);
+  inline static void set_target_address_at(Address pc,
+                                           ConstantPoolArray* constant_pool,
+                                           Address target);
+  static inline Address target_address_at(Address pc, Code* code);
+  static inline void set_target_address_at(Address pc,
+                                           Code* code,
+                                           Address target);
 
   // Return the code target address at a call site from the return address of
   // that call in the instruction stream.
@@ -770,7 +804,7 @@ class Assembler : public AssemblerBase {
   // This sets the branch destination (which is in the constant pool on ARM).
   // This is for calls and branches within generated code.
   inline static void deserialization_set_special_target_at(
-      Address constant_pool_entry, Address target);
+      Address constant_pool_entry, Code* code, Address target);
 
   // All addresses in the constant pool are the same size as pointers.
   static const int kSpecialTargetSize = kPointerSize;
@@ -822,9 +856,6 @@ class Assembler : public AssemblerBase {
     return SizeOfCodeGeneratedSince(label) / kInstructionSize;
   }
 
-  // TODO(all): Initialize these constants related with code patching.
-  // TODO(all): Set to -1 to hopefully crash if mistakenly used.
-
   // Number of instructions generated for the return sequence in
   // FullCodeGenerator::EmitReturnSequence.
   static const int kJSRetSequenceInstructions = 7;
@@ -855,6 +886,7 @@ class Assembler : public AssemblerBase {
   static int ConstantPoolSizeAt(Instruction* instr);
   // See Assembler::CheckConstPool for more info.
   void ConstantPoolMarker(uint32_t size);
+  void EmitPoolGuard();
   void ConstantPoolGuard();
 
   // Prevent veneer pool emission until EndBlockVeneerPool is called.
@@ -893,20 +925,20 @@ class Assembler : public AssemblerBase {
 
   // Record the emission of a constant pool.
   //
-  // The emission of constant pool depends on the size of the code generated and
-  // the number of RelocInfo recorded.
+  // The emission of constant and veneer pools depends on the size of the code
+  // generated and the number of RelocInfo recorded.
   // The Debug mechanism needs to map code offsets between two versions of a
   // function, compiled with and without debugger support (see for example
   // Debug::PrepareForBreakPoints()).
   // Compiling functions with debugger support generates additional code
-  // (Debug::GenerateSlot()). This may affect the emission of the constant
-  // pools and cause the version of the code with debugger support to have
-  // constant pools generated in different places.
-  // Recording the position and size of emitted constant pools allows to
-  // correctly compute the offset mappings between the different versions of a
-  // function in all situations.
+  // (Debug::GenerateSlot()). This may affect the emission of the pools and
+  // cause the version of the code with debugger support to have pools generated
+  // in different places.
+  // Recording the position and size of emitted pools allows to correctly
+  // compute the offset mappings between the different versions of a function in
+  // all situations.
   //
-  // The parameter indicates the size of the constant pool (in bytes), including
+  // The parameter indicates the size of the pool (in bytes), including
   // the marker and branch over the data.
   void RecordConstPool(int size);
 
@@ -1770,11 +1802,12 @@ class Assembler : public AssemblerBase {
   // in the future for example if we decide to add nops between the veneers.
   static const int kMaxVeneerCodeSize = 1 * kInstructionSize;
 
+  void RecordVeneerPool(int location_offset, int size);
   // Emits veneers for branches that are approaching their maximum range.
   // If need_protection is true, the veneers are protected by a branch jumping
   // over the code.
   void EmitVeneers(bool need_protection, int margin = kVeneerDistanceMargin);
-  void EmitVeneersGuard();
+  void EmitVeneersGuard() { EmitPoolGuard(); }
   // Checks whether veneers need to be emitted at this point.
   void CheckVeneerPool(bool require_jump, int margin = kVeneerDistanceMargin);
 

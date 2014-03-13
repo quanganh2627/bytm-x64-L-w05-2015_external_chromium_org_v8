@@ -600,10 +600,7 @@ MaybeObject* Accessors::FunctionSetPrototype(Isolate* isolate,
   }
 
   Handle<Object> old_value;
-  bool is_observed =
-      FLAG_harmony_observation &&
-      *function == *object &&
-      function->map()->is_observed();
+  bool is_observed = *function == *object && function->map()->is_observed();
   if (is_observed) {
     if (function->has_prototype())
       old_value = handle(function->prototype(), isolate);
@@ -891,10 +888,10 @@ MaybeObject* Accessors::FunctionGetCaller(Isolate* isolate,
   if (caller->shared()->bound()) {
     return isolate->heap()->null_value();
   }
-  // Censor if the caller is not a classic mode function.
+  // Censor if the caller is not a sloppy mode function.
   // Change from ES5, which used to throw, see:
   // https://bugs.ecmascript.org/show_bug.cgi?id=310
-  if (!caller->shared()->is_classic_mode()) {
+  if (caller->shared()->strict_mode() == STRICT) {
     return isolate->heap()->null_value();
   }
 

@@ -343,7 +343,7 @@ unsigned MacroAssembler::CountClearHalfWords(uint64_t imm, unsigned reg_size) {
 // The movz instruction can generate immediates containing an arbitrary 16-bit
 // half-word, with remaining bits clear, eg. 0x00001234, 0x0000123400000000.
 bool MacroAssembler::IsImmMovz(uint64_t imm, unsigned reg_size) {
-  ASSERT((reg_size == kXRegSize) || (reg_size == kWRegSize));
+  ASSERT((reg_size == kXRegSizeInBits) || (reg_size == kWRegSizeInBits));
   return CountClearHalfWords(imm, reg_size) >= ((reg_size / 16) - 1);
 }
 
@@ -474,9 +474,9 @@ void MacroAssembler::AddSubWithCarryMacro(const Register& rd,
     // Add/sub with carry (shifted register).
     ASSERT(operand.reg().SizeInBits() == rd.SizeInBits());
     ASSERT(operand.shift() != ROR);
-    ASSERT(
-        is_uintn(operand.shift_amount(),
-                 rd.SizeInBits() == kXRegSize ? kXRegSizeLog2 : kWRegSizeLog2));
+    ASSERT(is_uintn(operand.shift_amount(),
+          rd.SizeInBits() == kXRegSizeInBits ? kXRegSizeInBitsLog2
+                                             : kWRegSizeInBitsLog2));
     Register temp = temps.AcquireSameSizeAs(rn);
     EmitShift(temp, operand.reg(), operand.shift(), operand.shift_amount());
     AddSubWithCarry(rd, rn, temp, S, op);
@@ -1118,7 +1118,7 @@ void MacroAssembler::PushCalleeSavedRegisters() {
   // system stack pointer (csp).
   ASSERT(csp.Is(StackPointer()));
 
-  MemOperand tos(csp, -2 * kXRegSizeInBytes, PreIndex);
+  MemOperand tos(csp, -2 * kXRegSize, PreIndex);
 
   stp(d14, d15, tos);
   stp(d12, d13, tos);
@@ -1142,7 +1142,7 @@ void MacroAssembler::PopCalleeSavedRegisters() {
   // system stack pointer (csp).
   ASSERT(csp.Is(StackPointer()));
 
-  MemOperand tos(csp, 2 * kXRegSizeInBytes, PostIndex);
+  MemOperand tos(csp, 2 * kXRegSize, PostIndex);
 
   ldp(x19, x20, tos);
   ldp(x21, x22, tos);
@@ -1516,12 +1516,7 @@ void MacroAssembler::AssertNotSmi(Register object, BailoutReason reason) {
 
 void MacroAssembler::AssertName(Register object) {
   if (emit_debug_code()) {
-    STATIC_ASSERT(kSmiTag == 0);
-    // TODO(jbramley): Add AbortIfSmi and related functions.
-    Label not_smi;
-    JumpIfNotSmi(object, &not_smi);
-    Abort(kOperandIsASmiAndNotAName);
-    Bind(&not_smi);
+    AssertNotSmi(object, kOperandIsASmiAndNotAName);
 
     UseScratchRegisterScope temps(this);
     Register temp = temps.AcquireX();
@@ -1626,10 +1621,10 @@ void MacroAssembler::CallApiFunctionAndReturn(
   // Save the callee-save registers we are going to use.
   // TODO(all): Is this necessary? ARM doesn't do it.
   STATIC_ASSERT(kCallApiFunctionSpillSpace == 4);
-  Poke(x19, (spill_offset + 0) * kXRegSizeInBytes);
-  Poke(x20, (spill_offset + 1) * kXRegSizeInBytes);
-  Poke(x21, (spill_offset + 2) * kXRegSizeInBytes);
-  Poke(x22, (spill_offset + 3) * kXRegSizeInBytes);
+  Poke(x19, (spill_offset + 0) * kXRegSize);
+  Poke(x20, (spill_offset + 1) * kXRegSize);
+  Poke(x21, (spill_offset + 2) * kXRegSize);
+  Poke(x22, (spill_offset + 3) * kXRegSize);
 
   // Allocate HandleScope in callee-save registers.
   // We will need to restore the HandleScope after the call to the API function,
@@ -1693,10 +1688,10 @@ void MacroAssembler::CallApiFunctionAndReturn(
 
   Bind(&leave_exit_frame);
   // Restore callee-saved registers.
-  Peek(x19, (spill_offset + 0) * kXRegSizeInBytes);
-  Peek(x20, (spill_offset + 1) * kXRegSizeInBytes);
-  Peek(x21, (spill_offset + 2) * kXRegSizeInBytes);
-  Peek(x22, (spill_offset + 3) * kXRegSizeInBytes);
+  Peek(x19, (spill_offset + 0) * kXRegSize);
+  Peek(x20, (spill_offset + 1) * kXRegSize);
+  Peek(x21, (spill_offset + 2) * kXRegSize);
+  Peek(x22, (spill_offset + 3) * kXRegSize);
 
   // Check if the function scheduled an exception.
   Mov(x5, Operand(ExternalReference::scheduled_exception_address(isolate())));
@@ -1763,11 +1758,13 @@ void MacroAssembler::GetBuiltinFunction(Register target,
 }
 
 
-void MacroAssembler::GetBuiltinEntry(Register target, Builtins::JavaScript id) {
-  ASSERT(!target.is(x1));
-  GetBuiltinFunction(x1, id);
+void MacroAssembler::GetBuiltinEntry(Register target,
+                                     Register function,
+                                     Builtins::JavaScript id) {
+  ASSERT(!AreAliased(target, function));
+  GetBuiltinFunction(function, id);
   // Load the code entry point from the builtins object.
-  Ldr(target, FieldMemOperand(x1, JSFunction::kCodeEntryOffset));
+  Ldr(target, FieldMemOperand(function, JSFunction::kCodeEntryOffset));
 }
 
 
@@ -1778,7 +1775,8 @@ void MacroAssembler::InvokeBuiltin(Builtins::JavaScript id,
   // You can't call a builtin without a valid frame.
   ASSERT(flag == JUMP_FUNCTION || has_frame());
 
-  GetBuiltinEntry(x2, id);
+  // Get the builtin entry in x2 and setup the function object in x1.
+  GetBuiltinEntry(x2, x1, id);
   if (flag == CALL_FUNCTION) {
     call_wrapper.BeforeCall(CallSize(x2));
     Call(x2);
@@ -2167,7 +2165,7 @@ void MacroAssembler::LookupNumberStringCache(Register object,
   CheckMap(object, scratch1, Heap::kHeapNumberMapRootIndex, not_found,
            DONT_DO_SMI_CHECK);
 
-  STATIC_ASSERT(kDoubleSize == (kWRegSizeInBytes * 2));
+  STATIC_ASSERT(kDoubleSize == (kWRegSize * 2));
   Add(scratch1, object, HeapNumber::kValueOffset - kHeapObjectTag);
   Ldp(scratch1.W(), scratch2.W(), MemOperand(scratch1));
   Eor(scratch1, scratch1, scratch2);
@@ -2300,9 +2298,9 @@ void MacroAssembler::CopyFieldsLoopPairsHelper(Register dst,
   Label loop;
   Bind(&loop);
   Ldp(scratch4, scratch5,
-      MemOperand(src_untagged, kXRegSizeInBytes * 2, PostIndex));
+      MemOperand(src_untagged, kXRegSize* 2, PostIndex));
   Stp(scratch4, scratch5,
-      MemOperand(dst_untagged, kXRegSizeInBytes * 2, PostIndex));
+      MemOperand(dst_untagged, kXRegSize* 2, PostIndex));
   Sub(remaining, remaining, 1);
   Cbnz(remaining, &loop);
 
@@ -2332,10 +2330,8 @@ void MacroAssembler::CopyFieldsUnrolledPairsHelper(Register dst,
 
   // Copy fields in pairs.
   for (unsigned i = 0; i < count / 2; i++) {
-    Ldp(scratch3, scratch4,
-        MemOperand(src_untagged, kXRegSizeInBytes * 2, PostIndex));
-    Stp(scratch3, scratch4,
-        MemOperand(dst_untagged, kXRegSizeInBytes * 2, PostIndex));
+    Ldp(scratch3, scratch4, MemOperand(src_untagged, kXRegSize * 2, PostIndex));
+    Stp(scratch3, scratch4, MemOperand(dst_untagged, kXRegSize * 2, PostIndex));
   }
 
   // Handle the leftovers.
@@ -2363,8 +2359,8 @@ void MacroAssembler::CopyFieldsUnrolledHelper(Register dst,
 
   // Copy fields one by one.
   for (unsigned i = 0; i < count; i++) {
-    Ldr(scratch3, MemOperand(src_untagged, kXRegSizeInBytes, PostIndex));
-    Str(scratch3, MemOperand(dst_untagged, kXRegSizeInBytes, PostIndex));
+    Ldr(scratch3, MemOperand(src_untagged, kXRegSize, PostIndex));
+    Str(scratch3, MemOperand(dst_untagged, kXRegSize, PostIndex));
   }
 }
 
@@ -2847,8 +2843,6 @@ void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
     ASSERT(StackPointer().Is(jssp));
     UseScratchRegisterScope temps(this);
     Register temp = temps.AcquireX();
-    // TODO(jbramley): Does x1 contain a JSFunction here, or does it already
-    // have the special STUB smi?
     __ Mov(temp, Operand(Smi::FromInt(StackFrame::STUB)));
     // Compiled stubs don't age, and so they don't need the predictable code
     // ageing sequence.
@@ -2911,7 +2905,7 @@ void MacroAssembler::ExitFrameRestoreFPRegs() {
   while (!saved_fp_regs.IsEmpty()) {
     const CPURegister& dst0 = saved_fp_regs.PopHighestIndex();
     const CPURegister& dst1 = saved_fp_regs.PopHighestIndex();
-    offset -= 2 * kDRegSizeInBytes;
+    offset -= 2 * kDRegSize;
     Ldp(dst1, dst0, MemOperand(fp, offset));
   }
 }
@@ -2956,7 +2950,7 @@ void MacroAssembler::EnterExitFrame(bool save_doubles,
   // Reserve space for the return address and for user requested memory.
   // We do this before aligning to make sure that we end up correctly
   // aligned with the minimum of wasted space.
-  Claim(extra_space + 1, kXRegSizeInBytes);
+  Claim(extra_space + 1, kXRegSize);
   //         fp[8]: CallerPC (lr)
   //   fp -> fp[0]: CallerFP (old fp)
   //         fp[-8]: Space reserved for SPOffset.
@@ -2982,7 +2976,7 @@ void MacroAssembler::EnterExitFrame(bool save_doubles,
   // the memory address immediately below the pointer stored in SPOffset.
   // It is not safe to derive much else from SPOffset, because the size of the
   // padding can vary.
-  Add(scratch, csp, kXRegSizeInBytes);
+  Add(scratch, csp, kXRegSize);
   Str(scratch, MemOperand(fp, ExitFrameConstants::kSPOffset));
 }
 
@@ -3124,7 +3118,7 @@ void MacroAssembler::PopTryHandler() {
   STATIC_ASSERT(StackHandlerConstants::kNextOffset == 0);
   Pop(x10);
   Mov(x11, Operand(ExternalReference(Isolate::kHandlerAddress, isolate())));
-  Drop(StackHandlerConstants::kSize - kXRegSizeInBytes, kByteSizeInBytes);
+  Drop(StackHandlerConstants::kSize - kXRegSize, kByteSizeInBytes);
   Str(x10, MemOperand(x11));
 }
 
@@ -4113,13 +4107,13 @@ void MacroAssembler::PushSafepointRegisters() {
 
 
 void MacroAssembler::PushSafepointFPRegisters() {
-  PushCPURegList(CPURegList(CPURegister::kFPRegister, kDRegSize,
+  PushCPURegList(CPURegList(CPURegister::kFPRegister, kDRegSizeInBits,
                             FPRegister::kAllocatableFPRegisters));
 }
 
 
 void MacroAssembler::PopSafepointFPRegisters() {
-  PopCPURegList(CPURegList(CPURegister::kFPRegister, kDRegSize,
+  PopCPURegList(CPURegList(CPURegister::kFPRegister, kDRegSizeInBits,
                            FPRegister::kAllocatableFPRegisters));
 }
 
@@ -4952,10 +4946,10 @@ void MacroAssembler::EmitFrameSetupForCodeAgePatching(Assembler * assm) {
   // sequence that patches it needs five, so we use the extra space to try to
   // simplify some addressing modes and remove some dependencies (compared to
   // using two stp instructions with write-back).
-  __ sub(jssp, jssp, 4 * kXRegSizeInBytes);
-  __ sub(csp, csp, 4 * kXRegSizeInBytes);
-  __ stp(x1, cp, MemOperand(jssp, 0 * kXRegSizeInBytes));
-  __ stp(fp, lr, MemOperand(jssp, 2 * kXRegSizeInBytes));
+  __ sub(jssp, jssp, 4 * kXRegSize);
+  __ sub(csp, csp, 4 * kXRegSize);
+  __ stp(x1, cp, MemOperand(jssp, 0 * kXRegSize));
+  __ stp(fp, lr, MemOperand(jssp, 2 * kXRegSize));
   __ add(fp, jssp, StandardFrameConstants::kFixedFrameSizeFromFp);
 
   __ AssertSizeOfCodeGeneratedSince(&start, kCodeAgeSequenceSize);

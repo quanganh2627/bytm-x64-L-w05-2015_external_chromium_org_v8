@@ -519,7 +519,7 @@ Handle<Object> JSProxy::SetElementWithHandler(Handle<JSProxy> proxy,
                                               Handle<JSReceiver> receiver,
                                               uint32_t index,
                                               Handle<Object> value,
-                                              StrictModeFlag strict_mode) {
+                                              StrictMode strict_mode) {
   Isolate* isolate = proxy->GetIsolate();
   Handle<String> name = isolate->factory()->Uint32ToString(index);
   return SetPropertyWithHandler(
@@ -1975,31 +1975,6 @@ static Handle<Object> NewStorageFor(Isolate* isolate,
 }
 
 
-void JSObject::AddFastPropertyUsingMap(Handle<JSObject> object,
-                                       Handle<Map> new_map,
-                                       Handle<Name> name,
-                                       Handle<Object> value,
-                                       int field_index,
-                                       Representation representation) {
-  Isolate* isolate = object->GetIsolate();
-
-  // This method is used to transition to a field. If we are transitioning to a
-  // double field, allocate new storage.
-  Handle<Object> storage = NewStorageFor(isolate, value, representation);
-
-  if (object->map()->unused_property_fields() == 0) {
-    int new_unused = new_map->unused_property_fields();
-    Handle<FixedArray> properties(object->properties());
-    Handle<FixedArray> values = isolate->factory()->CopySizeFixedArray(
-        properties, properties->length() + new_unused + 1);
-    object->set_properties(*values);
-  }
-
-  object->set_map(*new_map);
-  object->FastPropertyAtPut(field_index, *storage);
-}
-
-
 static MaybeObject* CopyAddFieldDescriptor(Map* map,
                                            Name* name,
                                            int index,
@@ -2064,7 +2039,16 @@ void JSObject::AddFastProperty(Handle<JSObject> object,
   Handle<Map> new_map = CopyAddFieldDescriptor(
       handle(object->map()), name, index, attributes, representation, flag);
 
-  AddFastPropertyUsingMap(object, new_map, name, value, index, representation);
+  JSObject::MigrateToMap(object, new_map);
+
+  if (representation.IsDouble()) {
+    // Nothing more to be done.
+    if (value->IsUninitialized()) return;
+    HeapNumber* box = HeapNumber::cast(object->RawFastPropertyAt(index));
+    box->set_value(value->Number());
+  } else {
+    object->FastPropertyAtPut(index, *value);
+  }
 }
 
 
@@ -2108,7 +2092,7 @@ void JSObject::AddConstantProperty(Handle<JSObject> object,
   Handle<Map> new_map = CopyAddConstantDescriptor(
       handle(object->map()), name, constant, attributes, flag);
 
-  object->set_map(*new_map);
+  JSObject::MigrateToMap(object, new_map);
 }
 
 
@@ -2147,7 +2131,7 @@ Handle<Object> JSObject::AddProperty(Handle<JSObject> object,
                                      Handle<Name> name,
                                      Handle<Object> value,
                                      PropertyAttributes attributes,
-                                     StrictModeFlag strict_mode,
+                                     StrictMode strict_mode,
                                      JSReceiver::StoreFromKeyed store_mode,
                                      ExtensibilityCheck extensibility_check,
                                      ValueType value_type,
@@ -2163,7 +2147,7 @@ Handle<Object> JSObject::AddProperty(Handle<JSObject> object,
 
   if (extensibility_check == PERFORM_EXTENSIBILITY_CHECK &&
       !object->map()->is_extensible()) {
-    if (strict_mode == kNonStrictMode) {
+    if (strict_mode == SLOPPY) {
       return value;
     } else {
       Handle<Object> args[1] = { name };
@@ -2197,8 +2181,7 @@ Handle<Object> JSObject::AddProperty(Handle<JSObject> object,
     AddSlowProperty(object, name, value, attributes);
   }
 
-  if (FLAG_harmony_observation &&
-      object->map()->is_observed() &&
+  if (object->map()->is_observed() &&
       *name != isolate->heap()->hidden_string()) {
     Handle<Object> old_value = isolate->factory()->the_hole_value();
     EnqueueChangeRecord(object, "add", name, old_value);
@@ -2236,7 +2219,7 @@ Handle<Object> JSObject::SetPropertyPostInterceptor(
     Handle<Name> name,
     Handle<Object> value,
     PropertyAttributes attributes,
-    StrictModeFlag strict_mode) {
+    StrictMode strict_mode) {
   // Check local property, ignore interceptor.
   LookupResult result(object->GetIsolate());
   object->LocalLookupRealNamedProperty(*name, &result);
@@ -2419,9 +2402,14 @@ void JSObject::MigrateToMap(Handle<JSObject> object, Handle<Map> new_map) {
 
   Handle<DescriptorArray> old_descriptors(old_map->instance_descriptors());
   Handle<DescriptorArray> new_descriptors(new_map->instance_descriptors());
-  int descriptors = new_map->NumberOfOwnDescriptors();
+  int old_nof = old_map->NumberOfOwnDescriptors();
+  int new_nof = new_map->NumberOfOwnDescriptors();
 
-  for (int i = 0; i < descriptors; i++) {
+  // This method only supports generalizing instances to at least the same
+  // number of properties.
+  ASSERT(old_nof <= new_nof);
+
+  for (int i = 0; i < old_nof; i++) {
     PropertyDetails details = new_descriptors->GetDetails(i);
     if (details.type() != FIELD) continue;
     PropertyDetails old_details = old_descriptors->GetDetails(i);
@@ -2446,6 +2434,17 @@ void JSObject::MigrateToMap(Handle<JSObject> object, Handle<Map> new_map) {
     int target_index = new_descriptors->GetFieldIndex(i) - inobject;
     if (target_index < 0) target_index += total_size;
     array->set(target_index, *value);
+  }
+
+  for (int i = old_nof; i < new_nof; i++) {
+    PropertyDetails details = new_descriptors->GetDetails(i);
+    if (details.type() != FIELD) continue;
+    if (details.representation().IsDouble()) {
+      int target_index = new_descriptors->GetFieldIndex(i) - inobject;
+      if (target_index < 0) target_index += total_size;
+      Handle<Object> box = isolate->factory()->NewHeapNumber(0);
+      array->set(target_index, *box);
+    }
   }
 
   // From here on we cannot fail and we shouldn't GC anymore.
@@ -2846,7 +2845,7 @@ Handle<Object> JSObject::SetPropertyWithInterceptor(
     Handle<Name> name,
     Handle<Object> value,
     PropertyAttributes attributes,
-    StrictModeFlag strict_mode) {
+    StrictMode strict_mode) {
   // TODO(rossberg): Support symbols in the API.
   if (name->IsSymbol()) return value;
   Isolate* isolate = object->GetIsolate();
@@ -2878,7 +2877,7 @@ Handle<Object> JSReceiver::SetProperty(Handle<JSReceiver> object,
                                        Handle<Name> name,
                                        Handle<Object> value,
                                        PropertyAttributes attributes,
-                                       StrictModeFlag strict_mode,
+                                       StrictMode strict_mode,
                                        StoreFromKeyed store_mode) {
   LookupResult result(object->GetIsolate());
   object->LocalLookup(*name, &result, true);
@@ -2895,7 +2894,7 @@ Handle<Object> JSObject::SetPropertyWithCallback(Handle<JSObject> object,
                                                  Handle<Name> name,
                                                  Handle<Object> value,
                                                  Handle<JSObject> holder,
-                                                 StrictModeFlag strict_mode) {
+                                                 StrictMode strict_mode) {
   Isolate* isolate = object->GetIsolate();
 
   // We should never get here to initialize a const with the hole
@@ -2954,9 +2953,7 @@ Handle<Object> JSObject::SetPropertyWithCallback(Handle<JSObject> object,
       return SetPropertyWithDefinedSetter(
           object, Handle<JSReceiver>::cast(setter), value);
     } else {
-      if (strict_mode == kNonStrictMode) {
-        return value;
-      }
+      if (strict_mode == SLOPPY) return value;
       Handle<Object> args[2] = { name, holder };
       Handle<Object> error =
           isolate->factory()->NewTypeError("no_setter_in_callback",
@@ -3007,7 +3004,7 @@ Handle<Object> JSObject::SetElementWithCallbackSetterInPrototypes(
     uint32_t index,
     Handle<Object> value,
     bool* found,
-    StrictModeFlag strict_mode) {
+    StrictMode strict_mode) {
   Isolate *isolate = object->GetIsolate();
   for (Handle<Object> proto = handle(object->GetPrototype(), isolate);
        !proto->IsNull();
@@ -3047,7 +3044,7 @@ Handle<Object> JSObject::SetPropertyViaPrototypes(Handle<JSObject> object,
                                                   Handle<Name> name,
                                                   Handle<Object> value,
                                                   PropertyAttributes attributes,
-                                                  StrictModeFlag strict_mode,
+                                                  StrictMode strict_mode,
                                                   bool* done) {
   Isolate* isolate = object->GetIsolate();
 
@@ -3091,7 +3088,7 @@ Handle<Object> JSObject::SetPropertyViaPrototypes(Handle<JSObject> object,
 
   // If we get here with *done true, we have encountered a read-only property.
   if (*done) {
-    if (strict_mode == kNonStrictMode) return value;
+    if (strict_mode == SLOPPY) return value;
     Handle<Object> args[] = { name, object };
     Handle<Object> error = isolate->factory()->NewTypeError(
         "strict_read_only_property", HandleVector(args, ARRAY_SIZE(args)));
@@ -3460,7 +3457,7 @@ Handle<Object> JSObject::SetPropertyWithFailedAccessCheck(
     Handle<Name> name,
     Handle<Object> value,
     bool check_prototype,
-    StrictModeFlag strict_mode) {
+    StrictMode strict_mode) {
   if (check_prototype && !result->IsProperty()) {
     object->LookupRealNamedPropertyInPrototypes(*name, result);
   }
@@ -3527,7 +3524,7 @@ Handle<Object> JSReceiver::SetProperty(Handle<JSReceiver> object,
                                        Handle<Name> key,
                                        Handle<Object> value,
                                        PropertyAttributes attributes,
-                                       StrictModeFlag strict_mode,
+                                       StrictMode strict_mode,
                                        StoreFromKeyed store_mode) {
   if (result->IsHandler()) {
     return JSProxy::SetPropertyWithHandler(handle(result->proxy()),
@@ -3559,7 +3556,7 @@ Handle<Object> JSProxy::SetPropertyWithHandler(Handle<JSProxy> proxy,
                                                Handle<Name> name,
                                                Handle<Object> value,
                                                PropertyAttributes attributes,
-                                               StrictModeFlag strict_mode) {
+                                               StrictMode strict_mode) {
   Isolate* isolate = proxy->GetIsolate();
 
   // TODO(rossberg): adjust once there is a story for symbols vs proxies.
@@ -3579,7 +3576,7 @@ Handle<Object> JSProxy::SetPropertyViaPrototypesWithHandler(
     Handle<Name> name,
     Handle<Object> value,
     PropertyAttributes attributes,
-    StrictModeFlag strict_mode,
+    StrictMode strict_mode,
     bool* done) {
   Isolate* isolate = proxy->GetIsolate();
   Handle<Object> handler(proxy->handler(), isolate);  // Trap might morph proxy.
@@ -3647,7 +3644,7 @@ Handle<Object> JSProxy::SetPropertyViaPrototypesWithHandler(
     ASSERT(writable->IsTrue() || writable->IsFalse());
     *done = writable->IsFalse();
     if (!*done) return isolate->factory()->the_hole_value();
-    if (strict_mode == kNonStrictMode) return value;
+    if (strict_mode == SLOPPY) return value;
     Handle<Object> args[] = { name, receiver };
     Handle<Object> error = isolate->factory()->NewTypeError(
         "strict_read_only_property", HandleVector(args, ARRAY_SIZE(args)));
@@ -3666,7 +3663,7 @@ Handle<Object> JSProxy::SetPropertyViaPrototypesWithHandler(
         receiver, Handle<JSReceiver>::cast(setter), value);
   }
 
-  if (strict_mode == kNonStrictMode) return value;
+  if (strict_mode == SLOPPY) return value;
   Handle<Object> args2[] = { name, proxy };
   Handle<Object> error = isolate->factory()->NewTypeError(
       "no_setter_in_callback", HandleVector(args2, ARRAY_SIZE(args2)));
@@ -3860,16 +3857,7 @@ void JSObject::AllocateStorageForMap(Handle<JSObject> object, Handle<Map> map) {
     }
     map = MapAsElementsKind(map, to_kind);
   }
-  int total_size =
-      map->NumberOfOwnDescriptors() + map->unused_property_fields();
-  int out_of_object = total_size - map->inobject_properties();
-  if (out_of_object != object->properties()->length()) {
-    Isolate* isolate = object->GetIsolate();
-    Handle<FixedArray> new_properties = isolate->factory()->CopySizeFixedArray(
-        handle(object->properties()), out_of_object);
-    object->set_properties(*new_properties);
-  }
-  object->set_map(*map);
+  JSObject::MigrateToMap(object, map);
 }
 
 
@@ -3916,7 +3904,7 @@ Handle<Object> JSObject::SetPropertyUsingTransition(
     // of the map. If we get a fast copy of the map, all field representations
     // will be tagged since the transition is omitted.
     return JSObject::AddProperty(
-        object, name, value, attributes, kNonStrictMode,
+        object, name, value, attributes, SLOPPY,
         JSReceiver::CERTAINLY_NOT_STORE_FROM_KEYED,
         JSReceiver::OMIT_EXTENSIBILITY_CHECK,
         JSObject::FORCE_TAGGED, FORCE_FIELD, OMIT_TRANSITION);
@@ -3925,29 +3913,31 @@ Handle<Object> JSObject::SetPropertyUsingTransition(
   // Keep the target CONSTANT if the same value is stored.
   // TODO(verwaest): Also support keeping the placeholder
   // (value->IsUninitialized) as constant.
-  if (details.type() == CONSTANT &&
-      descriptors->GetValue(descriptor) == *value) {
-    object->set_map(*transition_map);
-    return value;
-  }
-
-  Representation representation = details.representation();
-
-  if (!value->FitsRepresentation(representation) ||
-      details.type() == CONSTANT) {
+  if (!value->FitsRepresentation(details.representation()) ||
+      (details.type() == CONSTANT &&
+       descriptors->GetValue(descriptor) != *value)) {
     transition_map = Map::GeneralizeRepresentation(transition_map,
         descriptor, value->OptimalRepresentation(), FORCE_FIELD);
-    Object* back = transition_map->GetBackPointer();
-    if (back->IsMap()) {
-      MigrateToMap(object, handle(Map::cast(back)));
-    }
-    descriptors = transition_map->instance_descriptors();
-    representation = descriptors->GetDetails(descriptor).representation();
   }
 
+  JSObject::MigrateToMap(object, transition_map);
+
+  // Reload.
+  descriptors = transition_map->instance_descriptors();
+  details = descriptors->GetDetails(descriptor);
+
+  if (details.type() != FIELD) return value;
+
   int field_index = descriptors->GetFieldIndex(descriptor);
-  AddFastPropertyUsingMap(
-      object, transition_map, name, value, field_index, representation);
+  if (details.representation().IsDouble()) {
+    // Nothing more to be done.
+    if (value->IsUninitialized()) return value;
+    HeapNumber* box = HeapNumber::cast(object->RawFastPropertyAt(field_index));
+    box->set_value(value->Number());
+  } else {
+    object->FastPropertyAtPut(field_index, *value);
+  }
+
   return value;
 }
 
@@ -4028,7 +4018,7 @@ Handle<Object> JSObject::SetPropertyForResult(Handle<JSObject> object,
                                               Handle<Name> name,
                                               Handle<Object> value,
                                               PropertyAttributes attributes,
-                                              StrictModeFlag strict_mode,
+                                              StrictMode strict_mode,
                                               StoreFromKeyed store_mode) {
   Isolate* isolate = object->GetIsolate();
 
@@ -4077,7 +4067,7 @@ Handle<Object> JSObject::SetPropertyForResult(Handle<JSObject> object,
   }
 
   if (lookup->IsProperty() && lookup->IsReadOnly()) {
-    if (strict_mode == kStrictMode) {
+    if (strict_mode == STRICT) {
       Handle<Object> args[] = { name, object };
       Handle<Object> error = isolate->factory()->NewTypeError(
           "strict_read_only_property", HandleVector(args, ARRAY_SIZE(args)));
@@ -4089,8 +4079,7 @@ Handle<Object> JSObject::SetPropertyForResult(Handle<JSObject> object,
   }
 
   Handle<Object> old_value = isolate->factory()->the_hole_value();
-  bool is_observed = FLAG_harmony_observation &&
-                     object->map()->is_observed() &&
+  bool is_observed = object->map()->is_observed() &&
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup->IsDataProperty()) {
     old_value = Object::GetProperty(object, name);
@@ -4183,7 +4172,7 @@ Handle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
   if (object->IsAccessCheckNeeded()) {
     if (!isolate->MayNamedAccessWrapper(object, name, v8::ACCESS_SET)) {
       return SetPropertyWithFailedAccessCheck(object, &lookup, name, value,
-                                              false, kNonStrictMode);
+                                              false, SLOPPY);
     }
   }
 
@@ -4206,14 +4195,13 @@ Handle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
     TransitionFlag flag = lookup.IsFound()
         ? OMIT_TRANSITION : INSERT_TRANSITION;
     // Neither properties nor transitions found.
-    return AddProperty(object, name, value, attributes, kNonStrictMode,
+    return AddProperty(object, name, value, attributes, SLOPPY,
         MAY_BE_STORE_FROM_KEYED, extensibility_check, value_type, mode, flag);
   }
 
   Handle<Object> old_value = isolate->factory()->the_hole_value();
   PropertyAttributes old_attributes = ABSENT;
-  bool is_observed = FLAG_harmony_observation &&
-                     object->map()->is_observed() &&
+  bool is_observed = object->map()->is_observed() &&
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup.IsProperty()) {
     if (lookup.IsDataProperty()) old_value =
@@ -4736,7 +4724,7 @@ MaybeObject* JSObject::NormalizeElements() {
   FixedArrayBase* array = FixedArrayBase::cast(elements());
   Map* old_map = array->map();
   bool is_arguments =
-      (old_map == old_map->GetHeap()->non_strict_arguments_elements_map());
+      (old_map == old_map->GetHeap()->sloppy_arguments_elements_map());
   if (is_arguments) {
     array = FixedArrayBase::cast(FixedArray::cast(array)->get(1));
   }
@@ -4771,6 +4759,7 @@ MaybeObject* JSObject::NormalizeElements() {
     MaybeObject* maybe = GetElementsTransitionMap(GetIsolate(),
                                                   DICTIONARY_ELEMENTS);
     if (!maybe->To(&new_map)) return maybe;
+    // TODO(verwaest): Replace by MigrateToMap.
     set_map(new_map);
     set_elements(dictionary);
   }
@@ -5195,7 +5184,7 @@ Handle<Object> JSObject::DeleteElement(Handle<JSObject> object,
 
   Handle<Object> old_value;
   bool should_enqueue_change_record = false;
-  if (FLAG_harmony_observation && object->map()->is_observed()) {
+  if (object->map()->is_observed()) {
     should_enqueue_change_record = HasLocalElement(object, index);
     if (should_enqueue_change_record) {
       old_value = object->GetLocalElementAccessorPair(index) != NULL
@@ -5266,8 +5255,7 @@ Handle<Object> JSObject::DeleteProperty(Handle<JSObject> object,
   }
 
   Handle<Object> old_value = isolate->factory()->the_hole_value();
-  bool is_observed = FLAG_harmony_observation &&
-                     object->map()->is_observed() &&
+  bool is_observed = object->map()->is_observed() &&
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup.IsDataProperty()) {
     old_value = Object::GetProperty(object, name);
@@ -5389,7 +5377,7 @@ bool JSObject::ReferencesObject(Object* obj) {
       if (ReferencesObjectFromElements(elements, kind, obj)) return true;
       break;
     }
-    case NON_STRICT_ARGUMENTS_ELEMENTS: {
+    case SLOPPY_ARGUMENTS_ELEMENTS: {
       FixedArray* parameter_map = FixedArray::cast(elements());
       // Check the mapped parameters.
       int length = parameter_map->length();
@@ -5411,7 +5399,7 @@ bool JSObject::ReferencesObject(Object* obj) {
     // Get the constructor function for arguments array.
     JSObject* arguments_boilerplate =
         heap->isolate()->context()->native_context()->
-            arguments_boilerplate();
+            sloppy_arguments_boilerplate();
     JSFunction* arguments_function =
         JSFunction::cast(arguments_boilerplate->map()->constructor());
 
@@ -5500,10 +5488,10 @@ Handle<Object> JSObject::PreventExtensions(Handle<JSObject> object) {
   Handle<Map> new_map = Map::Copy(handle(object->map()));
 
   new_map->set_is_extensible(false);
-  object->set_map(*new_map);
+  JSObject::MigrateToMap(object, new_map);
   ASSERT(!object->map()->is_extensible());
 
-  if (FLAG_harmony_observation && object->map()->is_observed()) {
+  if (object->map()->is_observed()) {
     EnqueueChangeRecord(object, "preventExtensions", Handle<Name>(),
                         isolate->factory()->the_hole_value());
   }
@@ -5533,8 +5521,8 @@ static void FreezeDictionary(Dictionary* dictionary) {
 
 
 Handle<Object> JSObject::Freeze(Handle<JSObject> object) {
-  // Freezing non-strict arguments should be handled elsewhere.
-  ASSERT(!object->HasNonStrictArgumentsElements());
+  // Freezing sloppy arguments should be handled elsewhere.
+  ASSERT(!object->HasSloppyArgumentsElements());
   ASSERT(!object->map()->is_observed());
 
   if (object->map()->is_frozen()) return object;
@@ -5593,11 +5581,11 @@ Handle<Object> JSObject::Freeze(Handle<JSObject> object) {
   Handle<Map> old_map(object->map());
   old_map->LookupTransition(*object, isolate->heap()->frozen_symbol(), &result);
   if (result.IsTransition()) {
-    Map* transition_map = result.GetTransitionTarget();
+    Handle<Map> transition_map(result.GetTransitionTarget());
     ASSERT(transition_map->has_dictionary_elements());
     ASSERT(transition_map->is_frozen());
     ASSERT(!transition_map->is_extensible());
-    object->set_map(transition_map);
+    JSObject::MigrateToMap(object, transition_map);
   } else if (object->HasFastProperties() && old_map->CanHaveMoreTransitions()) {
     // Create a new descriptor array with fully-frozen properties
     int num_descriptors = old_map->NumberOfOwnDescriptors();
@@ -5610,7 +5598,7 @@ Handle<Object> JSObject::Freeze(Handle<JSObject> object) {
     new_map->freeze();
     new_map->set_is_extensible(false);
     new_map->set_elements_kind(DICTIONARY_ELEMENTS);
-    object->set_map(*new_map);
+    JSObject::MigrateToMap(object, new_map);
   } else {
     // Slow path: need to normalize properties for safety
     NormalizeProperties(object, CLEAR_INOBJECT_PROPERTIES, 0);
@@ -5621,7 +5609,7 @@ Handle<Object> JSObject::Freeze(Handle<JSObject> object) {
     new_map->freeze();
     new_map->set_is_extensible(false);
     new_map->set_elements_kind(DICTIONARY_ELEMENTS);
-    object->set_map(*new_map);
+    JSObject::MigrateToMap(object, new_map);
 
     // Freeze dictionary-mode properties
     FreezeDictionary(object->property_dictionary());
@@ -5665,7 +5653,7 @@ void JSObject::SetObserved(Handle<JSObject> object) {
     new_map = Map::Copy(handle(object->map()));
     new_map->set_is_observed();
   }
-  object->set_map(*new_map);
+  JSObject::MigrateToMap(object, new_map);
 }
 
 
@@ -5801,7 +5789,7 @@ Handle<JSObject> JSObjectWalkVisitor<ContextObject>::StructureWalk(
           if (copying) {
             // Creating object copy for literals. No strict mode needed.
             CHECK_NOT_EMPTY_HANDLE(isolate, JSObject::SetProperty(
-                copy, key_string, result, NONE, kNonStrictMode));
+                copy, key_string, result, NONE, SLOPPY));
           }
         }
       }
@@ -5860,7 +5848,7 @@ Handle<JSObject> JSObjectWalkVisitor<ContextObject>::StructureWalk(
         }
         break;
       }
-      case NON_STRICT_ARGUMENTS_ELEMENTS:
+      case SLOPPY_ARGUMENTS_ELEMENTS:
         UNIMPLEMENTED();
         break;
 
@@ -5918,9 +5906,9 @@ bool JSReceiver::IsSimpleEnum() {
     JSObject* curr = JSObject::cast(o);
     int enum_length = curr->map()->EnumLength();
     if (enum_length == kInvalidEnumCacheSentinel) return false;
+    if (curr->IsAccessCheckNeeded()) return false;
     ASSERT(!curr->HasNamedInterceptor());
     ASSERT(!curr->HasIndexedInterceptor());
-    ASSERT(!curr->IsAccessCheckNeeded());
     if (curr->NumberOfEnumElements() > 0) return false;
     if (curr != this && enum_length != 0) return false;
   }
@@ -6121,7 +6109,7 @@ void JSObject::DefineElementAccessor(Handle<JSObject> object,
         return;
       }
       break;
-    case NON_STRICT_ARGUMENTS_ELEMENTS: {
+    case SLOPPY_ARGUMENTS_ELEMENTS: {
       // Ascertain whether we have read-only properties or an existing
       // getter/setter pair in an arguments elements dictionary backing
       // store.
@@ -6273,7 +6261,7 @@ void JSObject::SetElementCallback(Handle<JSObject> object,
   dictionary->set_requires_slow_elements();
 
   // Update the dictionary backing store on the object.
-  if (object->elements()->map() == heap->non_strict_arguments_elements_map()) {
+  if (object->elements()->map() == heap->sloppy_arguments_elements_map()) {
     // Also delete any parameter alias.
     //
     // TODO(kmillikin): when deleting the last parameter alias we could
@@ -6361,8 +6349,7 @@ void JSObject::DefineAccessor(Handle<JSObject> object,
   bool is_element = name->AsArrayIndex(&index);
 
   Handle<Object> old_value = isolate->factory()->the_hole_value();
-  bool is_observed = FLAG_harmony_observation &&
-                     object->map()->is_observed() &&
+  bool is_observed = object->map()->is_observed() &&
                      *name != isolate->heap()->hidden_string();
   bool preexists = false;
   if (is_observed) {
@@ -6396,11 +6383,11 @@ void JSObject::DefineAccessor(Handle<JSObject> object,
 }
 
 
-static bool TryAccessorTransition(JSObject* self,
-                                  Map* transitioned_map,
+static bool TryAccessorTransition(Handle<JSObject> self,
+                                  Handle<Map> transitioned_map,
                                   int target_descriptor,
                                   AccessorComponent component,
-                                  Object* accessor,
+                                  Handle<Object> accessor,
                                   PropertyAttributes attributes) {
   DescriptorArray* descs = transitioned_map->instance_descriptors();
   PropertyDetails details = descs->GetDetails(target_descriptor);
@@ -6414,8 +6401,8 @@ static bool TryAccessorTransition(JSObject* self,
   PropertyAttributes target_attributes = details.attributes();
 
   // Reuse transition if adding same accessor with same attributes.
-  if (target_accessor == accessor && target_attributes == attributes) {
-    self->set_map(transitioned_map);
+  if (target_accessor == *accessor && target_attributes == attributes) {
+    JSObject::MigrateToMap(self, transitioned_map);
     return true;
   }
 
@@ -6477,14 +6464,14 @@ bool JSObject::DefineFastAccessor(Handle<JSObject> object,
     object->map()->LookupTransition(*object, *name, &result);
 
     if (result.IsFound()) {
-      Map* target = result.GetTransitionTarget();
+      Handle<Map> target(result.GetTransitionTarget());
       ASSERT(target->NumberOfOwnDescriptors() ==
              object->map()->NumberOfOwnDescriptors());
       // This works since descriptors are sorted in order of addition.
       ASSERT(object->map()->instance_descriptors()->
              GetKey(descriptor_number) == *name);
-      return TryAccessorTransition(*object, target, descriptor_number,
-                                   component, *accessor, attributes);
+      return TryAccessorTransition(object, target, descriptor_number,
+                                   component, accessor, attributes);
     }
   } else {
     // If not, lookup a transition.
@@ -6492,12 +6479,12 @@ bool JSObject::DefineFastAccessor(Handle<JSObject> object,
 
     // If there is a transition, try to follow it.
     if (result.IsFound()) {
-      Map* target = result.GetTransitionTarget();
+      Handle<Map> target(result.GetTransitionTarget());
       int descriptor_number = target->LastAdded();
       ASSERT(target->instance_descriptors()->GetKey(descriptor_number)
              ->Equals(*name));
-      return TryAccessorTransition(*object, target, descriptor_number,
-                                   component, *accessor, attributes);
+      return TryAccessorTransition(object, target, descriptor_number,
+                                   component, accessor, attributes);
     }
   }
 
@@ -6510,7 +6497,7 @@ bool JSObject::DefineFastAccessor(Handle<JSObject> object,
   accessors->set(component, *accessor);
   Handle<Map> new_map = CopyInsertDescriptor(Handle<Map>(object->map()),
                                              name, accessors, attributes);
-  object->set_map(*new_map);
+  JSObject::MigrateToMap(object, new_map);
   return true;
 }
 
@@ -6575,7 +6562,7 @@ Handle<Object> JSObject::SetAccessor(Handle<JSObject> object,
 
       case DICTIONARY_ELEMENTS:
         break;
-      case NON_STRICT_ARGUMENTS_ELEMENTS:
+      case SLOPPY_ARGUMENTS_ELEMENTS:
         UNIMPLEMENTED();
         break;
     }
@@ -9794,7 +9781,7 @@ void JSFunction::SetPrototype(Handle<JSFunction> function,
     // different prototype.
     Handle<Map> new_map = Map::Copy(handle(function->map()));
 
-    function->set_map(*new_map);
+    JSObject::MigrateToMap(function, new_map);
     new_map->set_constructor(*value);
     new_map->set_non_instance_prototype(true);
     Isolate* isolate = new_map->GetIsolate();
@@ -9811,15 +9798,15 @@ void JSFunction::SetPrototype(Handle<JSFunction> function,
 
 void JSFunction::RemovePrototype() {
   Context* native_context = context()->native_context();
-  Map* no_prototype_map = shared()->is_classic_mode()
-      ? native_context->function_without_prototype_map()
-      : native_context->strict_mode_function_without_prototype_map();
+  Map* no_prototype_map = shared()->strict_mode() == SLOPPY
+      ? native_context->sloppy_function_without_prototype_map()
+      : native_context->strict_function_without_prototype_map();
 
   if (map() == no_prototype_map) return;
 
-  ASSERT(map() == (shared()->is_classic_mode()
-                   ? native_context->function_map()
-                   : native_context->strict_mode_function_map()));
+  ASSERT(map() == (shared()->strict_mode() == SLOPPY
+                   ? native_context->sloppy_function_map()
+                   : native_context->strict_function_map()));
 
   set_map(no_prototype_map);
   set_prototype_or_initial_map(no_prototype_map->GetHeap()->the_hole_value());
@@ -10637,7 +10624,8 @@ void Code::ClearInlineCaches(Code::Kind* kind) {
     Code* target(Code::GetCodeFromTargetAddress(info->target_address()));
     if (target->is_inline_cache_stub()) {
       if (kind == NULL || *kind == target->kind()) {
-        IC::Clear(this->GetIsolate(), info->pc());
+        IC::Clear(this->GetIsolate(), info->pc(),
+                  info->host()->constant_pool());
       }
     }
   }
@@ -11078,9 +11066,7 @@ void Code::PrintExtraICState(FILE* out, Kind kind, ExtraICState extra) {
   switch (kind) {
     case STORE_IC:
     case KEYED_STORE_IC:
-      if (extra == kStrictMode) {
-        name = "STRICT";
-      }
+      if (extra == STRICT) name = "STRICT";
       break;
     default:
       break;
@@ -11247,7 +11233,7 @@ MaybeObject* JSObject::SetFastElementsCapacityAndLength(
       accessor->CopyElements(this, new_elements, elements_kind);
   if (maybe_obj->IsFailure()) return maybe_obj;
 
-  if (elements_kind != NON_STRICT_ARGUMENTS_ELEMENTS) {
+  if (elements_kind != SLOPPY_ARGUMENTS_ELEMENTS) {
     Map* new_map = map();
     if (new_elements_kind != elements_kind) {
       MaybeObject* maybe =
@@ -11319,7 +11305,7 @@ MaybeObject* JSObject::SetFastDoubleElementsCapacityAndLength(
         accessor->CopyElements(this, elems, elements_kind);
     if (maybe_obj->IsFailure()) return maybe_obj;
   }
-  if (elements_kind != NON_STRICT_ARGUMENTS_ELEMENTS) {
+  if (elements_kind != SLOPPY_ARGUMENTS_ELEMENTS) {
     ValidateElements();
     set_map_and_elements(new_map, elems);
   } else {
@@ -11424,7 +11410,7 @@ static void EndPerformSplice(Handle<JSArray> object) {
 MaybeObject* JSArray::SetElementsLength(Object* len) {
   // We should never end in here with a pixel or external array.
   ASSERT(AllowsSetElementsLength());
-  if (!(FLAG_harmony_observation && map()->is_observed()))
+  if (!map()->is_observed())
     return GetElementsAccessor()->SetLength(this, len);
 
   Isolate* isolate = GetIsolate();
@@ -11490,12 +11476,12 @@ MaybeObject* JSArray::SetElementsLength(Object* len) {
   if (delete_count > 0) {
     for (int i = indices.length() - 1; i >= 0; i--) {
       JSObject::SetElement(deleted, indices[i] - index, old_values[i], NONE,
-                           kNonStrictMode);
+                           SLOPPY);
     }
 
     SetProperty(deleted, isolate->factory()->length_string(),
                 isolate->factory()->NewNumberFromUint(delete_count),
-                NONE, kNonStrictMode);
+                NONE, SLOPPY);
   }
 
   EnqueueSpliceRecord(self, index, deleted, add_count);
@@ -11868,7 +11854,7 @@ Handle<Object> JSObject::SetPrototype(Handle<JSObject> object,
     new_map->set_prototype(*value);
   }
   ASSERT(new_map->prototype() == *value);
-  real_receiver->set_map(*new_map);
+  JSObject::MigrateToMap(real_receiver, new_map);
 
   if (!dictionary_elements_in_chain &&
       new_map->DictionaryElementsInPrototypeChainOnly()) {
@@ -11934,7 +11920,7 @@ Handle<Object> JSObject::SetElementWithInterceptor(
     uint32_t index,
     Handle<Object> value,
     PropertyAttributes attributes,
-    StrictModeFlag strict_mode,
+    StrictMode strict_mode,
     bool check_prototype,
     SetPropertyMode set_mode) {
   Isolate* isolate = object->GetIsolate();
@@ -12022,7 +12008,7 @@ Handle<Object> JSObject::SetElementWithCallback(Handle<JSObject> object,
                                                 uint32_t index,
                                                 Handle<Object> value,
                                                 Handle<JSObject> holder,
-                                                StrictModeFlag strict_mode) {
+                                                StrictMode strict_mode) {
   Isolate* isolate = object->GetIsolate();
 
   // We should never get here to initialize a const with the hole
@@ -12061,9 +12047,7 @@ Handle<Object> JSObject::SetElementWithCallback(Handle<JSObject> object,
       return SetPropertyWithDefinedSetter(
           object, Handle<JSReceiver>::cast(setter), value);
     } else {
-      if (strict_mode == kNonStrictMode) {
-        return value;
-      }
+      if (strict_mode == SLOPPY) return value;
       Handle<Object> key(isolate->factory()->NewNumberFromUint(index));
       Handle<Object> args[2] = { key, holder };
       Handle<Object> error = isolate->factory()->NewTypeError(
@@ -12085,7 +12069,7 @@ bool JSObject::HasFastArgumentsElements() {
   Heap* heap = GetHeap();
   if (!elements()->IsFixedArray()) return false;
   FixedArray* elements = FixedArray::cast(this->elements());
-  if (elements->map() != heap->non_strict_arguments_elements_map()) {
+  if (elements->map() != heap->sloppy_arguments_elements_map()) {
     return false;
   }
   FixedArray* arguments = FixedArray::cast(elements->get(1));
@@ -12097,7 +12081,7 @@ bool JSObject::HasDictionaryArgumentsElements() {
   Heap* heap = GetHeap();
   if (!elements()->IsFixedArray()) return false;
   FixedArray* elements = FixedArray::cast(this->elements());
-  if (elements->map() != heap->non_strict_arguments_elements_map()) {
+  if (elements->map() != heap->sloppy_arguments_elements_map()) {
     return false;
   }
   FixedArray* arguments = FixedArray::cast(elements->get(1));
@@ -12111,7 +12095,7 @@ bool JSObject::HasDictionaryArgumentsElements() {
 Handle<Object> JSObject::SetFastElement(Handle<JSObject> object,
                                         uint32_t index,
                                         Handle<Object> value,
-                                        StrictModeFlag strict_mode,
+                                        StrictMode strict_mode,
                                         bool check_prototype) {
   ASSERT(object->HasFastSmiOrObjectElements() ||
          object->HasFastArgumentsElements());
@@ -12129,7 +12113,7 @@ Handle<Object> JSObject::SetFastElement(Handle<JSObject> object,
 
   Handle<FixedArray> backing_store(FixedArray::cast(object->elements()));
   if (backing_store->map() ==
-      isolate->heap()->non_strict_arguments_elements_map()) {
+      isolate->heap()->sloppy_arguments_elements_map()) {
     backing_store = handle(FixedArray::cast(backing_store->get(1)));
   } else {
     backing_store = EnsureWritableFastElements(object);
@@ -12209,7 +12193,7 @@ Handle<Object> JSObject::SetFastElement(Handle<JSObject> object,
 
     UpdateAllocationSite(object, kind);
     Handle<Map> new_map = GetElementsTransitionMap(object, kind);
-    object->set_map(*new_map);
+    JSObject::MigrateToMap(object, new_map);
     ASSERT(IsFastObjectElementsKind(object->GetElementsKind()));
   }
   // Increase backing store capacity if that's been decided previously.
@@ -12240,7 +12224,7 @@ Handle<Object> JSObject::SetDictionaryElement(Handle<JSObject> object,
                                               uint32_t index,
                                               Handle<Object> value,
                                               PropertyAttributes attributes,
-                                              StrictModeFlag strict_mode,
+                                              StrictMode strict_mode,
                                               bool check_prototype,
                                               SetPropertyMode set_mode) {
   ASSERT(object->HasDictionaryElements() ||
@@ -12250,7 +12234,7 @@ Handle<Object> JSObject::SetDictionaryElement(Handle<JSObject> object,
   // Insert element in the dictionary.
   Handle<FixedArray> elements(FixedArray::cast(object->elements()));
   bool is_arguments =
-      (elements->map() == isolate->heap()->non_strict_arguments_elements_map());
+      (elements->map() == isolate->heap()->sloppy_arguments_elements_map());
   Handle<SeededNumberDictionary> dictionary(is_arguments
     ? SeededNumberDictionary::cast(elements->get(1))
     : SeededNumberDictionary::cast(*elements));
@@ -12272,7 +12256,7 @@ Handle<Object> JSObject::SetDictionaryElement(Handle<JSObject> object,
             attributes, NORMAL, details.dictionary_index());
         dictionary->DetailsAtPut(entry, details);
       } else if (details.IsReadOnly() && !element->IsTheHole()) {
-        if (strict_mode == kNonStrictMode) {
+        if (strict_mode == SLOPPY) {
           return isolate->factory()->undefined_value();
         } else {
           Handle<Object> number = isolate->factory()->NewNumberFromUint(index);
@@ -12310,7 +12294,7 @@ Handle<Object> JSObject::SetDictionaryElement(Handle<JSObject> object,
     // When we set the is_extensible flag to false we always force the
     // element into dictionary mode (and force them to stay there).
     if (!object->map()->is_extensible()) {
-      if (strict_mode == kNonStrictMode) {
+      if (strict_mode == SLOPPY) {
         return isolate->factory()->undefined_value();
       } else {
         Handle<Object> number = isolate->factory()->NewNumberFromUint(index);
@@ -12383,7 +12367,7 @@ Handle<Object> JSObject::SetFastDoubleElement(
     Handle<JSObject> object,
     uint32_t index,
     Handle<Object> value,
-    StrictModeFlag strict_mode,
+    StrictMode strict_mode,
     bool check_prototype) {
   ASSERT(object->HasFastDoubleElements());
 
@@ -12481,7 +12465,7 @@ Handle<Object> JSReceiver::SetElement(Handle<JSReceiver> object,
                                       uint32_t index,
                                       Handle<Object> value,
                                       PropertyAttributes attributes,
-                                      StrictModeFlag strict_mode) {
+                                      StrictMode strict_mode) {
   if (object->IsJSProxy()) {
     return JSProxy::SetElementWithHandler(
         Handle<JSProxy>::cast(object), object, index, value, strict_mode);
@@ -12494,7 +12478,7 @@ Handle<Object> JSReceiver::SetElement(Handle<JSReceiver> object,
 Handle<Object> JSObject::SetOwnElement(Handle<JSObject> object,
                                        uint32_t index,
                                        Handle<Object> value,
-                                       StrictModeFlag strict_mode) {
+                                       StrictMode strict_mode) {
   ASSERT(!object->HasExternalArrayElements());
   return JSObject::SetElement(object, index, value, NONE, strict_mode, false);
 }
@@ -12504,7 +12488,7 @@ Handle<Object> JSObject::SetElement(Handle<JSObject> object,
                                     uint32_t index,
                                     Handle<Object> value,
                                     PropertyAttributes attributes,
-                                    StrictModeFlag strict_mode,
+                                    StrictMode strict_mode,
                                     bool check_prototype,
                                     SetPropertyMode set_mode) {
   Isolate* isolate = object->GetIsolate();
@@ -12555,7 +12539,7 @@ Handle<Object> JSObject::SetElement(Handle<JSObject> object,
     dictionary->set_requires_slow_elements();
   }
 
-  if (!(FLAG_harmony_observation && object->map()->is_observed())) {
+  if (!object->map()->is_observed()) {
     return object->HasIndexedInterceptor()
       ? SetElementWithInterceptor(object, index, value, attributes, strict_mode,
                                   check_prototype,
@@ -12637,7 +12621,7 @@ Handle<Object> JSObject::SetElementWithoutInterceptor(
     uint32_t index,
     Handle<Object> value,
     PropertyAttributes attributes,
-    StrictModeFlag strict_mode,
+    StrictMode strict_mode,
     bool check_prototype,
     SetPropertyMode set_mode) {
   ASSERT(object->HasDictionaryElements() ||
@@ -12685,7 +12669,7 @@ Handle<Object> JSObject::SetElementWithoutInterceptor(
       return SetDictionaryElement(object, index, value, attributes, strict_mode,
                                   check_prototype,
                                   set_mode);
-    case NON_STRICT_ARGUMENTS_ELEMENTS: {
+    case SLOPPY_ARGUMENTS_ELEMENTS: {
       Handle<FixedArray> parameter_map(FixedArray::cast(object->elements()));
       uint32_t length = parameter_map->length();
       Handle<Object> probe = index < length - 2 ?
@@ -12898,6 +12882,7 @@ MaybeObject* JSObject::TransitionElementsKind(ElementsKind to_kind) {
     MaybeObject* maybe_new_map = GetElementsTransitionMap(isolate, to_kind);
     Map* new_map;
     if (!maybe_new_map->To(&new_map)) return maybe_new_map;
+    // TODO(verwaest): Replace by MigrateToMap.
     set_map(new_map);
     if (FLAG_trace_elements_transitions) {
       FixedArrayBase* elms = FixedArrayBase::cast(elements());
@@ -13044,7 +13029,7 @@ void JSObject::GetElementsCapacityAndUsage(int* capacity, int* used) {
   FixedArrayBase* backing_store_base = FixedArrayBase::cast(elements());
   FixedArray* backing_store = NULL;
   switch (GetElementsKind()) {
-    case NON_STRICT_ARGUMENTS_ELEMENTS:
+    case SLOPPY_ARGUMENTS_ELEMENTS:
       backing_store_base =
           FixedArray::cast(FixedArray::cast(backing_store_base)->get(1));
       backing_store = FixedArray::cast(backing_store_base);
@@ -13156,11 +13141,11 @@ bool JSObject::ShouldConvertToFastElements() {
   if (IsAccessCheckNeeded()) return false;
   // Observed objects may not go to fast mode because they rely on map checks,
   // and for fast element accesses we sometimes check element kinds only.
-  if (FLAG_harmony_observation && map()->is_observed()) return false;
+  if (map()->is_observed()) return false;
 
   FixedArray* elements = FixedArray::cast(this->elements());
   SeededNumberDictionary* dictionary = NULL;
-  if (elements->map() == GetHeap()->non_strict_arguments_elements_map()) {
+  if (elements->map() == GetHeap()->sloppy_arguments_elements_map()) {
     dictionary = SeededNumberDictionary::cast(elements->get(1));
   } else {
     dictionary = SeededNumberDictionary::cast(elements);
@@ -13640,7 +13625,7 @@ int JSObject::GetLocalElementKeys(FixedArray* storage,
       counter += element_dictionary()->NumberOfElementsFilterAttributes(filter);
       break;
     }
-    case NON_STRICT_ARGUMENTS_ELEMENTS: {
+    case SLOPPY_ARGUMENTS_ELEMENTS: {
       FixedArray* parameter_map = FixedArray::cast(elements());
       int mapped_length = parameter_map->length() - 2;
       FixedArray* arguments = FixedArray::cast(parameter_map->get(1));
@@ -13738,11 +13723,11 @@ class StringSharedKey : public HashTableKey {
  public:
   StringSharedKey(String* source,
                   SharedFunctionInfo* shared,
-                  LanguageMode language_mode,
+                  StrictMode strict_mode,
                   int scope_position)
       : source_(source),
         shared_(shared),
-        language_mode_(language_mode),
+        strict_mode_(strict_mode),
         scope_position_(scope_position) { }
 
   bool IsMatch(Object* other) {
@@ -13750,12 +13735,10 @@ class StringSharedKey : public HashTableKey {
     FixedArray* other_array = FixedArray::cast(other);
     SharedFunctionInfo* shared = SharedFunctionInfo::cast(other_array->get(0));
     if (shared != shared_) return false;
-    int language_unchecked = Smi::cast(other_array->get(2))->value();
-    ASSERT(language_unchecked == CLASSIC_MODE ||
-           language_unchecked == STRICT_MODE ||
-           language_unchecked == EXTENDED_MODE);
-    LanguageMode language_mode = static_cast<LanguageMode>(language_unchecked);
-    if (language_mode != language_mode_) return false;
+    int strict_unchecked = Smi::cast(other_array->get(2))->value();
+    ASSERT(strict_unchecked == SLOPPY || strict_unchecked == STRICT);
+    StrictMode strict_mode = static_cast<StrictMode>(strict_unchecked);
+    if (strict_mode != strict_mode_) return false;
     int scope_position = Smi::cast(other_array->get(3))->value();
     if (scope_position != scope_position_) return false;
     String* source = String::cast(other_array->get(1));
@@ -13764,7 +13747,7 @@ class StringSharedKey : public HashTableKey {
 
   static uint32_t StringSharedHashHelper(String* source,
                                          SharedFunctionInfo* shared,
-                                         LanguageMode language_mode,
+                                         StrictMode strict_mode,
                                          int scope_position) {
     uint32_t hash = source->Hash();
     if (shared->HasSourceCode()) {
@@ -13775,8 +13758,7 @@ class StringSharedKey : public HashTableKey {
       // collection.
       Script* script = Script::cast(shared->script());
       hash ^= String::cast(script->source())->Hash();
-      if (language_mode == STRICT_MODE) hash ^= 0x8000;
-      if (language_mode == EXTENDED_MODE) hash ^= 0x0080;
+      if (strict_mode == STRICT) hash ^= 0x8000;
       hash += scope_position;
     }
     return hash;
@@ -13784,21 +13766,19 @@ class StringSharedKey : public HashTableKey {
 
   uint32_t Hash() {
     return StringSharedHashHelper(
-        source_, shared_, language_mode_, scope_position_);
+        source_, shared_, strict_mode_, scope_position_);
   }
 
   uint32_t HashForObject(Object* obj) {
     FixedArray* other_array = FixedArray::cast(obj);
     SharedFunctionInfo* shared = SharedFunctionInfo::cast(other_array->get(0));
     String* source = String::cast(other_array->get(1));
-    int language_unchecked = Smi::cast(other_array->get(2))->value();
-    ASSERT(language_unchecked == CLASSIC_MODE ||
-           language_unchecked == STRICT_MODE ||
-           language_unchecked == EXTENDED_MODE);
-    LanguageMode language_mode = static_cast<LanguageMode>(language_unchecked);
+    int strict_unchecked = Smi::cast(other_array->get(2))->value();
+    ASSERT(strict_unchecked == SLOPPY || strict_unchecked == STRICT);
+    StrictMode strict_mode = static_cast<StrictMode>(strict_unchecked);
     int scope_position = Smi::cast(other_array->get(3))->value();
     return StringSharedHashHelper(
-        source, shared, language_mode, scope_position);
+        source, shared, strict_mode, scope_position);
   }
 
   MUST_USE_RESULT MaybeObject* AsObject(Heap* heap) {
@@ -13809,7 +13789,7 @@ class StringSharedKey : public HashTableKey {
     FixedArray* other_array = FixedArray::cast(obj);
     other_array->set(0, shared_);
     other_array->set(1, source_);
-    other_array->set(2, Smi::FromInt(language_mode_));
+    other_array->set(2, Smi::FromInt(strict_mode_));
     other_array->set(3, Smi::FromInt(scope_position_));
     return other_array;
   }
@@ -13817,7 +13797,7 @@ class StringSharedKey : public HashTableKey {
  private:
   String* source_;
   SharedFunctionInfo* shared_;
-  LanguageMode language_mode_;
+  StrictMode strict_mode_;
   int scope_position_;
 };
 
@@ -14453,8 +14433,11 @@ MaybeObject* JSObject::PrepareSlowElementsForSort(uint32_t limit) {
 Handle<Object> JSObject::PrepareElementsForSort(Handle<JSObject> object,
                                                 uint32_t limit) {
   Isolate* isolate = object->GetIsolate();
+  if (object->HasSloppyArgumentsElements() ||
+      object->map()->is_observed()) {
+    return handle(Smi::FromInt(-1), isolate);
+  }
 
-  ASSERT(!object->map()->is_observed());
   if (object->HasDictionaryElements()) {
     // Convert to fast elements containing only the existing properties.
     // Ordering is irrelevant, since we are going to sort anyway.
@@ -15010,22 +14993,11 @@ MaybeObject* StringTable::LookupKey(HashTableKey* key, Object** s) {
 }
 
 
-// The key for the script compilation cache is dependent on the mode flags,
-// because they change the global language mode and thus binding behaviour.
-// If flags change at some point, we must ensure that we do not hit the cache
-// for code compiled with different settings.
-static LanguageMode CurrentGlobalLanguageMode() {
-  return FLAG_use_strict
-      ? (FLAG_harmony_scoping ? EXTENDED_MODE : STRICT_MODE)
-      : CLASSIC_MODE;
-}
-
-
 Object* CompilationCacheTable::Lookup(String* src, Context* context) {
   SharedFunctionInfo* shared = context->closure()->shared();
   StringSharedKey key(src,
                       shared,
-                      CurrentGlobalLanguageMode(),
+                      FLAG_use_strict ? STRICT : SLOPPY,
                       RelocInfo::kNoPosition);
   int entry = FindEntry(&key);
   if (entry == kNotFound) return GetHeap()->undefined_value();
@@ -15035,11 +15007,11 @@ Object* CompilationCacheTable::Lookup(String* src, Context* context) {
 
 Object* CompilationCacheTable::LookupEval(String* src,
                                           Context* context,
-                                          LanguageMode language_mode,
+                                          StrictMode strict_mode,
                                           int scope_position) {
   StringSharedKey key(src,
                       context->closure()->shared(),
-                      language_mode,
+                      strict_mode,
                       scope_position);
   int entry = FindEntry(&key);
   if (entry == kNotFound) return GetHeap()->undefined_value();
@@ -15062,7 +15034,7 @@ MaybeObject* CompilationCacheTable::Put(String* src,
   SharedFunctionInfo* shared = context->closure()->shared();
   StringSharedKey key(src,
                       shared,
-                      CurrentGlobalLanguageMode(),
+                      FLAG_use_strict ? STRICT : SLOPPY,
                       RelocInfo::kNoPosition);
   CompilationCacheTable* cache;
   MaybeObject* maybe_cache = EnsureCapacity(1, &key);
@@ -15086,7 +15058,7 @@ MaybeObject* CompilationCacheTable::PutEval(String* src,
                                             int scope_position) {
   StringSharedKey key(src,
                       context->closure()->shared(),
-                      value->language_mode(),
+                      value->strict_mode(),
                       scope_position);
   Object* obj;
   { MaybeObject* maybe_obj = EnsureCapacity(1, &key);

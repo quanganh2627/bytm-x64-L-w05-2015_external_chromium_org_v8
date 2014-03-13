@@ -153,25 +153,13 @@ namespace internal {
   PropertyDetails name = PropertyDetails(Smi::cast(args[index]));
 
 
-// Assert that the given argument has a valid value for a StrictModeFlag
-// and store it in a StrictModeFlag variable with the given name.
+// Assert that the given argument has a valid value for a StrictMode
+// and store it in a StrictMode variable with the given name.
 #define CONVERT_STRICT_MODE_ARG_CHECKED(name, index)                 \
   RUNTIME_ASSERT(args[index]->IsSmi());                              \
-  RUNTIME_ASSERT(args.smi_at(index) == kStrictMode ||                \
-                 args.smi_at(index) == kNonStrictMode);              \
-  StrictModeFlag name =                                              \
-      static_cast<StrictModeFlag>(args.smi_at(index));
-
-
-// Assert that the given argument has a valid value for a LanguageMode
-// and store it in a LanguageMode variable with the given name.
-#define CONVERT_LANGUAGE_MODE_ARG(name, index)                       \
-  ASSERT(args[index]->IsSmi());                                      \
-  ASSERT(args.smi_at(index) == CLASSIC_MODE ||                       \
-         args.smi_at(index) == STRICT_MODE ||                        \
-         args.smi_at(index) == EXTENDED_MODE);                       \
-  LanguageMode name =                                                \
-      static_cast<LanguageMode>(args.smi_at(index));
+  RUNTIME_ASSERT(args.smi_at(index) == STRICT ||                     \
+                 args.smi_at(index) == SLOPPY);                      \
+  StrictMode name = static_cast<StrictMode>(args.smi_at(index));
 
 
 static Handle<Map> ComputeObjectLiteralMap(
@@ -298,7 +286,7 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
       if (Handle<String>::cast(key)->AsArrayIndex(&element_index)) {
         // Array index as string (uint32).
         result = JSObject::SetOwnElement(
-            boilerplate, element_index, value, kNonStrictMode);
+            boilerplate, element_index, value, SLOPPY);
       } else {
         Handle<String> name(String::cast(*key));
         ASSERT(!name->AsArrayIndex(&element_index));
@@ -309,7 +297,7 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
     } else if (key->ToArrayIndex(&element_index)) {
       // Array index (uint32).
       result = JSObject::SetOwnElement(
-          boilerplate, element_index, value, kNonStrictMode);
+          boilerplate, element_index, value, SLOPPY);
     } else {
       // Non-uint32 number.
       ASSERT(key->IsNumber());
@@ -964,6 +952,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayInitializeFromArrayLike) {
   Runtime::ArrayIdToTypeAndSize(arrayId, &array_type, &element_size);
 
   Handle<JSArrayBuffer> buffer = isolate->factory()->NewJSArrayBuffer();
+  if (source->IsJSTypedArray() &&
+      JSTypedArray::cast(*source)->type() == array_type) {
+    length_obj = Handle<Object>(JSTypedArray::cast(*source)->length(), isolate);
+  }
   size_t length = NumberToSize(isolate, *length_obj);
 
   if ((length > static_cast<unsigned>(Smi::kMaxValue)) ||
@@ -1649,7 +1641,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetPrototype) {
   ASSERT(args.length() == 2);
   CONVERT_ARG_HANDLE_CHECKED(JSObject, obj, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, prototype, 1);
-  if (FLAG_harmony_observation && obj->map()->is_observed()) {
+  if (obj->map()->is_observed()) {
     Handle<Object> old_value(
         GetPrototypeSkipHiddenPrototypes(isolate, *obj), isolate);
 
@@ -2099,7 +2091,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareGlobals) {
       attr |= READ_ONLY;
     }
 
-    LanguageMode language_mode = DeclareGlobalsLanguageMode::decode(flags);
+    StrictMode strict_mode = DeclareGlobalsStrictMode::decode(flags);
 
     if (!lookup.IsFound() || is_function) {
       // If the local property exists, check that we can reconfigure it
@@ -2121,7 +2113,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareGlobals) {
       RETURN_IF_EMPTY_HANDLE(isolate,
           JSObject::SetProperty(
               global, name, value, static_cast<PropertyAttributes>(attr),
-              language_mode == CLASSIC_MODE ? kNonStrictMode : kStrictMode));
+              strict_mode));
     }
   }
 
@@ -2177,8 +2169,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareContextSlot) {
         Handle<JSObject> object = Handle<JSObject>::cast(holder);
         RETURN_IF_EMPTY_HANDLE(
             isolate,
-            JSReceiver::SetProperty(object, name, initial_value, mode,
-                                    kNonStrictMode));
+            JSReceiver::SetProperty(object, name, initial_value, mode, SLOPPY));
       }
     }
 
@@ -2224,7 +2215,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareContextSlot) {
          JSObject::SetLocalPropertyIgnoreAttributes(object, name, value, mode));
     } else {
       RETURN_IF_EMPTY_HANDLE(isolate,
-         JSReceiver::SetProperty(object, name, value, mode, kNonStrictMode));
+         JSReceiver::SetProperty(object, name, value, mode, SLOPPY));
     }
   }
 
@@ -2245,9 +2236,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeVarGlobal) {
 
   CONVERT_ARG_HANDLE_CHECKED(String, name, 0);
   RUNTIME_ASSERT(args[1]->IsSmi());
-  CONVERT_LANGUAGE_MODE_ARG(language_mode, 1);
-  StrictModeFlag strict_mode_flag = (language_mode == CLASSIC_MODE)
-      ? kNonStrictMode : kStrictMode;
+  CONVERT_STRICT_MODE_ARG_CHECKED(strict_mode, 1);
 
   // According to ECMA-262, section 12.2, page 62, the property must
   // not be deletable.
@@ -2271,7 +2260,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeVarGlobal) {
         CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
         Handle<Object> result = JSObject::SetPropertyForResult(
             handle(lookup.holder()), &lookup, name, value, attributes,
-            strict_mode_flag);
+            strict_mode);
         RETURN_IF_EMPTY_HANDLE(isolate, result);
         return *result;
       } else {
@@ -2284,7 +2273,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeVarGlobal) {
     CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
     Handle<GlobalObject> global(isolate->context()->global_object());
     Handle<Object> result = JSReceiver::SetProperty(
-        global, name, value, attributes, strict_mode_flag);
+        global, name, value, attributes, strict_mode);
     RETURN_IF_EMPTY_HANDLE(isolate, result);
     return *result;
   }
@@ -2335,11 +2324,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeConstGlobal) {
     // BUG 1213575: Handle the case where we have to set a read-only
     // property through an interceptor and only do it if it's
     // uninitialized, e.g. the hole. Nirk...
-    // Passing non-strict mode because the property is writable.
+    // Passing sloppy mode because the property is writable.
     RETURN_IF_EMPTY_HANDLE(
         isolate,
-        JSReceiver::SetProperty(global, name, value, attributes,
-                                kNonStrictMode));
+        JSReceiver::SetProperty(global, name, value, attributes, SLOPPY));
     return *value;
   }
 
@@ -2409,7 +2397,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeConstContextSlot) {
     // Strict mode not needed (const disallowed in strict mode).
     RETURN_IF_EMPTY_HANDLE(
         isolate,
-        JSReceiver::SetProperty(global, name, value, NONE, kNonStrictMode));
+        JSReceiver::SetProperty(global, name, value, NONE, SLOPPY));
     return *value;
   }
 
@@ -2460,8 +2448,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeConstContextSlot) {
       // Strict mode not needed (const disallowed in strict mode).
       RETURN_IF_EMPTY_HANDLE(
           isolate,
-          JSReceiver::SetProperty(object, name, value, attributes,
-                                  kNonStrictMode));
+          JSReceiver::SetProperty(object, name, value, attributes, SLOPPY));
     }
   }
 
@@ -2621,7 +2608,7 @@ static Handle<JSFunction> InstallBuiltin(Isolate* isolate,
                                       code,
                                       false);
   optimized->shared()->DontAdaptArguments();
-  JSReceiver::SetProperty(holder, key, optimized, NONE, kStrictMode);
+  JSReceiver::SetProperty(holder, key, optimized, NONE, STRICT);
   return optimized;
 }
 
@@ -2643,7 +2630,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SpecialArrayFunctions) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_IsClassicModeFunction) {
+RUNTIME_FUNCTION(MaybeObject*, Runtime_IsSloppyModeFunction) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 1);
   CONVERT_ARG_CHECKED(JSReceiver, callable, 0);
@@ -2657,7 +2644,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_IsClassicModeFunction) {
   }
   JSFunction* function = JSFunction::cast(callable);
   SharedFunctionInfo* shared = function->shared();
-  return isolate->heap()->ToBoolean(shared->is_classic_mode());
+  return isolate->heap()->ToBoolean(shared->strict_mode() == SLOPPY);
 }
 
 
@@ -2677,7 +2664,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetDefaultReceiver) {
   JSFunction* function = JSFunction::cast(callable);
 
   SharedFunctionInfo* shared = function->shared();
-  if (shared->native() || !shared->is_classic_mode()) {
+  if (shared->native() || shared->strict_mode() == STRICT) {
     return isolate->heap()->undefined_value();
   }
   // Returns undefined for strict or native functions, or
@@ -5082,7 +5069,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DefineOrRedefineDataProperty) {
                                             name,
                                             obj_value,
                                             handle(lookup.holder()),
-                                            kStrictMode);
+                                            STRICT);
       RETURN_IF_EMPTY_HANDLE(isolate, result_object);
       return *result_object;
     }
@@ -5155,7 +5142,7 @@ Handle<Object> Runtime::SetObjectProperty(Isolate* isolate,
                                           Handle<Object> key,
                                           Handle<Object> value,
                                           PropertyAttributes attr,
-                                          StrictModeFlag strict_mode) {
+                                          StrictMode strict_mode) {
   SetPropertyMode set_mode = attr == NONE ? SET_PROPERTY : DEFINE_PROPERTY;
 
   if (object->IsUndefined() || object->IsNull()) {
@@ -5273,7 +5260,7 @@ Handle<Object> Runtime::ForceSetObjectProperty(Isolate* isolate,
       return value;
     }
 
-    return JSObject::SetElement(js_object, index, value, attr, kNonStrictMode,
+    return JSObject::SetElement(js_object, index, value, attr, SLOPPY,
                                 false,
                                 DEFINE_PROPERTY);
   }
@@ -5281,7 +5268,7 @@ Handle<Object> Runtime::ForceSetObjectProperty(Isolate* isolate,
   if (key->IsName()) {
     Handle<Name> name = Handle<Name>::cast(key);
     if (name->AsArrayIndex(&index)) {
-      return JSObject::SetElement(js_object, index, value, attr, kNonStrictMode,
+      return JSObject::SetElement(js_object, index, value, attr, SLOPPY,
                                   false,
                                   DEFINE_PROPERTY);
     } else {
@@ -5299,7 +5286,7 @@ Handle<Object> Runtime::ForceSetObjectProperty(Isolate* isolate,
   Handle<String> name = Handle<String>::cast(converted);
 
   if (name->AsArrayIndex(&index)) {
-    return JSObject::SetElement(js_object, index, value, attr, kNonStrictMode,
+    return JSObject::SetElement(js_object, index, value, attr, SLOPPY,
                                 false,
                                 DEFINE_PROPERTY);
   } else {
@@ -5377,10 +5364,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetProperty) {
   PropertyAttributes attributes =
       static_cast<PropertyAttributes>(unchecked_attributes);
 
-  StrictModeFlag strict_mode = kNonStrictMode;
+  StrictMode strict_mode = SLOPPY;
   if (args.length() == 5) {
-    CONVERT_STRICT_MODE_ARG_CHECKED(strict_mode_flag, 4);
-    strict_mode = strict_mode_flag;
+    CONVERT_STRICT_MODE_ARG_CHECKED(strict_mode_arg, 4);
+    strict_mode = strict_mode_arg;
   }
 
   Handle<Object> result = Runtime::SetObjectProperty(isolate, object, key,
@@ -5559,7 +5546,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeleteProperty) {
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, object, 0);
   CONVERT_ARG_HANDLE_CHECKED(Name, key, 1);
   CONVERT_STRICT_MODE_ARG_CHECKED(strict_mode, 2);
-  JSReceiver::DeleteMode delete_mode = (strict_mode == kStrictMode)
+  JSReceiver::DeleteMode delete_mode = strict_mode == STRICT
       ? JSReceiver::STRICT_DELETION : JSReceiver::NORMAL_DELETION;
   Handle<Object> result = JSReceiver::DeleteProperty(object, key, delete_mode);
   RETURN_IF_EMPTY_HANDLE(isolate, result);
@@ -5811,7 +5798,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetLocalPropertyNames) {
       }
     }
     next_copy_index += local_property_count[i];
-    if (jsproto->HasHiddenProperties()) {
+
+    // Hidden properties only show up if the filter does not skip strings.
+    if ((filter & STRING) == 0 && jsproto->HasHiddenProperties()) {
       hidden_strings++;
     }
     if (i < length - 1) {
@@ -6002,7 +5991,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetArgumentsProperty) {
   if (key->Equals(isolate->heap()->length_string())) return Smi::FromInt(n);
   if (key->Equals(isolate->heap()->callee_string())) {
     JSFunction* function = frame->function();
-    if (!function->shared()->is_classic_mode()) {
+    if (function->shared()->strict_mode() == STRICT) {
       return isolate->Throw(*isolate->factory()->NewTypeError(
           "strict_arguments_callee", HandleVector<Object>(NULL, 0)));
     }
@@ -7914,11 +7903,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_NewArgumentsFast) {
       Handle<FixedArray> parameter_map =
           isolate->factory()->NewFixedArray(mapped_count + 2, NOT_TENURED);
       parameter_map->set_map(
-          isolate->heap()->non_strict_arguments_elements_map());
+          isolate->heap()->sloppy_arguments_elements_map());
 
       Handle<Map> old_map(result->map());
       Handle<Map> new_map = isolate->factory()->CopyMap(old_map);
-      new_map->set_elements_kind(NON_STRICT_ARGUMENTS_ELEMENTS);
+      new_map->set_elements_kind(SLOPPY_ARGUMENTS_ELEMENTS);
 
       result->set_map(*new_map);
       result->set_elements(*parameter_map);
@@ -8735,7 +8724,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CompileForOnStackReplacement) {
     PrintF(" at AST id %d]\n", ast_id.ToInt());
   }
 
-  function->ReplaceCode(function->shared()->code());
+  if (!function->IsOptimized()) {
+    function->ReplaceCode(function->shared()->code());
+  }
   return NULL;
 }
 
@@ -9049,7 +9040,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareModules) {
         case VAR:
         case LET:
         case CONST:
-        case CONST_HARMONY: {
+        case CONST_LEGACY: {
           PropertyAttributes attr =
               IsImmutableVariableMode(mode) ? FROZEN : SEALED;
           Handle<AccessorInfo> info =
@@ -9062,7 +9053,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DeclareModules) {
         case MODULE: {
           Object* referenced_context = Context::cast(host_context)->get(index);
           Handle<JSModule> value(Context::cast(referenced_context)->module());
-          JSReceiver::SetProperty(module, name, value, FROZEN, kStrictMode);
+          JSReceiver::SetProperty(module, name, value, FROZEN, STRICT);
           break;
         }
         case INTERNAL:
@@ -9285,9 +9276,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StoreContextSlot) {
   Handle<Object> value(args[0], isolate);
   CONVERT_ARG_HANDLE_CHECKED(Context, context, 1);
   CONVERT_ARG_HANDLE_CHECKED(String, name, 2);
-  CONVERT_LANGUAGE_MODE_ARG(language_mode, 3);
-  StrictModeFlag strict_mode = (language_mode == CLASSIC_MODE)
-      ? kNonStrictMode : kStrictMode;
+  CONVERT_STRICT_MODE_ARG_CHECKED(strict_mode, 3);
 
   int index;
   PropertyAttributes attributes;
@@ -9314,7 +9303,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StoreContextSlot) {
     if ((attributes & READ_ONLY) == 0) {
       // Context is a fixed array and set cannot fail.
       context->set(index, *value);
-    } else if (strict_mode == kStrictMode) {
+    } else if (strict_mode == STRICT) {
       // Setting read only property in strict mode.
       Handle<Object> error =
           isolate->factory()->NewTypeError("strict_cannot_assign",
@@ -9336,14 +9325,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StoreContextSlot) {
     // The property was not found.
     ASSERT(attributes == ABSENT);
 
-    if (strict_mode == kStrictMode) {
+    if (strict_mode == STRICT) {
       // Throw in strict mode (assignment to undefined variable).
       Handle<Object> error =
           isolate->factory()->NewReferenceError(
               "not_defined", HandleVector(&name, 1));
       return isolate->Throw(*error);
     }
-    // In non-strict mode, the property is added to the global object.
+    // In sloppy mode, the property is added to the global object.
     attributes = NONE;
     object = Handle<JSReceiver>(isolate->context()->global_object());
   }
@@ -9354,7 +9343,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StoreContextSlot) {
     RETURN_IF_EMPTY_HANDLE(
         isolate,
         JSReceiver::SetProperty(object, name, value, NONE, strict_mode));
-  } else if (strict_mode == kStrictMode && (attributes & READ_ONLY) != 0) {
+  } else if (strict_mode == STRICT && (attributes & READ_ONLY) != 0) {
     // Setting read only property in strict mode.
     Handle<Object> error =
       isolate->factory()->NewTypeError(
@@ -9612,6 +9601,28 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DateToUTC) {
 }
 
 
+RUNTIME_FUNCTION(MaybeObject*, Runtime_DateCacheVersion) {
+  HandleScope hs(isolate);
+  ASSERT(args.length() == 0);
+  if (!isolate->eternal_handles()->Exists(EternalHandles::DATE_CACHE_VERSION)) {
+    Handle<FixedArray> date_cache_version =
+        isolate->factory()->NewFixedArray(1, TENURED);
+    date_cache_version->set(0, Smi::FromInt(0));
+    isolate->eternal_handles()->CreateSingleton(
+        isolate, *date_cache_version, EternalHandles::DATE_CACHE_VERSION);
+  }
+  Handle<FixedArray> date_cache_version =
+      Handle<FixedArray>::cast(isolate->eternal_handles()->GetSingleton(
+          EternalHandles::DATE_CACHE_VERSION));
+  // Return result as a JS array.
+  Handle<JSObject> result =
+      isolate->factory()->NewJSObject(isolate->array_function());
+  isolate->factory()->SetContent(Handle<JSArray>::cast(result),
+                                 date_cache_version);
+  return *result;
+}
+
+
 RUNTIME_FUNCTION(MaybeObject*, Runtime_GlobalReceiver) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 1);
@@ -9693,7 +9704,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CompileString) {
   ParseRestriction restriction = function_literal_only
       ? ONLY_SINGLE_FUNCTION_LITERAL : NO_PARSE_RESTRICTION;
   Handle<JSFunction> fun = Compiler::GetFunctionFromEval(
-      source, context, CLASSIC_MODE, restriction, RelocInfo::kNoPosition);
+      source, context, SLOPPY, restriction, RelocInfo::kNoPosition);
   RETURN_IF_EMPTY_HANDLE(isolate, fun);
   return *fun;
 }
@@ -9702,7 +9713,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CompileString) {
 static ObjectPair CompileGlobalEval(Isolate* isolate,
                                     Handle<String> source,
                                     Handle<Object> receiver,
-                                    LanguageMode language_mode,
+                                    StrictMode strict_mode,
                                     int scope_position) {
   Handle<Context> context = Handle<Context>(isolate->context());
   Handle<Context> native_context = Handle<Context>(context->native_context());
@@ -9722,7 +9733,7 @@ static ObjectPair CompileGlobalEval(Isolate* isolate,
   // and return the compiled function bound in the local context.
   static const ParseRestriction restriction = NO_PARSE_RESTRICTION;
   Handle<JSFunction> compiled = Compiler::GetFunctionFromEval(
-      source, context, language_mode, restriction, scope_position);
+      source, context, strict_mode, restriction, scope_position);
   RETURN_IF_EMPTY_HANDLE_VALUE(isolate, compiled,
                                MakePair(Failure::Exception(), NULL));
   return MakePair(*compiled, *receiver);
@@ -9745,12 +9756,14 @@ RUNTIME_FUNCTION(ObjectPair, Runtime_ResolvePossiblyDirectEval) {
     return MakePair(*callee, isolate->heap()->undefined_value());
   }
 
-  CONVERT_LANGUAGE_MODE_ARG(language_mode, 3);
+  ASSERT(args[3]->IsSmi());
+  ASSERT(args.smi_at(3) == SLOPPY || args.smi_at(3) == STRICT);
+  StrictMode strict_mode = static_cast<StrictMode>(args.smi_at(3));
   ASSERT(args[4]->IsSmi());
   return CompileGlobalEval(isolate,
                            args.at<String>(1),
                            args.at<Object>(2),
-                           language_mode,
+                           strict_mode,
                            args.smi_at(4));
 }
 
@@ -9815,7 +9828,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_PushIfAbsent) {
   // Strict not needed. Used for cycle detection in Array join implementation.
   RETURN_IF_EMPTY_HANDLE(isolate, JSObject::SetFastElement(array, length,
                                                            element,
-                                                           kNonStrictMode,
+                                                           SLOPPY,
                                                            true));
   return isolate->heap()->true_value();
 }
@@ -10000,7 +10013,7 @@ static uint32_t EstimateElementCount(Handle<JSArray> array) {
       }
       break;
     }
-    case NON_STRICT_ARGUMENTS_ELEMENTS:
+    case SLOPPY_ARGUMENTS_ELEMENTS:
 #define TYPED_ARRAY_CASE(Type, type, TYPE, ctype, size)                      \
     case EXTERNAL_##TYPE##_ELEMENTS:                                         \
     case TYPE##_ELEMENTS:                                                    \
@@ -10499,6 +10512,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GlobalPrint) {
 // and are followed by non-existing element. Does not change the length
 // property.
 // Returns the number of non-undefined elements collected.
+// Returns -1 if hole removal is not supported by this method.
 RUNTIME_FUNCTION(MaybeObject*, Runtime_RemoveArrayHoles) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 2);
@@ -11287,7 +11301,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetFrameDetails) {
   // THE FRAME ITERATOR TO WRAP THE RECEIVER.
   Handle<Object> receiver(it.frame()->receiver(), isolate);
   if (!receiver->IsJSObject() &&
-      shared->is_classic_mode() &&
+      shared->strict_mode() == SLOPPY &&
       !function->IsBuiltin()) {
     // If the receiver is not a JSObject and the function is not a
     // builtin or strict-mode we have hit an optimization where a
@@ -11339,8 +11353,7 @@ static Handle<JSObject> MaterializeStackLocalsWithFrameInspector(
 
     RETURN_IF_EMPTY_HANDLE_VALUE(
         isolate,
-        Runtime::SetObjectProperty(
-            isolate, target, name, value, NONE, kNonStrictMode),
+        Runtime::SetObjectProperty(isolate, target, name, value, NONE, SLOPPY),
         Handle<JSObject>());
   }
 
@@ -11352,8 +11365,7 @@ static Handle<JSObject> MaterializeStackLocalsWithFrameInspector(
 
     RETURN_IF_EMPTY_HANDLE_VALUE(
         isolate,
-        Runtime::SetObjectProperty(
-            isolate, target, name, value, NONE, kNonStrictMode),
+        Runtime::SetObjectProperty(isolate, target, name, value, NONE, SLOPPY),
         Handle<JSObject>());
   }
 
@@ -11436,7 +11448,7 @@ static Handle<JSObject> MaterializeLocalContext(Isolate* isolate,
                                        key,
                                        GetProperty(isolate, ext, key),
                                        NONE,
-                                       kNonStrictMode),
+                                       SLOPPY),
             Handle<JSObject>());
       }
     }
@@ -11537,8 +11549,7 @@ static bool SetLocalVariableValue(Isolate* isolate,
           // We don't expect this to do anything except replacing
           // property value.
           Runtime::SetObjectProperty(isolate, ext, variable_name, new_value,
-                                     NONE,
-                                     kNonStrictMode);
+                                     NONE, SLOPPY);
           return true;
         }
       }
@@ -11586,8 +11597,7 @@ static Handle<JSObject> MaterializeClosure(Isolate* isolate,
           isolate,
           Runtime::SetObjectProperty(isolate, closure_scope, key,
                                      GetProperty(isolate, ext, key),
-                                     NONE,
-                                     kNonStrictMode),
+                                     NONE, SLOPPY),
           Handle<JSObject>());
     }
   }
@@ -11619,8 +11629,7 @@ static bool SetClosureVariableValue(Isolate* isolate,
     if (JSReceiver::HasProperty(ext, variable_name)) {
       // We don't expect this to do anything except replacing property value.
       Runtime::SetObjectProperty(isolate, ext, variable_name, new_value,
-                                 NONE,
-                                 kNonStrictMode);
+                                 NONE, SLOPPY);
       return true;
     }
   }
@@ -11642,8 +11651,7 @@ static Handle<JSObject> MaterializeCatchScope(Isolate* isolate,
   RETURN_IF_EMPTY_HANDLE_VALUE(
       isolate,
       Runtime::SetObjectProperty(isolate, catch_scope, name, thrown_object,
-                                 NONE,
-                                 kNonStrictMode),
+                                 NONE, SLOPPY),
       Handle<JSObject>());
   return catch_scope;
 }
@@ -12156,7 +12164,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetStepInPositions) {
         Smi* position_value = Smi::FromInt(break_location_iterator.position());
         JSObject::SetElement(array, len,
             Handle<Object>(position_value, isolate),
-            NONE, kNonStrictMode);
+            NONE, SLOPPY);
         len++;
       }
     }
@@ -12711,7 +12719,7 @@ static Handle<JSObject> MaterializeArgumentsObject(
                              isolate->factory()->arguments_string(),
                              arguments,
                              ::NONE,
-                             kNonStrictMode);
+                             SLOPPY);
   return target;
 }
 
@@ -12731,7 +12739,7 @@ static MaybeObject* DebugEvaluate(Isolate* isolate,
   Handle<JSFunction> eval_fun =
       Compiler::GetFunctionFromEval(source,
                                     context,
-                                    CLASSIC_MODE,
+                                    SLOPPY,
                                     NO_PARSE_RESTRICTION,
                                     RelocInfo::kNoPosition);
   RETURN_IF_EMPTY_HANDLE(isolate, eval_fun);
@@ -12989,7 +12997,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugReferencedBy) {
 
   // Get the constructor function for context extension and arguments array.
   JSObject* arguments_boilerplate =
-      isolate->context()->native_context()->arguments_boilerplate();
+      isolate->context()->native_context()->sloppy_arguments_boilerplate();
   JSFunction* arguments_function =
       JSFunction::cast(arguments_boilerplate->map()->constructor());
 
@@ -14577,7 +14585,7 @@ ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(FastSmiOrObjectElements)
 ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(FastDoubleElements)
 ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(FastHoleyElements)
 ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(DictionaryElements)
-ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(NonStrictArgumentsElements)
+ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(SloppyArgumentsElements)
 ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(ExternalArrayElements)
 // Properties test sitting with elements tests - not fooling anyone.
 ELEMENTS_KIND_CHECK_RUNTIME_FUNCTION(FastProperties)

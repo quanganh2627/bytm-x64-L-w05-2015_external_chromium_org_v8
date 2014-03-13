@@ -1182,7 +1182,6 @@ void MathPowStub::Generate(MacroAssembler* masm) {
     if (exponent_type_ == ON_STACK) {
       FPRegister  half_double = d3;
       FPRegister  minus_half_double = d4;
-      FPRegister  zero_double = d5;
       // Detect square root case. Crankshaft detects constant +/-0.5 at compile
       // time and uses DoMathPowHalf instead. We then skip this check for
       // non-constant cases of +/-0.5 as these hardly occur.
@@ -1215,8 +1214,7 @@ void MathPowStub::Generate(MacroAssembler* masm) {
       // where base is -INFINITY or -0.
 
       // Add +0 to base. This has no effect other than turning -0 into +0.
-      __ Fmov(zero_double, 0.0);
-      __ Fadd(base_double, base_double, zero_double);
+      __ Fadd(base_double, base_double, fp_zero);
       // The operation -0+0 results in +0 in all cases except where the
       // FPCR rounding mode is 'round towards minus infinity' (RM). The
       // A64 simulator does not currently simulate FPCR (where the rounding
@@ -1224,18 +1222,17 @@ void MathPowStub::Generate(MacroAssembler* masm) {
       if (masm->emit_debug_code()) {
         UseScratchRegisterScope temps(masm);
         Register temp = temps.AcquireX();
-        //  d5  zero_double   The value +0.0 as a double.
-        __ Fneg(scratch0_double, zero_double);
+        __ Fneg(scratch0_double, fp_zero);
         // Verify that we correctly generated +0.0 and -0.0.
         //  bits(+0.0) = 0x0000000000000000
         //  bits(-0.0) = 0x8000000000000000
-        __ Fmov(temp, zero_double);
+        __ Fmov(temp, fp_zero);
         __ CheckRegisterIsClear(temp, kCouldNotGenerateZero);
         __ Fmov(temp, scratch0_double);
         __ Eor(temp, temp, kDSignMask);
         __ CheckRegisterIsClear(temp, kCouldNotGenerateNegativeZero);
         // Check that -0.0 + 0.0 == +0.0.
-        __ Fadd(scratch0_double, scratch0_double, zero_double);
+        __ Fadd(scratch0_double, scratch0_double, fp_zero);
         __ Fmov(temp, scratch0_double);
         __ CheckRegisterIsClear(temp, kExpectedPositiveZero);
       }
@@ -1504,7 +1501,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
     UseScratchRegisterScope temps(masm);
     Register temp = temps.AcquireX();
     __ Ldr(temp, MemOperand(fp, ExitFrameConstants::kSPOffset));
-    __ Ldr(temp, MemOperand(temp, -static_cast<int64_t>(kXRegSizeInBytes)));
+    __ Ldr(temp, MemOperand(temp, -static_cast<int64_t>(kXRegSize)));
     __ Cmp(temp, x12);
     __ Check(eq, kReturnAddressNotFoundInFrame);
   }
@@ -1792,6 +1789,9 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   __ SetStackPointer(jssp);
 
   ProfileEntryHookStub::MaybeCallEntryHook(masm);
+
+  // Set up the reserved register for 0.0.
+  __ Fmov(fp_zero, 0.0);
 
   // Build an entry frame (see layout below).
   Isolate* isolate = masm->isolate();
@@ -2303,7 +2303,7 @@ void ArgumentsAccessStub::GenerateReadElement(MacroAssembler* masm) {
 }
 
 
-void ArgumentsAccessStub::GenerateNewNonStrictSlow(MacroAssembler* masm) {
+void ArgumentsAccessStub::GenerateNewSloppySlow(MacroAssembler* masm) {
   // Stack layout on entry.
   //  jssp[0]:  number of parameters (tagged)
   //  jssp[8]:  address of receiver argument
@@ -2323,17 +2323,17 @@ void ArgumentsAccessStub::GenerateNewNonStrictSlow(MacroAssembler* masm) {
   // Patch the arguments.length and parameters pointer in the current frame.
   __ Ldr(x11, MemOperand(caller_fp,
                          ArgumentsAdaptorFrameConstants::kLengthOffset));
-  __ Poke(x11, 0 * kXRegSizeInBytes);
+  __ Poke(x11, 0 * kXRegSize);
   __ Add(x10, caller_fp, Operand::UntagSmiAndScale(x11, kPointerSizeLog2));
   __ Add(x10, x10, Operand(StandardFrameConstants::kCallerSPOffset));
-  __ Poke(x10, 1 * kXRegSizeInBytes);
+  __ Poke(x10, 1 * kXRegSize);
 
   __ Bind(&runtime);
   __ TailCallRuntime(Runtime::kNewArgumentsFast, 3, 1);
 }
 
 
-void ArgumentsAccessStub::GenerateNewNonStrictFast(MacroAssembler* masm) {
+void ArgumentsAccessStub::GenerateNewSloppyFast(MacroAssembler* masm) {
   // Stack layout on entry.
   //  jssp[0]:  number of parameters (tagged)
   //  jssp[8]:  address of receiver argument
@@ -2419,7 +2419,8 @@ void ArgumentsAccessStub::GenerateNewNonStrictFast(MacroAssembler* masm) {
 
   // 2. Add the size of the backing store and arguments object.
   __ Add(size, size, Operand(arg_count, LSL, kPointerSizeLog2));
-  __ Add(size, size, FixedArray::kHeaderSize + Heap::kArgumentsObjectSize);
+  __ Add(size, size,
+         FixedArray::kHeaderSize + Heap::kSloppyArgumentsObjectSize);
 
   // Do the allocation of all three objects in one go. Assign this to x0, as it
   // will be returned to the caller.
@@ -2446,8 +2447,9 @@ void ArgumentsAccessStub::GenerateNewNonStrictFast(MacroAssembler* masm) {
   __ Ldr(global_ctx, FieldMemOperand(global_object,
                                      GlobalObject::kNativeContextOffset));
 
-  __ Ldr(args_offset, ContextMemOperand(global_ctx,
-                                        Context::ARGUMENTS_BOILERPLATE_INDEX));
+  __ Ldr(args_offset,
+         ContextMemOperand(global_ctx,
+                           Context::SLOPPY_ARGUMENTS_BOILERPLATE_INDEX));
   __ Ldr(aliased_args_offset,
          ContextMemOperand(global_ctx,
                            Context::ALIASED_ARGUMENTS_BOILERPLATE_INDEX));
@@ -2486,7 +2488,7 @@ void ArgumentsAccessStub::GenerateNewNonStrictFast(MacroAssembler* masm) {
   //   x14  recv_arg      pointer to receiver arguments
 
   Register elements = x5;
-  __ Add(elements, alloc_obj, Heap::kArgumentsObjectSize);
+  __ Add(elements, alloc_obj, Heap::kSloppyArgumentsObjectSize);
   __ Str(elements, FieldMemOperand(alloc_obj, JSObject::kElementsOffset));
 
   // Initialize parameter map. If there are no mapped arguments, we're done.
@@ -2498,7 +2500,7 @@ void ArgumentsAccessStub::GenerateNewNonStrictFast(MacroAssembler* masm) {
   __ CmovX(backing_store, elements, eq);
   __ B(eq, &skip_parameter_map);
 
-  __ LoadRoot(x10, Heap::kNonStrictArgumentsElementsMapRootIndex);
+  __ LoadRoot(x10, Heap::kSloppyArgumentsElementsMapRootIndex);
   __ Str(x10, FieldMemOperand(elements, FixedArray::kMapOffset));
   __ Add(x10, mapped_params, 2);
   __ SmiTag(x10);
@@ -2651,7 +2653,7 @@ void ArgumentsAccessStub::GenerateNewStrict(MacroAssembler* masm) {
   __ Add(size, param_count, FixedArray::kHeaderSize / kPointerSize);
   __ Cmp(param_count, 0);
   __ CzeroX(size, eq);
-  __ Add(size, size, Heap::kArgumentsObjectSizeStrict / kPointerSize);
+  __ Add(size, size, Heap::kStrictArgumentsObjectSize / kPointerSize);
 
   // Do the allocation of both objects in one go. Assign this to x0, as it will
   // be returned to the caller.
@@ -2668,7 +2670,7 @@ void ArgumentsAccessStub::GenerateNewStrict(MacroAssembler* masm) {
                                      GlobalObject::kNativeContextOffset));
   __ Ldr(args_offset,
          ContextMemOperand(global_ctx,
-                           Context::STRICT_MODE_ARGUMENTS_BOILERPLATE_INDEX));
+                           Context::STRICT_ARGUMENTS_BOILERPLATE_INDEX));
 
   //   x0   alloc_obj         pointer to allocated objects: parameter array and
   //                          arguments object
@@ -2695,7 +2697,7 @@ void ArgumentsAccessStub::GenerateNewStrict(MacroAssembler* masm) {
   // Set up the elements pointer in the allocated arguments object and
   // initialize the header in the elements fixed array.
   Register elements = x5;
-  __ Add(elements, alloc_obj, Heap::kArgumentsObjectSizeStrict);
+  __ Add(elements, alloc_obj, Heap::kStrictArgumentsObjectSize);
   __ Str(elements, FieldMemOperand(alloc_obj, JSObject::kElementsOffset));
   __ LoadRoot(x10, Heap::kFixedArrayMapRootIndex);
   __ Str(x10, FieldMemOperand(elements, FixedArray::kMapOffset));
@@ -3160,7 +3162,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   // Read two 32 bit values from the static offsets vector buffer into
   // an X register
   __ Ldr(current_offset,
-         MemOperand(offsets_vector_index, kWRegSizeInBytes * 2, PostIndex));
+         MemOperand(offsets_vector_index, kWRegSize * 2, PostIndex));
   // Store the smi values in the last match info.
   __ SmiTag(x10, current_offset);
   // Clearing the 32 bottom bits gives us a Smi.
@@ -3168,7 +3170,7 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   __ And(x11, current_offset, ~kWRegMask);
   __ Stp(x10,
          x11,
-         MemOperand(last_match_offsets, kXRegSizeInBytes * 2, PostIndex));
+         MemOperand(last_match_offsets, kXRegSize * 2, PostIndex));
   __ B(&next_capture);
   __ Bind(&done);
 
@@ -3405,7 +3407,7 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
       __ Tbnz(w4, SharedFunctionInfo::kNative, &cont);
     }
 
-    // Compute the receiver in non-strict mode.
+    // Compute the receiver in sloppy mode.
     __ Peek(x3, argc_ * kPointerSize);
 
     if (NeedsChecks()) {
@@ -3452,7 +3454,7 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
     // CALL_NON_FUNCTION expects the non-function callee as receiver (instead
     // of the original receiver from the call site).
     __ Bind(&non_function);
-    __ Poke(function, argc_ * kXRegSizeInBytes);
+    __ Poke(function, argc_ * kXRegSize);
     __ Mov(x0, argc_);  // Set up the number of arguments.
     __ Mov(x2, 0);
     __ GetBuiltinFunction(function, Builtins::CALL_NON_FUNCTION);
@@ -4939,8 +4941,7 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
 
 
 void StubFailureTrampolineStub::Generate(MacroAssembler* masm) {
-  // TODO(jbramley): The ARM code leaves the (shifted) offset in r1. Why?
-  CEntryStub ces(1, kSaveFPRegs);
+  CEntryStub ces(1, fp_registers_ ? kSaveFPRegs : kDontSaveFPRegs);
   __ Call(ces.GetCode(masm->isolate()), RelocInfo::CODE_TARGET);
   int parameter_count_offset =
       StubFailureTrampolineFrame::kCallerStackParameterCountFrameOffset;
@@ -5104,7 +5105,7 @@ void NameDictionaryLookupStub::GeneratePositiveLookup(
   // The inlined probes didn't find the entry.
   // Call the complete stub to scan the whole dictionary.
 
-  CPURegList spill_list(CPURegister::kRegister, kXRegSize, 0, 6);
+  CPURegList spill_list(CPURegister::kRegister, kXRegSizeInBits, 0, 6);
   spill_list.Combine(lr);
   spill_list.Remove(scratch1);
   spill_list.Remove(scratch2);
@@ -5184,7 +5185,7 @@ void NameDictionaryLookupStub::GenerateNegativeLookup(MacroAssembler* masm,
     __ Bind(&good);
   }
 
-  CPURegList spill_list(CPURegister::kRegister, kXRegSize, 0, 6);
+  CPURegList spill_list(CPURegister::kRegister, kXRegSizeInBits, 0, 6);
   spill_list.Combine(lr);
   spill_list.Remove(scratch0);  // Scratch registers don't need to be preserved.
 

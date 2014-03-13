@@ -531,8 +531,8 @@ class MacroAssembler : public Assembler {
   // and pop instructions).
   //
   // (Push|Pop)SizeRegList allow you to specify the register size as a
-  // parameter. Only kXRegSize, kWRegSize, kDRegSize and kSRegSize are
-  // supported.
+  // parameter. Only kXRegSizeInBits, kWRegSizeInBits, kDRegSizeInBits and
+  // kSRegSizeInBits are supported.
   //
   // Otherwise, (Push|Pop)(CPU|X|W|D|S)RegList is preferred.
   void PushCPURegList(CPURegList registers);
@@ -547,28 +547,28 @@ class MacroAssembler : public Assembler {
     PopCPURegList(CPURegList(type, reg_size, registers));
   }
   inline void PushXRegList(RegList regs) {
-    PushSizeRegList(regs, kXRegSize);
+    PushSizeRegList(regs, kXRegSizeInBits);
   }
   inline void PopXRegList(RegList regs) {
-    PopSizeRegList(regs, kXRegSize);
+    PopSizeRegList(regs, kXRegSizeInBits);
   }
   inline void PushWRegList(RegList regs) {
-    PushSizeRegList(regs, kWRegSize);
+    PushSizeRegList(regs, kWRegSizeInBits);
   }
   inline void PopWRegList(RegList regs) {
-    PopSizeRegList(regs, kWRegSize);
+    PopSizeRegList(regs, kWRegSizeInBits);
   }
   inline void PushDRegList(RegList regs) {
-    PushSizeRegList(regs, kDRegSize, CPURegister::kFPRegister);
+    PushSizeRegList(regs, kDRegSizeInBits, CPURegister::kFPRegister);
   }
   inline void PopDRegList(RegList regs) {
-    PopSizeRegList(regs, kDRegSize, CPURegister::kFPRegister);
+    PopSizeRegList(regs, kDRegSizeInBits, CPURegister::kFPRegister);
   }
   inline void PushSRegList(RegList regs) {
-    PushSizeRegList(regs, kSRegSize, CPURegister::kFPRegister);
+    PushSizeRegList(regs, kSRegSizeInBits, CPURegister::kFPRegister);
   }
   inline void PopSRegList(RegList regs) {
-    PopSizeRegList(regs, kSRegSize, CPURegister::kFPRegister);
+    PopSizeRegList(regs, kSRegSizeInBits, CPURegister::kFPRegister);
   }
 
   // Push the specified register 'count' times.
@@ -654,19 +654,19 @@ class MacroAssembler : public Assembler {
   //
   // Note that unit_size must be specified in bytes. For variants which take a
   // Register count, the unit size must be a power of two.
-  inline void Claim(uint64_t count, uint64_t unit_size = kXRegSizeInBytes);
+  inline void Claim(uint64_t count, uint64_t unit_size = kXRegSize);
   inline void Claim(const Register& count,
-                    uint64_t unit_size = kXRegSizeInBytes);
-  inline void Drop(uint64_t count, uint64_t unit_size = kXRegSizeInBytes);
+                    uint64_t unit_size = kXRegSize);
+  inline void Drop(uint64_t count, uint64_t unit_size = kXRegSize);
   inline void Drop(const Register& count,
-                   uint64_t unit_size = kXRegSizeInBytes);
+                   uint64_t unit_size = kXRegSize);
 
   // Variants of Claim and Drop, where the 'count' parameter is a SMI held in a
   // register.
   inline void ClaimBySMI(const Register& count_smi,
-                         uint64_t unit_size = kXRegSizeInBytes);
+                         uint64_t unit_size = kXRegSize);
   inline void DropBySMI(const Register& count_smi,
-                        uint64_t unit_size = kXRegSizeInBytes);
+                        uint64_t unit_size = kXRegSize);
 
   // Compare a register with an operand, and branch to label depending on the
   // condition. May corrupt the status flags.
@@ -1047,7 +1047,6 @@ class MacroAssembler : public Assembler {
     CallRuntime(Runtime::FunctionForId(id), num_arguments, save_doubles);
   }
 
-  // TODO(all): Why does this variant save FP regs unconditionally?
   void CallRuntimeSaveDoubles(Runtime::FunctionId id) {
     const Runtime::Function* function = Runtime::FunctionForId(id);
     CallRuntime(function, function->nargs, kSaveFPRegs);
@@ -1110,9 +1109,10 @@ class MacroAssembler : public Assembler {
                      const CallWrapper& call_wrapper = NullCallWrapper());
 
   // Store the code object for the given builtin in the target register and
-  // setup the function in x1.
-  // TODO(all): Can we use another register than x1?
-  void GetBuiltinEntry(Register target, Builtins::JavaScript id);
+  // setup the function in the function register.
+  void GetBuiltinEntry(Register target,
+                       Register function,
+                       Builtins::JavaScript id);
 
   // Store the function for the given builtin in the target register.
   void GetBuiltinFunction(Register target, Builtins::JavaScript id);

@@ -91,16 +91,11 @@ PreParserIdentifier PreParserTraits::GetSymbol(Scanner* scanner) {
   } else if (scanner->current_token() == Token::YIELD) {
     return PreParserIdentifier::Yield();
   }
-  if (scanner->is_literal_ascii()) {
-    // Detect strict-mode poison words.
-    if (scanner->literal_length() == 4 &&
-        !strncmp(scanner->literal_ascii_string().start(), "eval", 4)) {
-      return PreParserIdentifier::Eval();
-    }
-    if (scanner->literal_length() == 9 &&
-        !strncmp(scanner->literal_ascii_string().start(), "arguments", 9)) {
-      return PreParserIdentifier::Arguments();
-    }
+  if (scanner->UnescapedLiteralMatches("eval", 4)) {
+    return PreParserIdentifier::Eval();
+  }
+  if (scanner->UnescapedLiteralMatches("arguments", 9)) {
+    return PreParserIdentifier::Arguments();
   }
   return PreParserIdentifier::Default();
 }
@@ -108,22 +103,11 @@ PreParserIdentifier PreParserTraits::GetSymbol(Scanner* scanner) {
 
 PreParserExpression PreParserTraits::ExpressionFromString(
     int pos, Scanner* scanner, PreParserFactory* factory) {
-  const int kUseStrictLength = 10;
-  const char* kUseStrictChars = "use strict";
   pre_parser_->LogSymbol();
-  if (scanner->is_literal_ascii() &&
-      scanner->literal_length() == kUseStrictLength &&
-      !scanner->literal_contains_escapes() &&
-      !strncmp(scanner->literal_ascii_string().start(), kUseStrictChars,
-               kUseStrictLength)) {
+  if (scanner->UnescapedLiteralMatches("use strict", 10)) {
     return PreParserExpression::UseStrictStringLiteral();
   }
   return PreParserExpression::StringLiteral();
-}
-
-
-PreParserExpression PreParserTraits::ParseObjectLiteral(bool* ok) {
-  return pre_parser_->ParseObjectLiteral(ok);
 }
 
 
@@ -138,13 +122,27 @@ PreParserExpression PreParserTraits::ParseV8Intrinsic(bool* ok) {
 }
 
 
+PreParserExpression PreParserTraits::ParseFunctionLiteral(
+    PreParserIdentifier name,
+    Scanner::Location function_name_location,
+    bool name_is_strict_reserved,
+    bool is_generator,
+    int function_token_position,
+    FunctionLiteral::FunctionType type,
+    bool* ok) {
+  return pre_parser_->ParseFunctionLiteral(
+      name, function_name_location, name_is_strict_reserved, is_generator,
+      function_token_position, type, ok);
+}
+
+
 PreParser::PreParseResult PreParser::PreParseLazyFunction(
-    LanguageMode mode, bool is_generator, ParserRecorder* log) {
+    StrictMode strict_mode, bool is_generator, ParserRecorder* log) {
   log_ = log;
   // Lazy functions always have trivial outer scopes (no with/catch scopes).
   PreParserScope top_scope(scope_, GLOBAL_SCOPE);
   FunctionState top_state(&function_state_, &scope_, &top_scope);
-  scope_->SetLanguageMode(mode);
+  scope_->SetStrictMode(strict_mode);
   PreParserScope function_scope(scope_, FUNCTION_SCOPE);
   FunctionState function_state(&function_state_, &scope_, &function_scope);
   function_state.set_is_generator(is_generator);
@@ -157,7 +155,7 @@ PreParser::PreParseResult PreParser::PreParseLazyFunction(
     ReportUnexpectedToken(scanner()->current_token());
   } else {
     ASSERT_EQ(Token::RBRACE, scanner()->peek());
-    if (!scope_->is_classic_mode()) {
+    if (scope_->strict_mode() == STRICT) {
       int end_pos = scanner()->location().end_pos;
       CheckOctalLiteral(start_position, end_pos, &ok);
     }
@@ -224,8 +222,7 @@ PreParser::SourceElements PreParser::ParseSourceElements(int end_token,
     Statement statement = ParseSourceElement(CHECK_OK);
     if (directive_prologue) {
       if (statement.IsUseStrictLiteral()) {
-        scope_->SetLanguageMode(allow_harmony_scoping() ?
-                                EXTENDED_MODE : STRICT_MODE);
+        scope_->SetStrictMode(STRICT);
       } else if (!statement.IsStringLiteral()) {
         directive_prologue = false;
       }
@@ -319,7 +316,7 @@ PreParser::Statement PreParser::ParseStatement(bool* ok) {
       Scanner::Location start_location = scanner()->peek_location();
       Statement statement = ParseFunctionDeclaration(CHECK_OK);
       Scanner::Location end_location = scanner()->location();
-      if (!scope_->is_classic_mode()) {
+      if (strict_mode() == STRICT) {
         PreParserTraits::ReportMessageAt(start_location.beg_pos,
                                          end_location.end_pos,
                                          "strict_function",
@@ -372,7 +369,7 @@ PreParser::Statement PreParser::ParseBlock(bool* ok) {
   //
   Expect(Token::LBRACE, CHECK_OK);
   while (peek() != Token::RBRACE) {
-    if (scope_->is_extended_mode()) {
+    if (FLAG_harmony_scoping && strict_mode() == STRICT) {
       ParseSourceElement(CHECK_OK);
     } else {
       ParseStatement(CHECK_OK);
@@ -432,28 +429,24 @@ PreParser::Statement PreParser::ParseVariableDeclarations(
     // * It is a Syntax Error if the code that matches this production is not
     //   contained in extended code.
     //
-    // However disallowing const in classic mode will break compatibility with
+    // However disallowing const in sloppy mode will break compatibility with
     // existing pages. Therefore we keep allowing const with the old
-    // non-harmony semantics in classic mode.
+    // non-harmony semantics in sloppy mode.
     Consume(Token::CONST);
-    switch (scope_->language_mode()) {
-      case CLASSIC_MODE:
-        break;
-      case STRICT_MODE: {
-        Scanner::Location location = scanner()->peek_location();
-        ReportMessageAt(location, "strict_const");
-        *ok = false;
-        return Statement::Default();
-      }
-      case EXTENDED_MODE:
-        if (var_context != kSourceElement &&
-            var_context != kForStatement) {
+    if (strict_mode() == STRICT) {
+      if (FLAG_harmony_scoping) {
+        if (var_context != kSourceElement && var_context != kForStatement) {
           ReportMessageAt(scanner()->peek_location(), "unprotected_const");
           *ok = false;
           return Statement::Default();
         }
         require_initializer = true;
-        break;
+      } else {
+        Scanner::Location location = scanner()->peek_location();
+        ReportMessageAt(location, "strict_const");
+        *ok = false;
+        return Statement::Default();
+      }
     }
   } else if (peek() == Token::LET) {
     // ES6 Draft Rev4 section 12.2.1:
@@ -462,7 +455,9 @@ PreParser::Statement PreParser::ParseVariableDeclarations(
     //
     // * It is a Syntax Error if the code that matches this production is not
     //   contained in extended code.
-    if (!scope_->is_extended_mode()) {
+    //
+    // TODO(rossberg): make 'let' a legal identifier in sloppy mode.
+    if (!FLAG_harmony_scoping || strict_mode() == SLOPPY) {
       ReportMessageAt(scanner()->peek_location(), "illegal_let");
       *ok = false;
       return Statement::Default();
@@ -515,7 +510,7 @@ PreParser::Statement PreParser::ParseExpressionOrLabelledStatement(bool* ok) {
     // Expression is a single identifier, and not, e.g., a parenthesized
     // identifier.
     ASSERT(!expr.AsIdentifier().IsFutureReserved());
-    ASSERT(scope_->is_classic_mode() ||
+    ASSERT(strict_mode() == SLOPPY ||
            (!expr.AsIdentifier().IsFutureStrictReserved() &&
             !expr.AsIdentifier().IsYield()));
     Consume(Token::COLON);
@@ -613,7 +608,7 @@ PreParser::Statement PreParser::ParseWithStatement(bool* ok) {
   // WithStatement ::
   //   'with' '(' Expression ')' Statement
   Expect(Token::WITH, CHECK_OK);
-  if (!scope_->is_classic_mode()) {
+  if (strict_mode() == STRICT) {
     ReportMessageAt(scanner()->location(), "strict_mode_with");
     *ok = false;
     return Statement::Default();
@@ -852,7 +847,7 @@ PreParser::Expression PreParser::ParseAssignmentExpression(bool accept_IN,
     return expression;
   }
 
-  if (!scope_->is_classic_mode() &&
+  if (strict_mode() == STRICT &&
       expression.IsIdentifier() &&
       expression.AsIdentifier().IsEvalOrArguments()) {
     Scanner::Location after = scanner()->location();
@@ -946,7 +941,7 @@ PreParser::Expression PreParser::ParseUnaryExpression(bool* ok) {
     op = Next();
     Scanner::Location before = scanner()->peek_location();
     Expression expression = ParseUnaryExpression(CHECK_OK);
-    if (!scope_->is_classic_mode() &&
+    if (strict_mode() == STRICT &&
         expression.IsIdentifier() &&
         expression.AsIdentifier().IsEvalOrArguments()) {
       Scanner::Location after = scanner()->location();
@@ -969,7 +964,7 @@ PreParser::Expression PreParser::ParsePostfixExpression(bool* ok) {
   Expression expression = ParseLeftHandSideExpression(CHECK_OK);
   if (!scanner()->HasAnyLineTerminatorBeforeNext() &&
       Token::IsCountOp(peek())) {
-    if (!scope_->is_classic_mode() &&
+    if (strict_mode() == STRICT &&
         expression.IsIdentifier() &&
         expression.AsIdentifier().IsEvalOrArguments()) {
       Scanner::Location after = scanner()->location();
@@ -1129,113 +1124,6 @@ PreParser::Expression PreParser::ParseMemberExpressionContinuation(
 }
 
 
-PreParser::Expression PreParser::ParseObjectLiteral(bool* ok) {
-  // ObjectLiteral ::
-  // '{' ((
-  //       ((IdentifierName | String | Number) ':' AssignmentExpression) |
-  //       (('get' | 'set') (IdentifierName | String | Number) FunctionLiteral)
-  //      ) ',')* '}'
-  // (Except that trailing comma is not required and not allowed.)
-
-  ObjectLiteralChecker checker(this, scope_->language_mode());
-
-  Expect(Token::LBRACE, CHECK_OK);
-  while (peek() != Token::RBRACE) {
-    Token::Value next = peek();
-    switch (next) {
-      case Token::IDENTIFIER:
-      case Token::FUTURE_RESERVED_WORD:
-      case Token::FUTURE_STRICT_RESERVED_WORD: {
-        bool is_getter = false;
-        bool is_setter = false;
-        ParseIdentifierNameOrGetOrSet(&is_getter, &is_setter, CHECK_OK);
-        if ((is_getter || is_setter) && peek() != Token::COLON) {
-            Token::Value next = Next();
-            if (next != Token::IDENTIFIER &&
-                next != Token::FUTURE_RESERVED_WORD &&
-                next != Token::FUTURE_STRICT_RESERVED_WORD &&
-                next != Token::NUMBER &&
-                next != Token::STRING &&
-                !Token::IsKeyword(next)) {
-              ReportUnexpectedToken(next);
-              *ok = false;
-              return Expression::Default();
-            }
-            // Validate the property
-            PropertyKind type = is_getter ? kGetterProperty : kSetterProperty;
-            checker.CheckProperty(next, type, CHECK_OK);
-            PreParserIdentifier name = GetSymbol(scanner());
-            ParseFunctionLiteral(name,
-                                 scanner()->location(),
-                                 false,  // reserved words are allowed here
-                                 false,  // not a generator
-                                 RelocInfo::kNoPosition,
-                                 FunctionLiteral::ANONYMOUS_EXPRESSION,
-                                 CHECK_OK);
-            if (peek() != Token::RBRACE) {
-              Expect(Token::COMMA, CHECK_OK);
-            }
-            continue;  // restart the while
-        }
-        break;
-      }
-      case Token::STRING:
-        Consume(next);
-        LogSymbol();
-        break;
-      case Token::NUMBER:
-        Consume(next);
-        break;
-      default:
-        if (Token::IsKeyword(next)) {
-          Consume(next);
-          LogSymbol();
-        } else {
-          Token::Value next = Next();
-          ReportUnexpectedToken(next);
-          *ok = false;
-          return Expression::Default();
-        }
-    }
-
-    // Validate the property
-    checker.CheckProperty(next, kValueProperty, CHECK_OK);
-
-    Expect(Token::COLON, CHECK_OK);
-    ParseAssignmentExpression(true, CHECK_OK);
-
-    // TODO(1240767): Consider allowing trailing comma.
-    if (peek() != Token::RBRACE) Expect(Token::COMMA, CHECK_OK);
-  }
-  Expect(Token::RBRACE, CHECK_OK);
-
-  function_state_->NextMaterializedLiteralIndex();
-  return Expression::Default();
-}
-
-
-PreParser::Arguments PreParser::ParseArguments(bool* ok) {
-  // Arguments ::
-  //   '(' (AssignmentExpression)*[','] ')'
-
-  Expect(Token::LPAREN, ok);
-  if (!*ok) return -1;
-  bool done = (peek() == Token::RPAREN);
-  int argc = 0;
-  while (!done) {
-    ParseAssignmentExpression(true, ok);
-    if (!*ok) return -1;
-    argc++;
-    done = (peek() == Token::RPAREN);
-    if (!done) {
-      Expect(Token::COMMA, ok);
-      if (!*ok) return -1;
-    }
-  }
-  Expect(Token::RPAREN, ok);
-  return argc;
-}
-
 PreParser::Expression PreParser::ParseFunctionLiteral(
     Identifier function_name,
     Scanner::Location function_name_location,
@@ -1277,9 +1165,9 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
     }
 
     int prev_value;
-    if (scanner()->is_literal_ascii()) {
-      prev_value =
-          duplicate_finder.AddAsciiSymbol(scanner()->literal_ascii_string(), 1);
+    if (scanner()->is_literal_one_byte()) {
+      prev_value = duplicate_finder.AddAsciiSymbol(
+          scanner()->literal_one_byte_string(), 1);
     } else {
       prev_value =
           duplicate_finder.AddUtf16Symbol(scanner()->literal_utf16_string(), 1);
@@ -1313,7 +1201,7 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
 
   // Validate strict mode. We can do this only after parsing the function,
   // since the function can declare itself strict.
-  if (!scope_->is_classic_mode()) {
+  if (strict_mode() == STRICT) {
     if (function_name.IsEvalOrArguments()) {
       ReportMessageAt(function_name_location, "strict_eval_arguments");
       *ok = false;
@@ -1362,7 +1250,7 @@ void PreParser::ParseLazyFunctionLiteralBody(bool* ok) {
   log_->LogFunction(body_start, body_end,
                     function_state_->materialized_literal_count(),
                     function_state_->expected_property_count(),
-                    scope_->language_mode());
+                    strict_mode());
 }
 
 
@@ -1386,8 +1274,8 @@ PreParser::Expression PreParser::ParseV8Intrinsic(bool* ok) {
 
 void PreParser::LogSymbol() {
   int identifier_pos = position();
-  if (scanner()->is_literal_ascii()) {
-    log_->LogAsciiSymbol(identifier_pos, scanner()->literal_ascii_string());
+  if (scanner()->is_literal_one_byte()) {
+    log_->LogAsciiSymbol(identifier_pos, scanner()->literal_one_byte_string());
   } else {
     log_->LogUtf16Symbol(identifier_pos, scanner()->literal_utf16_string());
   }
