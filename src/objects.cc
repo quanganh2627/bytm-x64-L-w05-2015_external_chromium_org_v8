@@ -3362,6 +3362,15 @@ MaybeObject* JSObject::GetElementsTransitionMapSlow(ElementsKind to_kind) {
 }
 
 
+// TODO(ishell): Temporary wrapper until handlified.
+// static
+Handle<Map> Map::AsElementsKind(Handle<Map> map, ElementsKind kind) {
+  CALL_HEAP_FUNCTION(map->GetIsolate(),
+                     map->AsElementsKind(kind),
+                     Map);
+}
+
+
 MaybeObject* Map::AsElementsKind(ElementsKind kind) {
   Map* closest_map = FindClosestElementsTransition(this, kind);
 
@@ -10642,16 +10651,19 @@ void Code::ClearInlineCaches(Code::Kind* kind) {
 }
 
 
-void SharedFunctionInfo::ClearTypeFeedbackInfo(Heap* heap) {
-  FixedArray* vector = feedback_vector();
-  for (int i = 0; i < vector->length(); i++) {
-    Object* obj = vector->get(i);
-    if (!obj->IsAllocationSite()) {
-      // The assert verifies we can skip the write barrier.
-      ASSERT(heap->uninitialized_symbol() ==
-             TypeFeedbackInfo::RawUninitializedSentinel(heap));
-      vector->set(i, TypeFeedbackInfo::RawUninitializedSentinel(heap),
-                  SKIP_WRITE_BARRIER);
+void Code::ClearTypeFeedbackInfo(Heap* heap) {
+  if (kind() != FUNCTION) return;
+  Object* raw_info = type_feedback_info();
+  if (raw_info->IsTypeFeedbackInfo()) {
+    FixedArray* feedback_vector =
+        TypeFeedbackInfo::cast(raw_info)->feedback_vector();
+    for (int i = 0; i < feedback_vector->length(); i++) {
+      Object* obj = feedback_vector->get(i);
+      if (!obj->IsAllocationSite()) {
+        // TODO(mvstanton): Can't I avoid a write barrier for this sentinel?
+        feedback_vector->set(i,
+                             TypeFeedbackInfo::RawUninitializedSentinel(heap));
+      }
     }
   }
 }
