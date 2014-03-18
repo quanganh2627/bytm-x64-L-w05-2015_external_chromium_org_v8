@@ -339,8 +339,7 @@ static void GenerateKeyNameCheck(MacroAssembler* masm,
 }
 
 
-void LoadIC::GenerateMegamorphic(MacroAssembler* masm,
-                                 ExtraICState extra_state) {
+void LoadIC::GenerateMegamorphic(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- a2    : name
   //  -- ra    : return address
@@ -348,9 +347,7 @@ void LoadIC::GenerateMegamorphic(MacroAssembler* masm,
   // -----------------------------------
 
   // Probe the stub cache.
-  Code::Flags flags = Code::ComputeFlags(
-      Code::HANDLER, MONOMORPHIC, extra_state,
-      Code::NORMAL, Code::LOAD_IC);
+  Code::Flags flags = Code::ComputeHandlerFlags(Code::LOAD_IC);
   masm->isolate()->stub_cache()->GenerateProbe(
       masm, flags, a0, a2, a3, t0, t1, t2);
 
@@ -420,6 +417,8 @@ static MemOperand GenerateMappedArgumentsLookup(MacroAssembler* masm,
                                                 Register scratch3,
                                                 Label* unmapped_case,
                                                 Label* slow_case) {
+  Heap* heap = masm->isolate()->heap();
+
   // Check that the receiver is a JSObject. Because of the map check
   // later, we do not need to check for interceptors or whether it
   // requires access checks.
@@ -433,10 +432,11 @@ static MemOperand GenerateMappedArgumentsLookup(MacroAssembler* masm,
   __ Branch(slow_case, ne, scratch1, Operand(zero_reg));
 
   // Load the elements into scratch1 and check its map.
+  Handle<Map> arguments_map(heap->sloppy_arguments_elements_map());
   __ lw(scratch1, FieldMemOperand(object, JSObject::kElementsOffset));
   __ CheckMap(scratch1,
               scratch2,
-              Heap::kNonStrictArgumentsElementsMapRootIndex,
+              arguments_map,
               slow_case,
               DONT_DO_SMI_CHECK);
   // Check if element is in the range of mapped arguments. If not, jump
@@ -499,7 +499,7 @@ static MemOperand GenerateUnmappedArgumentsLookup(MacroAssembler* masm,
 }
 
 
-void KeyedLoadIC::GenerateNonStrictArguments(MacroAssembler* masm) {
+void KeyedLoadIC::GenerateSloppyArguments(MacroAssembler* masm) {
   // ---------- S t a t e --------------
   //  -- lr     : return address
   //  -- a0     : key
@@ -524,7 +524,7 @@ void KeyedLoadIC::GenerateNonStrictArguments(MacroAssembler* masm) {
 }
 
 
-void KeyedStoreIC::GenerateNonStrictArguments(MacroAssembler* masm) {
+void KeyedStoreIC::GenerateSloppyArguments(MacroAssembler* masm) {
   // ---------- S t a t e --------------
   //  -- a0     : value
   //  -- a1     : key
@@ -803,7 +803,7 @@ void KeyedLoadIC::GenerateString(MacroAssembler* masm) {
 
 
 void KeyedStoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm,
-                                              StrictModeFlag strict_mode) {
+                                              StrictMode strict_mode) {
   // ---------- S t a t e --------------
   //  -- a0     : value
   //  -- a1     : key
@@ -995,7 +995,7 @@ static void KeyedStoreGenerateGenericHelper(
 
 
 void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
-                                   StrictModeFlag strict_mode) {
+                                   StrictMode strict_mode) {
   // ---------- S t a t e --------------
   //  -- a0     : value
   //  -- a1     : key
@@ -1181,8 +1181,7 @@ void KeyedStoreIC::GenerateSlow(MacroAssembler* masm) {
 }
 
 
-void StoreIC::GenerateMegamorphic(MacroAssembler* masm,
-                                  ExtraICState extra_ic_state) {
+void StoreIC::GenerateMegamorphic(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- a0    : value
   //  -- a1    : receiver
@@ -1191,9 +1190,7 @@ void StoreIC::GenerateMegamorphic(MacroAssembler* masm,
   // -----------------------------------
 
   // Get the receiver from the stack and probe the stub cache.
-  Code::Flags flags = Code::ComputeFlags(
-      Code::HANDLER, MONOMORPHIC, extra_ic_state,
-      Code::NORMAL, Code::STORE_IC);
+  Code::Flags flags = Code::ComputeHandlerFlags(Code::STORE_IC);
   masm->isolate()->stub_cache()->GenerateProbe(
       masm, flags, a1, a2, a3, t0, t1, t2);
 
@@ -1241,7 +1238,7 @@ void StoreIC::GenerateNormal(MacroAssembler* masm) {
 
 
 void StoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm,
-                                         StrictModeFlag strict_mode) {
+                                         StrictMode strict_mode) {
   // ----------- S t a t e -------------
   //  -- a0    : value
   //  -- a1    : receiver

@@ -369,7 +369,7 @@ static MemOperand GenerateMappedArgumentsLookup(MacroAssembler* masm,
   __ Tbnz(key, kXSignBit, slow_case);
 
   // Load the elements object and check its map.
-  Handle<Map> arguments_map(heap->non_strict_arguments_elements_map());
+  Handle<Map> arguments_map(heap->sloppy_arguments_elements_map());
   __ Ldr(map, FieldMemOperand(object, JSObject::kElementsOffset));
   __ CheckMap(map, scratch1, arguments_map, slow_case, DONT_DO_SMI_CHECK);
 
@@ -426,8 +426,7 @@ static MemOperand GenerateUnmappedArgumentsLookup(MacroAssembler* masm,
 }
 
 
-void LoadIC::GenerateMegamorphic(MacroAssembler* masm,
-                                 ExtraICState extra_state) {
+void LoadIC::GenerateMegamorphic(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- x2    : name
   //  -- lr    : return address
@@ -435,9 +434,7 @@ void LoadIC::GenerateMegamorphic(MacroAssembler* masm,
   // -----------------------------------
 
   // Probe the stub cache.
-  Code::Flags flags = Code::ComputeFlags(
-      Code::HANDLER, MONOMORPHIC, extra_state,
-      Code::NORMAL, Code::LOAD_IC);
+  Code::Flags flags = Code::ComputeHandlerFlags(Code::LOAD_IC);
   masm->isolate()->stub_cache()->GenerateProbe(
       masm, flags, x0, x2, x3, x4, x5, x6);
 
@@ -477,12 +474,8 @@ void LoadIC::GenerateMiss(MacroAssembler* masm) {
 
   __ IncrementCounter(isolate->counters()->load_miss(), 1, x3, x4);
 
-  // TODO(jbramley): Does the target actually expect an argument in x3, or is
-  // this inherited from ARM's push semantics?
-  __ Mov(x3, x0);
-  __ Push(x3, x2);
-
   // Perform tail call to the entry.
+  __ Push(x0, x2);
   ExternalReference ref =
       ExternalReference(IC_Utility(kLoadIC_Miss), isolate);
   __ TailCallExternalReference(ref, 2, 1);
@@ -496,16 +489,12 @@ void LoadIC::GenerateRuntimeGetProperty(MacroAssembler* masm) {
   //  -- x0    : receiver
   // -----------------------------------
 
-  // TODO(jbramley): Does the target actually expect an argument in x3, or is
-  // this inherited from ARM's push semantics?
-  __ Mov(x3, x0);
-  __ Push(x3, x2);
-
+  __ Push(x0, x2);
   __ TailCallRuntime(Runtime::kGetProperty, 2, 1);
 }
 
 
-void KeyedLoadIC::GenerateNonStrictArguments(MacroAssembler* masm) {
+void KeyedLoadIC::GenerateSloppyArguments(MacroAssembler* masm) {
   // ---------- S t a t e --------------
   //  -- lr     : return address
   //  -- x0     : key
@@ -537,8 +526,8 @@ void KeyedLoadIC::GenerateNonStrictArguments(MacroAssembler* masm) {
 }
 
 
-void KeyedStoreIC::GenerateNonStrictArguments(MacroAssembler* masm) {
-  ASM_LOCATION("KeyedStoreIC::GenerateNonStrictArguments");
+void KeyedStoreIC::GenerateSloppyArguments(MacroAssembler* masm) {
+  ASM_LOCATION("KeyedStoreIC::GenerateSloppyArguments");
   // ---------- S t a t e --------------
   //  -- lr     : return address
   //  -- x0     : value
@@ -933,7 +922,7 @@ void KeyedStoreIC::GenerateSlow(MacroAssembler* masm) {
 
 
 void KeyedStoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm,
-                                              StrictModeFlag strict_mode) {
+                                              StrictMode strict_mode) {
   ASM_LOCATION("KeyedStoreIC::GenerateRuntimeSetProperty");
   // ---------- S t a t e --------------
   //  -- x0     : value
@@ -988,8 +977,6 @@ static void KeyedStoreGenerateGenericHelper(
   // We have to go to the runtime if the current value is the hole because there
   // may be a callback on the element.
   Label holecheck_passed;
-  // TODO(all): This address calculation is repeated later (for the store
-  // itself). We should keep the result to avoid doing the work twice.
   __ Add(x10, elements, FixedArray::kHeaderSize - kHeapObjectTag);
   __ Add(x10, x10, Operand::UntagSmiAndScale(key, kPointerSizeLog2));
   __ Ldr(x11, MemOperand(x10));
@@ -1042,8 +1029,6 @@ static void KeyedStoreGenerateGenericHelper(
   // HOLECHECK: guards "A[i] double hole?"
   // We have to see if the double version of the hole is present. If so go to
   // the runtime.
-  // TODO(all): This address calculation was done earlier. We should keep the
-  // result to avoid doing the work twice.
   __ Add(x10, elements, FixedDoubleArray::kHeaderSize - kHeapObjectTag);
   __ Add(x10, x10, Operand::UntagSmiAndScale(key, kPointerSizeLog2));
   __ Ldr(x11, MemOperand(x10));
@@ -1077,6 +1062,7 @@ static void KeyedStoreGenerateGenericHelper(
                                          FAST_DOUBLE_ELEMENTS,
                                          receiver_map,
                                          x10,
+                                         x11,
                                          slow);
   ASSERT(receiver_map.Is(x3));  // Transition code expects map in x3.
   AllocationSiteMode mode = AllocationSite::GetMode(FAST_SMI_ELEMENTS,
@@ -1091,6 +1077,7 @@ static void KeyedStoreGenerateGenericHelper(
                                          FAST_ELEMENTS,
                                          receiver_map,
                                          x10,
+                                         x11,
                                          slow);
   ASSERT(receiver_map.Is(x3));  // Transition code expects map in x3.
   mode = AllocationSite::GetMode(FAST_SMI_ELEMENTS, FAST_ELEMENTS);
@@ -1107,6 +1094,7 @@ static void KeyedStoreGenerateGenericHelper(
                                          FAST_ELEMENTS,
                                          receiver_map,
                                          x10,
+                                         x11,
                                          slow);
   ASSERT(receiver_map.Is(x3));  // Transition code expects map in x3.
   mode = AllocationSite::GetMode(FAST_DOUBLE_ELEMENTS, FAST_ELEMENTS);
@@ -1117,7 +1105,7 @@ static void KeyedStoreGenerateGenericHelper(
 
 
 void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
-                                   StrictModeFlag strict_mode) {
+                                   StrictMode strict_mode) {
   ASM_LOCATION("KeyedStoreIC::GenerateGeneric");
   // ---------- S t a t e --------------
   //  -- x0     : value
@@ -1219,8 +1207,7 @@ void KeyedStoreIC::GenerateGeneric(MacroAssembler* masm,
 }
 
 
-void StoreIC::GenerateMegamorphic(MacroAssembler* masm,
-                                  ExtraICState extra_ic_state) {
+void StoreIC::GenerateMegamorphic(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- x0    : value
   //  -- x1    : receiver
@@ -1229,10 +1216,7 @@ void StoreIC::GenerateMegamorphic(MacroAssembler* masm,
   // -----------------------------------
 
   // Probe the stub cache.
-  Code::Flags flags = Code::ComputeFlags(
-      Code::HANDLER, MONOMORPHIC, extra_ic_state,
-      Code::NORMAL, Code::STORE_IC);
-
+  Code::Flags flags = Code::ComputeHandlerFlags(Code::STORE_IC);
   masm->isolate()->stub_cache()->GenerateProbe(
       masm, flags, x1, x2, x3, x4, x5, x6);
 
@@ -1287,7 +1271,7 @@ void StoreIC::GenerateNormal(MacroAssembler* masm) {
 
 
 void StoreIC::GenerateRuntimeSetProperty(MacroAssembler* masm,
-                                  StrictModeFlag strict_mode) {
+                                         StrictMode strict_mode) {
   ASM_LOCATION("StoreIC::GenerateRuntimeSetProperty");
   // ----------- S t a t e -------------
   //  -- x0    : value

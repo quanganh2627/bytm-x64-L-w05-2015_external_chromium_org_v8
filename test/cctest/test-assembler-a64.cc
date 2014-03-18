@@ -35,6 +35,7 @@
 
 #include "macro-assembler.h"
 #include "a64/simulator-a64.h"
+#include "a64/decoder-a64-inl.h"
 #include "a64/disasm-a64.h"
 #include "a64/utils-a64.h"
 #include "cctest.h"
@@ -112,15 +113,16 @@ static void InitializeVM() {
 #ifdef USE_SIMULATOR
 
 // Run tests with the simulator.
-#define SETUP_SIZE(buf_size)                                                   \
-  Isolate* isolate = Isolate::Current();                                       \
-  HandleScope scope(isolate);                                                  \
-  ASSERT(isolate != NULL);                                                     \
-  byte* buf = new byte[buf_size];                                              \
-  MacroAssembler masm(isolate, buf, buf_size);                                 \
-  Decoder decoder;                                                             \
-  Simulator simulator(&decoder);                                               \
-  PrintDisassembler* pdis = NULL;                                              \
+#define SETUP_SIZE(buf_size)                    \
+  Isolate* isolate = Isolate::Current();        \
+  HandleScope scope(isolate);                   \
+  ASSERT(isolate != NULL);                      \
+  byte* buf = new byte[buf_size];               \
+  MacroAssembler masm(isolate, buf, buf_size);  \
+  Decoder<DispatchingDecoderVisitor>* decoder = \
+      new Decoder<DispatchingDecoderVisitor>(); \
+  Simulator simulator(decoder);                 \
+  PrintDisassembler* pdis = NULL;               \
   RegisterDump core;
 
 /*  if (Cctest::trace_sim()) {                                                 \
@@ -1942,6 +1944,392 @@ TEST(test_branch) {
   ASSERT_EQUAL_64(0, x1);
   ASSERT_EQUAL_64(1, x2);
   ASSERT_EQUAL_64(0, x3);
+
+  TEARDOWN();
+}
+
+
+TEST(far_branch_backward) {
+  INIT_V8();
+
+  // Test that the MacroAssembler correctly resolves backward branches to labels
+  // that are outside the immediate range of branch instructions.
+  int max_range =
+    std::max(Instruction::ImmBranchRange(TestBranchType),
+             std::max(Instruction::ImmBranchRange(CompareBranchType),
+                      Instruction::ImmBranchRange(CondBranchType)));
+
+  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label done, fail;
+  Label test_tbz, test_cbz, test_bcond;
+  Label success_tbz, success_cbz, success_bcond;
+
+  __ Mov(x0, 0);
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  __ B(&test_tbz);
+  __ Bind(&success_tbz);
+  __ Orr(x0, x0, 1 << 0);
+  __ B(&test_cbz);
+  __ Bind(&success_cbz);
+  __ Orr(x0, x0, 1 << 1);
+  __ B(&test_bcond);
+  __ Bind(&success_bcond);
+  __ Orr(x0, x0, 1 << 2);
+
+  __ B(&done);
+
+  // Generate enough code to overflow the immediate range of the three types of
+  // branches below.
+  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+    if (i % 100 == 0) {
+      // If we do land in this code, we do not want to execute so many nops
+      // before reaching the end of test (especially if tracing is activated).
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+  __ B(&fail);
+
+  __ Bind(&test_tbz);
+  __ Tbz(x10, 7, &success_tbz);
+  __ Bind(&test_cbz);
+  __ Cbz(x10, &success_cbz);
+  __ Bind(&test_bcond);
+  __ Cmp(x10, 0);
+  __ B(eq, &success_bcond);
+
+  // For each out-of-range branch instructions, at least two instructions should
+  // have been generated.
+  CHECK_GE(7 * kInstructionSize, __ SizeOfCodeGeneratedSince(&test_tbz));
+
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x7, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
+TEST(far_branch_simple_veneer) {
+  INIT_V8();
+
+  // Test that the MacroAssembler correctly emits veneers for forward branches
+  // to labels that are outside the immediate range of branch instructions.
+  int max_range =
+    std::max(Instruction::ImmBranchRange(TestBranchType),
+             std::max(Instruction::ImmBranchRange(CompareBranchType),
+                      Instruction::ImmBranchRange(CondBranchType)));
+
+  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label done, fail;
+  Label test_tbz, test_cbz, test_bcond;
+  Label success_tbz, success_cbz, success_bcond;
+
+  __ Mov(x0, 0);
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  __ Bind(&test_tbz);
+  __ Tbz(x10, 7, &success_tbz);
+  __ Bind(&test_cbz);
+  __ Cbz(x10, &success_cbz);
+  __ Bind(&test_bcond);
+  __ Cmp(x10, 0);
+  __ B(eq, &success_bcond);
+
+  // Generate enough code to overflow the immediate range of the three types of
+  // branches below.
+  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+    if (i % 100 == 0) {
+      // If we do land in this code, we do not want to execute so many nops
+      // before reaching the end of test (especially if tracing is activated).
+      // Also, the branches give the MacroAssembler the opportunity to emit the
+      // veneers.
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+  __ B(&fail);
+
+  __ Bind(&success_tbz);
+  __ Orr(x0, x0, 1 << 0);
+  __ B(&test_cbz);
+  __ Bind(&success_cbz);
+  __ Orr(x0, x0, 1 << 1);
+  __ B(&test_bcond);
+  __ Bind(&success_bcond);
+  __ Orr(x0, x0, 1 << 2);
+
+  __ B(&done);
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x7, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
+TEST(far_branch_veneer_link_chain) {
+  INIT_V8();
+
+  // Test that the MacroAssembler correctly emits veneers for forward branches
+  // that target out-of-range labels and are part of multiple instructions
+  // jumping to that label.
+  //
+  // We test the three situations with the different types of instruction:
+  // (1)- When the branch is at the start of the chain with tbz.
+  // (2)- When the branch is in the middle of the chain with cbz.
+  // (3)- When the branch is at the end of the chain with bcond.
+  int max_range =
+    std::max(Instruction::ImmBranchRange(TestBranchType),
+             std::max(Instruction::ImmBranchRange(CompareBranchType),
+                      Instruction::ImmBranchRange(CondBranchType)));
+
+  SETUP_SIZE(max_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label skip, fail, done;
+  Label test_tbz, test_cbz, test_bcond;
+  Label success_tbz, success_cbz, success_bcond;
+
+  __ Mov(x0, 0);
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  __ B(&skip);
+  // Branches at the start of the chain for situations (2) and (3).
+  __ B(&success_cbz);
+  __ B(&success_bcond);
+  __ Nop();
+  __ B(&success_bcond);
+  __ B(&success_cbz);
+  __ Bind(&skip);
+
+  __ Bind(&test_tbz);
+  __ Tbz(x10, 7, &success_tbz);
+  __ Bind(&test_cbz);
+  __ Cbz(x10, &success_cbz);
+  __ Bind(&test_bcond);
+  __ Cmp(x10, 0);
+  __ B(eq, &success_bcond);
+
+  skip.Unuse();
+  __ B(&skip);
+  // Branches at the end of the chain for situations (1) and (2).
+  __ B(&success_cbz);
+  __ B(&success_tbz);
+  __ Nop();
+  __ B(&success_tbz);
+  __ B(&success_cbz);
+  __ Bind(&skip);
+
+  // Generate enough code to overflow the immediate range of the three types of
+  // branches below.
+  for (unsigned i = 0; i < max_range / kInstructionSize + 1; ++i) {
+    if (i % 100 == 0) {
+      // If we do land in this code, we do not want to execute so many nops
+      // before reaching the end of test (especially if tracing is activated).
+      // Also, the branches give the MacroAssembler the opportunity to emit the
+      // veneers.
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+  __ B(&fail);
+
+  __ Bind(&success_tbz);
+  __ Orr(x0, x0, 1 << 0);
+  __ B(&test_cbz);
+  __ Bind(&success_cbz);
+  __ Orr(x0, x0, 1 << 1);
+  __ B(&test_bcond);
+  __ Bind(&success_bcond);
+  __ Orr(x0, x0, 1 << 2);
+
+  __ B(&done);
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x7, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
+TEST(far_branch_veneer_broken_link_chain) {
+  INIT_V8();
+
+  // Check that the MacroAssembler correctly handles the situation when removing
+  // a branch from the link chain of a label and the two links on each side of
+  // the removed branch cannot be linked together (out of range).
+  //
+  // We test with tbz because it has a small range.
+  int max_range = Instruction::ImmBranchRange(TestBranchType);
+  int inter_range = max_range / 2 + max_range / 10;
+
+  SETUP_SIZE(3 * inter_range + 1000 * kInstructionSize);
+
+  START();
+
+  Label skip, fail, done;
+  Label test_1, test_2, test_3;
+  Label far_target;
+
+  __ Mov(x0, 0);  // Indicates the origin of the branch.
+  __ Mov(x1, 1);
+  __ Mov(x10, 0);
+
+  // First instruction in the label chain.
+  __ Bind(&test_1);
+  __ Mov(x0, 1);
+  __ B(&far_target);
+
+  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+    if (i % 100 == 0) {
+      // Do not allow generating veneers. They should not be needed.
+      __ b(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+
+  // Will need a veneer to point to reach the target.
+  __ Bind(&test_2);
+  __ Mov(x0, 2);
+  __ Tbz(x10, 7, &far_target);
+
+  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+    if (i % 100 == 0) {
+      // Do not allow generating veneers. They should not be needed.
+      __ b(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+
+  // Does not need a veneer to reach the target, but the initial branch
+  // instruction is out of range.
+  __ Bind(&test_3);
+  __ Mov(x0, 3);
+  __ Tbz(x10, 7, &far_target);
+
+  for (unsigned i = 0; i < inter_range / kInstructionSize; ++i) {
+    if (i % 100 == 0) {
+      // Allow generating veneers.
+      __ B(&fail);
+    } else {
+      __ Nop();
+    }
+  }
+
+  __ B(&fail);
+
+  __ Bind(&far_target);
+  __ Cmp(x0, 1);
+  __ B(eq, &test_2);
+  __ Cmp(x0, 2);
+  __ B(eq, &test_3);
+
+  __ B(&done);
+  __ Bind(&fail);
+  __ Mov(x1, 0);
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x3, x0);
+  ASSERT_EQUAL_64(0x1, x1);
+
+  TEARDOWN();
+}
+
+
+TEST(branch_type) {
+  INIT_V8();
+
+  SETUP();
+
+  Label fail, done;
+
+  START();
+  __ Mov(x0, 0x0);
+  __ Mov(x10, 0x7);
+  __ Mov(x11, 0x0);
+
+  // Test non taken branches.
+  __ Cmp(x10, 0x7);
+  __ B(&fail, ne);
+  __ B(&fail, never);
+  __ B(&fail, reg_zero, x10);
+  __ B(&fail, reg_not_zero, x11);
+  __ B(&fail, reg_bit_clear, x10, 0);
+  __ B(&fail, reg_bit_set, x10, 3);
+
+  // Test taken branches.
+  Label l1, l2, l3, l4, l5;
+  __ Cmp(x10, 0x7);
+  __ B(&l1, eq);
+  __ B(&fail);
+  __ Bind(&l1);
+  __ B(&l2, always);
+  __ B(&fail);
+  __ Bind(&l2);
+  __ B(&l3, reg_not_zero, x10);
+  __ B(&fail);
+  __ Bind(&l3);
+  __ B(&l4, reg_bit_clear, x10, 15);
+  __ B(&fail);
+  __ Bind(&l4);
+  __ B(&l5, reg_bit_set, x10, 1);
+  __ B(&fail);
+  __ Bind(&l5);
+
+  __ B(&done);
+
+  __ Bind(&fail);
+  __ Mov(x0, 0x1);
+
+  __ Bind(&done);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x0, x0);
 
   TEARDOWN();
 }
@@ -4527,31 +4915,35 @@ TEST(fadd) {
   SETUP();
 
   START();
-  __ Fmov(s13, -0.0);
-  __ Fmov(s14, kFP32PositiveInfinity);
-  __ Fmov(s15, kFP32NegativeInfinity);
-  __ Fmov(s16, 3.25);
-  __ Fmov(s17, 1.0);
-  __ Fmov(s18, 0);
+  __ Fmov(s14, -0.0f);
+  __ Fmov(s15, kFP32PositiveInfinity);
+  __ Fmov(s16, kFP32NegativeInfinity);
+  __ Fmov(s17, 3.25f);
+  __ Fmov(s18, 1.0f);
+  __ Fmov(s19, 0.0f);
 
   __ Fmov(d26, -0.0);
   __ Fmov(d27, kFP64PositiveInfinity);
   __ Fmov(d28, kFP64NegativeInfinity);
-  __ Fmov(d29, 0);
+  __ Fmov(d29, 0.0);
   __ Fmov(d30, -2.0);
   __ Fmov(d31, 2.25);
 
-  __ Fadd(s0, s16, s17);
-  __ Fadd(s1, s17, s18);
-  __ Fadd(s2, s13, s17);
-  __ Fadd(s3, s14, s17);
-  __ Fadd(s4, s15, s17);
+  __ Fadd(s0, s17, s18);
+  __ Fadd(s1, s18, s19);
+  __ Fadd(s2, s14, s18);
+  __ Fadd(s3, s15, s18);
+  __ Fadd(s4, s16, s18);
+  __ Fadd(s5, s15, s16);
+  __ Fadd(s6, s16, s15);
 
-  __ Fadd(d5, d30, d31);
-  __ Fadd(d6, d29, d31);
-  __ Fadd(d7, d26, d31);
-  __ Fadd(d8, d27, d31);
-  __ Fadd(d9, d28, d31);
+  __ Fadd(d7, d30, d31);
+  __ Fadd(d8, d29, d31);
+  __ Fadd(d9, d26, d31);
+  __ Fadd(d10, d27, d31);
+  __ Fadd(d11, d28, d31);
+  __ Fadd(d12, d27, d28);
+  __ Fadd(d13, d28, d27);
   END();
 
   RUN();
@@ -4561,11 +4953,15 @@ TEST(fadd) {
   ASSERT_EQUAL_FP32(1.0, s2);
   ASSERT_EQUAL_FP32(kFP32PositiveInfinity, s3);
   ASSERT_EQUAL_FP32(kFP32NegativeInfinity, s4);
-  ASSERT_EQUAL_FP64(0.25, d5);
-  ASSERT_EQUAL_FP64(2.25, d6);
-  ASSERT_EQUAL_FP64(2.25, d7);
-  ASSERT_EQUAL_FP64(kFP64PositiveInfinity, d8);
-  ASSERT_EQUAL_FP64(kFP64NegativeInfinity, d9);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s5);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s6);
+  ASSERT_EQUAL_FP64(0.25, d7);
+  ASSERT_EQUAL_FP64(2.25, d8);
+  ASSERT_EQUAL_FP64(2.25, d9);
+  ASSERT_EQUAL_FP64(kFP64PositiveInfinity, d10);
+  ASSERT_EQUAL_FP64(kFP64NegativeInfinity, d11);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d12);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d13);
 
   TEARDOWN();
 }
@@ -4576,31 +4972,35 @@ TEST(fsub) {
   SETUP();
 
   START();
-  __ Fmov(s13, -0.0);
-  __ Fmov(s14, kFP32PositiveInfinity);
-  __ Fmov(s15, kFP32NegativeInfinity);
-  __ Fmov(s16, 3.25);
-  __ Fmov(s17, 1.0);
-  __ Fmov(s18, 0);
+  __ Fmov(s14, -0.0f);
+  __ Fmov(s15, kFP32PositiveInfinity);
+  __ Fmov(s16, kFP32NegativeInfinity);
+  __ Fmov(s17, 3.25f);
+  __ Fmov(s18, 1.0f);
+  __ Fmov(s19, 0.0f);
 
   __ Fmov(d26, -0.0);
   __ Fmov(d27, kFP64PositiveInfinity);
   __ Fmov(d28, kFP64NegativeInfinity);
-  __ Fmov(d29, 0);
+  __ Fmov(d29, 0.0);
   __ Fmov(d30, -2.0);
   __ Fmov(d31, 2.25);
 
-  __ Fsub(s0, s16, s17);
-  __ Fsub(s1, s17, s18);
-  __ Fsub(s2, s13, s17);
-  __ Fsub(s3, s17, s14);
-  __ Fsub(s4, s17, s15);
+  __ Fsub(s0, s17, s18);
+  __ Fsub(s1, s18, s19);
+  __ Fsub(s2, s14, s18);
+  __ Fsub(s3, s18, s15);
+  __ Fsub(s4, s18, s16);
+  __ Fsub(s5, s15, s15);
+  __ Fsub(s6, s16, s16);
 
-  __ Fsub(d5, d30, d31);
-  __ Fsub(d6, d29, d31);
-  __ Fsub(d7, d26, d31);
-  __ Fsub(d8, d31, d27);
-  __ Fsub(d9, d31, d28);
+  __ Fsub(d7, d30, d31);
+  __ Fsub(d8, d29, d31);
+  __ Fsub(d9, d26, d31);
+  __ Fsub(d10, d31, d27);
+  __ Fsub(d11, d31, d28);
+  __ Fsub(d12, d27, d27);
+  __ Fsub(d13, d28, d28);
   END();
 
   RUN();
@@ -4610,11 +5010,15 @@ TEST(fsub) {
   ASSERT_EQUAL_FP32(-1.0, s2);
   ASSERT_EQUAL_FP32(kFP32NegativeInfinity, s3);
   ASSERT_EQUAL_FP32(kFP32PositiveInfinity, s4);
-  ASSERT_EQUAL_FP64(-4.25, d5);
-  ASSERT_EQUAL_FP64(-2.25, d6);
-  ASSERT_EQUAL_FP64(-2.25, d7);
-  ASSERT_EQUAL_FP64(kFP64NegativeInfinity, d8);
-  ASSERT_EQUAL_FP64(kFP64PositiveInfinity, d9);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s5);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s6);
+  ASSERT_EQUAL_FP64(-4.25, d7);
+  ASSERT_EQUAL_FP64(-2.25, d8);
+  ASSERT_EQUAL_FP64(-2.25, d9);
+  ASSERT_EQUAL_FP64(kFP64NegativeInfinity, d10);
+  ASSERT_EQUAL_FP64(kFP64PositiveInfinity, d11);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d12);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d13);
 
   TEARDOWN();
 }
@@ -4625,32 +5029,36 @@ TEST(fmul) {
   SETUP();
 
   START();
-  __ Fmov(s13, -0.0);
-  __ Fmov(s14, kFP32PositiveInfinity);
-  __ Fmov(s15, kFP32NegativeInfinity);
-  __ Fmov(s16, 3.25);
-  __ Fmov(s17, 2.0);
-  __ Fmov(s18, 0);
-  __ Fmov(s19, -2.0);
+  __ Fmov(s14, -0.0f);
+  __ Fmov(s15, kFP32PositiveInfinity);
+  __ Fmov(s16, kFP32NegativeInfinity);
+  __ Fmov(s17, 3.25f);
+  __ Fmov(s18, 2.0f);
+  __ Fmov(s19, 0.0f);
+  __ Fmov(s20, -2.0f);
 
   __ Fmov(d26, -0.0);
   __ Fmov(d27, kFP64PositiveInfinity);
   __ Fmov(d28, kFP64NegativeInfinity);
-  __ Fmov(d29, 0);
+  __ Fmov(d29, 0.0);
   __ Fmov(d30, -2.0);
   __ Fmov(d31, 2.25);
 
-  __ Fmul(s0, s16, s17);
-  __ Fmul(s1, s17, s18);
-  __ Fmul(s2, s13, s13);
-  __ Fmul(s3, s14, s19);
-  __ Fmul(s4, s15, s19);
+  __ Fmul(s0, s17, s18);
+  __ Fmul(s1, s18, s19);
+  __ Fmul(s2, s14, s14);
+  __ Fmul(s3, s15, s20);
+  __ Fmul(s4, s16, s20);
+  __ Fmul(s5, s15, s19);
+  __ Fmul(s6, s19, s16);
 
-  __ Fmul(d5, d30, d31);
-  __ Fmul(d6, d29, d31);
-  __ Fmul(d7, d26, d26);
-  __ Fmul(d8, d27, d30);
-  __ Fmul(d9, d28, d30);
+  __ Fmul(d7, d30, d31);
+  __ Fmul(d8, d29, d31);
+  __ Fmul(d9, d26, d26);
+  __ Fmul(d10, d27, d30);
+  __ Fmul(d11, d28, d30);
+  __ Fmul(d12, d27, d29);
+  __ Fmul(d13, d29, d28);
   END();
 
   RUN();
@@ -4660,18 +5068,23 @@ TEST(fmul) {
   ASSERT_EQUAL_FP32(0.0, s2);
   ASSERT_EQUAL_FP32(kFP32NegativeInfinity, s3);
   ASSERT_EQUAL_FP32(kFP32PositiveInfinity, s4);
-  ASSERT_EQUAL_FP64(-4.5, d5);
-  ASSERT_EQUAL_FP64(0.0, d6);
-  ASSERT_EQUAL_FP64(0.0, d7);
-  ASSERT_EQUAL_FP64(kFP64NegativeInfinity, d8);
-  ASSERT_EQUAL_FP64(kFP64PositiveInfinity, d9);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s5);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s6);
+  ASSERT_EQUAL_FP64(-4.5, d7);
+  ASSERT_EQUAL_FP64(0.0, d8);
+  ASSERT_EQUAL_FP64(0.0, d9);
+  ASSERT_EQUAL_FP64(kFP64NegativeInfinity, d10);
+  ASSERT_EQUAL_FP64(kFP64PositiveInfinity, d11);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d12);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d13);
 
   TEARDOWN();
 }
 
 
-static void FmaddFmsubDoubleHelper(double n, double m, double a,
-                                   double fmadd, double fmsub) {
+static void FmaddFmsubHelper(double n, double m, double a,
+                             double fmadd, double fmsub,
+                             double fnmadd, double fnmsub) {
   SETUP();
   START();
 
@@ -4688,8 +5101,8 @@ static void FmaddFmsubDoubleHelper(double n, double m, double a,
 
   ASSERT_EQUAL_FP64(fmadd, d28);
   ASSERT_EQUAL_FP64(fmsub, d29);
-  ASSERT_EQUAL_FP64(-fmadd, d30);
-  ASSERT_EQUAL_FP64(-fmsub, d31);
+  ASSERT_EQUAL_FP64(fnmadd, d30);
+  ASSERT_EQUAL_FP64(fnmsub, d31);
 
   TEARDOWN();
 }
@@ -4697,105 +5110,67 @@ static void FmaddFmsubDoubleHelper(double n, double m, double a,
 
 TEST(fmadd_fmsub_double) {
   INIT_V8();
-  double inputs[] = {
-    // Normal numbers, including -0.0.
-    DBL_MAX, DBL_MIN, 3.25, 2.0, 0.0,
-    -DBL_MAX, -DBL_MIN, -3.25, -2.0, -0.0,
-    // Infinities.
-    kFP64NegativeInfinity, kFP64PositiveInfinity,
-    // Subnormal numbers.
-    rawbits_to_double(0x000fffffffffffff),
-    rawbits_to_double(0x0000000000000001),
-    rawbits_to_double(0x000123456789abcd),
-    -rawbits_to_double(0x000fffffffffffff),
-    -rawbits_to_double(0x0000000000000001),
-    -rawbits_to_double(0x000123456789abcd),
-    // NaN.
-    kFP64QuietNaN,
-    -kFP64QuietNaN,
-  };
-  const int count = sizeof(inputs) / sizeof(inputs[0]);
 
-  for (int in = 0; in < count; in++) {
-    double n = inputs[in];
-    for (int im = 0; im < count; im++) {
-      double m = inputs[im];
-      for (int ia = 0; ia < count; ia++) {
-        double a = inputs[ia];
-        double fmadd = fma(n, m, a);
-        double fmsub = fma(-n, m, a);
+  // It's hard to check the result of fused operations because the only way to
+  // calculate the result is using fma, which is what the simulator uses anyway.
+  // TODO(jbramley): Add tests to check behaviour against a hardware trace.
 
-        FmaddFmsubDoubleHelper(n, m, a, fmadd, fmsub);
-      }
-    }
-  }
+  // Basic operation.
+  FmaddFmsubHelper(1.0, 2.0, 3.0, 5.0, 1.0, -5.0, -1.0);
+  FmaddFmsubHelper(-1.0, 2.0, 3.0, 1.0, 5.0, -1.0, -5.0);
+
+  // Check the sign of exact zeroes.
+  //               n     m     a     fmadd  fmsub  fnmadd fnmsub
+  FmaddFmsubHelper(-0.0, +0.0, -0.0, -0.0,  +0.0,  +0.0,  +0.0);
+  FmaddFmsubHelper(+0.0, +0.0, -0.0, +0.0,  -0.0,  +0.0,  +0.0);
+  FmaddFmsubHelper(+0.0, +0.0, +0.0, +0.0,  +0.0,  -0.0,  +0.0);
+  FmaddFmsubHelper(-0.0, +0.0, +0.0, +0.0,  +0.0,  +0.0,  -0.0);
+  FmaddFmsubHelper(+0.0, -0.0, -0.0, -0.0,  +0.0,  +0.0,  +0.0);
+  FmaddFmsubHelper(-0.0, -0.0, -0.0, +0.0,  -0.0,  +0.0,  +0.0);
+  FmaddFmsubHelper(-0.0, -0.0, +0.0, +0.0,  +0.0,  -0.0,  +0.0);
+  FmaddFmsubHelper(+0.0, -0.0, +0.0, +0.0,  +0.0,  +0.0,  -0.0);
+
+  // Check NaN generation.
+  FmaddFmsubHelper(kFP64PositiveInfinity, 0.0, 42.0,
+                   kFP64DefaultNaN, kFP64DefaultNaN,
+                   kFP64DefaultNaN, kFP64DefaultNaN);
+  FmaddFmsubHelper(0.0, kFP64PositiveInfinity, 42.0,
+                   kFP64DefaultNaN, kFP64DefaultNaN,
+                   kFP64DefaultNaN, kFP64DefaultNaN);
+  FmaddFmsubHelper(kFP64PositiveInfinity, 1.0, kFP64PositiveInfinity,
+                   kFP64PositiveInfinity,   //  inf + ( inf * 1) = inf
+                   kFP64DefaultNaN,         //  inf + (-inf * 1) = NaN
+                   kFP64NegativeInfinity,   // -inf + (-inf * 1) = -inf
+                   kFP64DefaultNaN);        // -inf + ( inf * 1) = NaN
+  FmaddFmsubHelper(kFP64NegativeInfinity, 1.0, kFP64PositiveInfinity,
+                   kFP64DefaultNaN,         //  inf + (-inf * 1) = NaN
+                   kFP64PositiveInfinity,   //  inf + ( inf * 1) = inf
+                   kFP64DefaultNaN,         // -inf + ( inf * 1) = NaN
+                   kFP64NegativeInfinity);  // -inf + (-inf * 1) = -inf
 }
 
 
-TEST(fmadd_fmsub_double_rounding) {
-  INIT_V8();
-  // Make sure we run plenty of tests where an intermediate rounding stage would
-  // produce an incorrect result.
-  const int limit = 1000;
-  int count_fmadd = 0;
-  int count_fmsub = 0;
-
-  uint16_t seed[3] = {42, 43, 44};
-  seed48(seed);
-
-  while ((count_fmadd < limit) || (count_fmsub < limit)) {
-    double n, m, a;
-    uint32_t r[2];
-    ASSERT(sizeof(r) == sizeof(n));
-
-    r[0] = mrand48();
-    r[1] = mrand48();
-    memcpy(&n, r, sizeof(r));
-    r[0] = mrand48();
-    r[1] = mrand48();
-    memcpy(&m, r, sizeof(r));
-    r[0] = mrand48();
-    r[1] = mrand48();
-    memcpy(&a, r, sizeof(r));
-
-    if (!std::isfinite(a) || !std::isfinite(n) || !std::isfinite(m)) {
-      continue;
-    }
-
-    // Calculate the expected results.
-    double fmadd = fma(n, m, a);
-    double fmsub = fma(-n, m, a);
-
-    bool test_fmadd = (fmadd != (a + n * m));
-    bool test_fmsub = (fmsub != (a - n * m));
-
-    // If rounding would produce a different result, increment the test count.
-    count_fmadd += test_fmadd;
-    count_fmsub += test_fmsub;
-
-    if (test_fmadd || test_fmsub) {
-      FmaddFmsubDoubleHelper(n, m, a, fmadd, fmsub);
-    }
-  }
-}
-
-
-static void FmaddFmsubFloatHelper(float n, float m, float a,
-                                  float fmadd, float fmsub) {
+static void FmaddFmsubHelper(float n, float m, float a,
+                             float fmadd, float fmsub,
+                             float fnmadd, float fnmsub) {
   SETUP();
   START();
 
   __ Fmov(s0, n);
   __ Fmov(s1, m);
   __ Fmov(s2, a);
-  __ Fmadd(s30, s0, s1, s2);
-  __ Fmsub(s31, s0, s1, s2);
+  __ Fmadd(s28, s0, s1, s2);
+  __ Fmsub(s29, s0, s1, s2);
+  __ Fnmadd(s30, s0, s1, s2);
+  __ Fnmsub(s31, s0, s1, s2);
 
   END();
   RUN();
 
-  ASSERT_EQUAL_FP32(fmadd, s30);
-  ASSERT_EQUAL_FP32(fmsub, s31);
+  ASSERT_EQUAL_FP32(fmadd, s28);
+  ASSERT_EQUAL_FP32(fmsub, s29);
+  ASSERT_EQUAL_FP32(fnmadd, s30);
+  ASSERT_EQUAL_FP32(fnmsub, s31);
 
   TEARDOWN();
 }
@@ -4803,83 +5178,188 @@ static void FmaddFmsubFloatHelper(float n, float m, float a,
 
 TEST(fmadd_fmsub_float) {
   INIT_V8();
-  float inputs[] = {
-    // Normal numbers, including -0.0f.
-    FLT_MAX, FLT_MIN, 3.25f, 2.0f, 0.0f,
-    -FLT_MAX, -FLT_MIN, -3.25f, -2.0f, -0.0f,
-    // Infinities.
-    kFP32NegativeInfinity, kFP32PositiveInfinity,
-    // Subnormal numbers.
-    rawbits_to_float(0x07ffffff),
-    rawbits_to_float(0x00000001),
-    rawbits_to_float(0x01234567),
-    -rawbits_to_float(0x07ffffff),
-    -rawbits_to_float(0x00000001),
-    -rawbits_to_float(0x01234567),
-    // NaN.
-    kFP32QuietNaN,
-    -kFP32QuietNaN,
-  };
-  const int count = sizeof(inputs) / sizeof(inputs[0]);
+  // It's hard to check the result of fused operations because the only way to
+  // calculate the result is using fma, which is what the simulator uses anyway.
+  // TODO(jbramley): Add tests to check behaviour against a hardware trace.
 
-  for (int in = 0; in < count; in++) {
-    float n = inputs[in];
-    for (int im = 0; im < count; im++) {
-      float m = inputs[im];
-      for (int ia = 0; ia < count; ia++) {
-        float a = inputs[ia];
-        float fmadd = fmaf(n, m, a);
-        float fmsub = fmaf(-n, m, a);
+  // Basic operation.
+  FmaddFmsubHelper(1.0f, 2.0f, 3.0f, 5.0f, 1.0f, -5.0f, -1.0f);
+  FmaddFmsubHelper(-1.0f, 2.0f, 3.0f, 1.0f, 5.0f, -1.0f, -5.0f);
 
-        FmaddFmsubFloatHelper(n, m, a, fmadd, fmsub);
-      }
-    }
-  }
+  // Check the sign of exact zeroes.
+  //               n      m      a      fmadd  fmsub  fnmadd fnmsub
+  FmaddFmsubHelper(-0.0f, +0.0f, -0.0f, -0.0f, +0.0f, +0.0f, +0.0f);
+  FmaddFmsubHelper(+0.0f, +0.0f, -0.0f, +0.0f, -0.0f, +0.0f, +0.0f);
+  FmaddFmsubHelper(+0.0f, +0.0f, +0.0f, +0.0f, +0.0f, -0.0f, +0.0f);
+  FmaddFmsubHelper(-0.0f, +0.0f, +0.0f, +0.0f, +0.0f, +0.0f, -0.0f);
+  FmaddFmsubHelper(+0.0f, -0.0f, -0.0f, -0.0f, +0.0f, +0.0f, +0.0f);
+  FmaddFmsubHelper(-0.0f, -0.0f, -0.0f, +0.0f, -0.0f, +0.0f, +0.0f);
+  FmaddFmsubHelper(-0.0f, -0.0f, +0.0f, +0.0f, +0.0f, -0.0f, +0.0f);
+  FmaddFmsubHelper(+0.0f, -0.0f, +0.0f, +0.0f, +0.0f, +0.0f, -0.0f);
+
+  // Check NaN generation.
+  FmaddFmsubHelper(kFP32PositiveInfinity, 0.0f, 42.0f,
+                   kFP32DefaultNaN, kFP32DefaultNaN,
+                   kFP32DefaultNaN, kFP32DefaultNaN);
+  FmaddFmsubHelper(0.0f, kFP32PositiveInfinity, 42.0f,
+                   kFP32DefaultNaN, kFP32DefaultNaN,
+                   kFP32DefaultNaN, kFP32DefaultNaN);
+  FmaddFmsubHelper(kFP32PositiveInfinity, 1.0f, kFP32PositiveInfinity,
+                   kFP32PositiveInfinity,   //  inf + ( inf * 1) = inf
+                   kFP32DefaultNaN,         //  inf + (-inf * 1) = NaN
+                   kFP32NegativeInfinity,   // -inf + (-inf * 1) = -inf
+                   kFP32DefaultNaN);        // -inf + ( inf * 1) = NaN
+  FmaddFmsubHelper(kFP32NegativeInfinity, 1.0f, kFP32PositiveInfinity,
+                   kFP32DefaultNaN,         //  inf + (-inf * 1) = NaN
+                   kFP32PositiveInfinity,   //  inf + ( inf * 1) = inf
+                   kFP32DefaultNaN,         // -inf + ( inf * 1) = NaN
+                   kFP32NegativeInfinity);  // -inf + (-inf * 1) = -inf
 }
 
 
-TEST(fmadd_fmsub_float_rounding) {
+TEST(fmadd_fmsub_double_nans) {
   INIT_V8();
-  // Make sure we run plenty of tests where an intermediate rounding stage would
-  // produce an incorrect result.
-  const int limit = 1000;
-  int count_fmadd = 0;
-  int count_fmsub = 0;
+  // Make sure that NaN propagation works correctly.
+  double s1 = rawbits_to_double(0x7ff5555511111111);
+  double s2 = rawbits_to_double(0x7ff5555522222222);
+  double sa = rawbits_to_double(0x7ff55555aaaaaaaa);
+  double q1 = rawbits_to_double(0x7ffaaaaa11111111);
+  double q2 = rawbits_to_double(0x7ffaaaaa22222222);
+  double qa = rawbits_to_double(0x7ffaaaaaaaaaaaaa);
+  ASSERT(IsSignallingNaN(s1));
+  ASSERT(IsSignallingNaN(s2));
+  ASSERT(IsSignallingNaN(sa));
+  ASSERT(IsQuietNaN(q1));
+  ASSERT(IsQuietNaN(q2));
+  ASSERT(IsQuietNaN(qa));
 
-  uint16_t seed[3] = {42, 43, 44};
-  seed48(seed);
+  // The input NaNs after passing through ProcessNaN.
+  double s1_proc = rawbits_to_double(0x7ffd555511111111);
+  double s2_proc = rawbits_to_double(0x7ffd555522222222);
+  double sa_proc = rawbits_to_double(0x7ffd5555aaaaaaaa);
+  double q1_proc = q1;
+  double q2_proc = q2;
+  double qa_proc = qa;
+  ASSERT(IsQuietNaN(s1_proc));
+  ASSERT(IsQuietNaN(s2_proc));
+  ASSERT(IsQuietNaN(sa_proc));
+  ASSERT(IsQuietNaN(q1_proc));
+  ASSERT(IsQuietNaN(q2_proc));
+  ASSERT(IsQuietNaN(qa_proc));
 
-  while ((count_fmadd < limit) || (count_fmsub < limit)) {
-    float n, m, a;
-    uint32_t r;
-    ASSERT(sizeof(r) == sizeof(n));
+  // Quiet NaNs are propagated.
+  FmaddFmsubHelper(q1, 0, 0, q1_proc, -q1_proc, -q1_proc, q1_proc);
+  FmaddFmsubHelper(0, q2, 0, q2_proc, q2_proc, q2_proc, q2_proc);
+  FmaddFmsubHelper(0, 0, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
+  FmaddFmsubHelper(q1, q2, 0, q1_proc, -q1_proc, -q1_proc, q1_proc);
+  FmaddFmsubHelper(0, q2, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
+  FmaddFmsubHelper(q1, 0, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
+  FmaddFmsubHelper(q1, q2, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
 
-    r = mrand48();
-    memcpy(&n, &r, sizeof(r));
-    r = mrand48();
-    memcpy(&m, &r, sizeof(r));
-    r = mrand48();
-    memcpy(&a, &r, sizeof(r));
+  // Signalling NaNs are propagated, and made quiet.
+  FmaddFmsubHelper(s1, 0, 0, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(0, s2, 0, s2_proc, s2_proc, s2_proc, s2_proc);
+  FmaddFmsubHelper(0, 0, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, 0, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(0, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, 0, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
 
-    if (!std::isfinite(a) || !std::isfinite(n) || !std::isfinite(m)) {
-      continue;
-    }
+  // Signalling NaNs take precedence over quiet NaNs.
+  FmaddFmsubHelper(s1, q2, qa, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(q1, s2, qa, s2_proc, s2_proc, s2_proc, s2_proc);
+  FmaddFmsubHelper(q1, q2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, qa, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(q1, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, q2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
 
-    // Calculate the expected results.
-    float fmadd = fmaf(n, m, a);
-    float fmsub = fmaf(-n, m, a);
+  // A NaN generated by the intermediate op1 * op2 overrides a quiet NaN in a.
+  FmaddFmsubHelper(0, kFP64PositiveInfinity, qa,
+                   kFP64DefaultNaN, kFP64DefaultNaN,
+                   kFP64DefaultNaN, kFP64DefaultNaN);
+  FmaddFmsubHelper(kFP64PositiveInfinity, 0, qa,
+                   kFP64DefaultNaN, kFP64DefaultNaN,
+                   kFP64DefaultNaN, kFP64DefaultNaN);
+  FmaddFmsubHelper(0, kFP64NegativeInfinity, qa,
+                   kFP64DefaultNaN, kFP64DefaultNaN,
+                   kFP64DefaultNaN, kFP64DefaultNaN);
+  FmaddFmsubHelper(kFP64NegativeInfinity, 0, qa,
+                   kFP64DefaultNaN, kFP64DefaultNaN,
+                   kFP64DefaultNaN, kFP64DefaultNaN);
+}
 
-    bool test_fmadd = (fmadd != (a + n * m));
-    bool test_fmsub = (fmsub != (a - n * m));
 
-    // If rounding would produce a different result, increment the test count.
-    count_fmadd += test_fmadd;
-    count_fmsub += test_fmsub;
+TEST(fmadd_fmsub_float_nans) {
+  INIT_V8();
+  // Make sure that NaN propagation works correctly.
+  float s1 = rawbits_to_float(0x7f951111);
+  float s2 = rawbits_to_float(0x7f952222);
+  float sa = rawbits_to_float(0x7f95aaaa);
+  float q1 = rawbits_to_float(0x7fea1111);
+  float q2 = rawbits_to_float(0x7fea2222);
+  float qa = rawbits_to_float(0x7feaaaaa);
+  ASSERT(IsSignallingNaN(s1));
+  ASSERT(IsSignallingNaN(s2));
+  ASSERT(IsSignallingNaN(sa));
+  ASSERT(IsQuietNaN(q1));
+  ASSERT(IsQuietNaN(q2));
+  ASSERT(IsQuietNaN(qa));
 
-    if (test_fmadd || test_fmsub) {
-      FmaddFmsubFloatHelper(n, m, a, fmadd, fmsub);
-    }
-  }
+  // The input NaNs after passing through ProcessNaN.
+  float s1_proc = rawbits_to_float(0x7fd51111);
+  float s2_proc = rawbits_to_float(0x7fd52222);
+  float sa_proc = rawbits_to_float(0x7fd5aaaa);
+  float q1_proc = q1;
+  float q2_proc = q2;
+  float qa_proc = qa;
+  ASSERT(IsQuietNaN(s1_proc));
+  ASSERT(IsQuietNaN(s2_proc));
+  ASSERT(IsQuietNaN(sa_proc));
+  ASSERT(IsQuietNaN(q1_proc));
+  ASSERT(IsQuietNaN(q2_proc));
+  ASSERT(IsQuietNaN(qa_proc));
+
+  // Quiet NaNs are propagated.
+  FmaddFmsubHelper(q1, 0, 0, q1_proc, -q1_proc, -q1_proc, q1_proc);
+  FmaddFmsubHelper(0, q2, 0, q2_proc, q2_proc, q2_proc, q2_proc);
+  FmaddFmsubHelper(0, 0, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
+  FmaddFmsubHelper(q1, q2, 0, q1_proc, -q1_proc, -q1_proc, q1_proc);
+  FmaddFmsubHelper(0, q2, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
+  FmaddFmsubHelper(q1, 0, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
+  FmaddFmsubHelper(q1, q2, qa, qa_proc, qa_proc, -qa_proc, -qa_proc);
+
+  // Signalling NaNs are propagated, and made quiet.
+  FmaddFmsubHelper(s1, 0, 0, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(0, s2, 0, s2_proc, s2_proc, s2_proc, s2_proc);
+  FmaddFmsubHelper(0, 0, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, 0, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(0, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, 0, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+
+  // Signalling NaNs take precedence over quiet NaNs.
+  FmaddFmsubHelper(s1, q2, qa, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(q1, s2, qa, s2_proc, s2_proc, s2_proc, s2_proc);
+  FmaddFmsubHelper(q1, q2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, qa, s1_proc, -s1_proc, -s1_proc, s1_proc);
+  FmaddFmsubHelper(q1, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, q2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+  FmaddFmsubHelper(s1, s2, sa, sa_proc, sa_proc, -sa_proc, -sa_proc);
+
+  // A NaN generated by the intermediate op1 * op2 overrides a quiet NaN in a.
+  FmaddFmsubHelper(0, kFP32PositiveInfinity, qa,
+                   kFP32DefaultNaN, kFP32DefaultNaN,
+                   kFP32DefaultNaN, kFP32DefaultNaN);
+  FmaddFmsubHelper(kFP32PositiveInfinity, 0, qa,
+                   kFP32DefaultNaN, kFP32DefaultNaN,
+                   kFP32DefaultNaN, kFP32DefaultNaN);
+  FmaddFmsubHelper(0, kFP32NegativeInfinity, qa,
+                   kFP32DefaultNaN, kFP32DefaultNaN,
+                   kFP32DefaultNaN, kFP32DefaultNaN);
+  FmaddFmsubHelper(kFP32NegativeInfinity, 0, qa,
+                   kFP32DefaultNaN, kFP32DefaultNaN,
+                   kFP32DefaultNaN, kFP32DefaultNaN);
 }
 
 
@@ -4888,45 +5368,54 @@ TEST(fdiv) {
   SETUP();
 
   START();
-  __ Fmov(s13, -0.0);
-  __ Fmov(s14, kFP32PositiveInfinity);
-  __ Fmov(s15, kFP32NegativeInfinity);
-  __ Fmov(s16, 3.25);
-  __ Fmov(s17, 2.0);
-  __ Fmov(s18, 2.0);
-  __ Fmov(s19, -2.0);
+  __ Fmov(s14, -0.0f);
+  __ Fmov(s15, kFP32PositiveInfinity);
+  __ Fmov(s16, kFP32NegativeInfinity);
+  __ Fmov(s17, 3.25f);
+  __ Fmov(s18, 2.0f);
+  __ Fmov(s19, 2.0f);
+  __ Fmov(s20, -2.0f);
 
   __ Fmov(d26, -0.0);
   __ Fmov(d27, kFP64PositiveInfinity);
   __ Fmov(d28, kFP64NegativeInfinity);
-  __ Fmov(d29, 0);
+  __ Fmov(d29, 0.0);
   __ Fmov(d30, -2.0);
   __ Fmov(d31, 2.25);
 
-  __ Fdiv(s0, s16, s17);
-  __ Fdiv(s1, s17, s18);
-  __ Fdiv(s2, s13, s17);
-  __ Fdiv(s3, s17, s14);
-  __ Fdiv(s4, s17, s15);
-  __ Fdiv(d5, d31, d30);
-  __ Fdiv(d6, d29, d31);
-  __ Fdiv(d7, d26, d31);
-  __ Fdiv(d8, d31, d27);
-  __ Fdiv(d9, d31, d28);
+  __ Fdiv(s0, s17, s18);
+  __ Fdiv(s1, s18, s19);
+  __ Fdiv(s2, s14, s18);
+  __ Fdiv(s3, s18, s15);
+  __ Fdiv(s4, s18, s16);
+  __ Fdiv(s5, s15, s16);
+  __ Fdiv(s6, s14, s14);
+
+  __ Fdiv(d7, d31, d30);
+  __ Fdiv(d8, d29, d31);
+  __ Fdiv(d9, d26, d31);
+  __ Fdiv(d10, d31, d27);
+  __ Fdiv(d11, d31, d28);
+  __ Fdiv(d12, d28, d27);
+  __ Fdiv(d13, d29, d29);
   END();
 
   RUN();
 
-  ASSERT_EQUAL_FP32(1.625, s0);
-  ASSERT_EQUAL_FP32(1.0, s1);
-  ASSERT_EQUAL_FP32(-0.0, s2);
-  ASSERT_EQUAL_FP32(0.0, s3);
-  ASSERT_EQUAL_FP32(-0.0, s4);
-  ASSERT_EQUAL_FP64(-1.125, d5);
-  ASSERT_EQUAL_FP64(0.0, d6);
-  ASSERT_EQUAL_FP64(-0.0, d7);
+  ASSERT_EQUAL_FP32(1.625f, s0);
+  ASSERT_EQUAL_FP32(1.0f, s1);
+  ASSERT_EQUAL_FP32(-0.0f, s2);
+  ASSERT_EQUAL_FP32(0.0f, s3);
+  ASSERT_EQUAL_FP32(-0.0f, s4);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s5);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s6);
+  ASSERT_EQUAL_FP64(-1.125, d7);
   ASSERT_EQUAL_FP64(0.0, d8);
   ASSERT_EQUAL_FP64(-0.0, d9);
+  ASSERT_EQUAL_FP64(0.0, d10);
+  ASSERT_EQUAL_FP64(-0.0, d11);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d12);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d13);
 
   TEARDOWN();
 }
@@ -4936,30 +5425,29 @@ static float MinMaxHelper(float n,
                           float m,
                           bool min,
                           float quiet_nan_substitute = 0.0) {
-  const uint64_t kFP32QuietNaNMask = 0x00400000UL;
   uint32_t raw_n = float_to_rawbits(n);
   uint32_t raw_m = float_to_rawbits(m);
 
-  if (isnan(n) && ((raw_n & kFP32QuietNaNMask) == 0)) {
+  if (std::isnan(n) && ((raw_n & kSQuietNanMask) == 0)) {
     // n is signalling NaN.
-    return n;
-  } else if (isnan(m) && ((raw_m & kFP32QuietNaNMask) == 0)) {
+    return rawbits_to_float(raw_n | kSQuietNanMask);
+  } else if (std::isnan(m) && ((raw_m & kSQuietNanMask) == 0)) {
     // m is signalling NaN.
-    return m;
+    return rawbits_to_float(raw_m | kSQuietNanMask);
   } else if (quiet_nan_substitute == 0.0) {
-    if (isnan(n)) {
+    if (std::isnan(n)) {
       // n is quiet NaN.
       return n;
-    } else if (isnan(m)) {
+    } else if (std::isnan(m)) {
       // m is quiet NaN.
       return m;
     }
   } else {
     // Substitute n or m if one is quiet, but not both.
-    if (isnan(n) && !isnan(m)) {
+    if (std::isnan(n) && !std::isnan(m)) {
       // n is quiet NaN: replace with substitute.
       n = quiet_nan_substitute;
-    } else if (!isnan(n) && isnan(m)) {
+    } else if (!std::isnan(n) && std::isnan(m)) {
       // m is quiet NaN: replace with substitute.
       m = quiet_nan_substitute;
     }
@@ -4978,30 +5466,29 @@ static double MinMaxHelper(double n,
                            double m,
                            bool min,
                            double quiet_nan_substitute = 0.0) {
-  const uint64_t kFP64QuietNaNMask = 0x0008000000000000UL;
   uint64_t raw_n = double_to_rawbits(n);
   uint64_t raw_m = double_to_rawbits(m);
 
-  if (isnan(n) && ((raw_n & kFP64QuietNaNMask) == 0)) {
+  if (std::isnan(n) && ((raw_n & kDQuietNanMask) == 0)) {
     // n is signalling NaN.
-    return n;
-  } else if (isnan(m) && ((raw_m & kFP64QuietNaNMask) == 0)) {
+    return rawbits_to_double(raw_n | kDQuietNanMask);
+  } else if (std::isnan(m) && ((raw_m & kDQuietNanMask) == 0)) {
     // m is signalling NaN.
-    return m;
+    return rawbits_to_double(raw_m | kDQuietNanMask);
   } else if (quiet_nan_substitute == 0.0) {
-    if (isnan(n)) {
+    if (std::isnan(n)) {
       // n is quiet NaN.
       return n;
-    } else if (isnan(m)) {
+    } else if (std::isnan(m)) {
       // m is quiet NaN.
       return m;
     }
   } else {
     // Substitute n or m if one is quiet, but not both.
-    if (isnan(n) && !isnan(m)) {
+    if (std::isnan(n) && !std::isnan(m)) {
       // n is quiet NaN: replace with substitute.
       n = quiet_nan_substitute;
-    } else if (!isnan(n) && isnan(m)) {
+    } else if (!std::isnan(n) && std::isnan(m)) {
       // m is quiet NaN: replace with substitute.
       m = quiet_nan_substitute;
     }
@@ -5042,21 +5529,42 @@ static void FminFmaxDoubleHelper(double n, double m, double min, double max,
 
 TEST(fmax_fmin_d) {
   INIT_V8();
+  // Use non-standard NaNs to check that the payload bits are preserved.
+  double snan = rawbits_to_double(0x7ff5555512345678);
+  double qnan = rawbits_to_double(0x7ffaaaaa87654321);
+
+  double snan_processed = rawbits_to_double(0x7ffd555512345678);
+  double qnan_processed = qnan;
+
+  ASSERT(IsSignallingNaN(snan));
+  ASSERT(IsQuietNaN(qnan));
+  ASSERT(IsQuietNaN(snan_processed));
+  ASSERT(IsQuietNaN(qnan_processed));
+
   // Bootstrap tests.
   FminFmaxDoubleHelper(0, 0, 0, 0, 0, 0);
   FminFmaxDoubleHelper(0, 1, 0, 1, 0, 1);
   FminFmaxDoubleHelper(kFP64PositiveInfinity, kFP64NegativeInfinity,
                        kFP64NegativeInfinity, kFP64PositiveInfinity,
                        kFP64NegativeInfinity, kFP64PositiveInfinity);
-  FminFmaxDoubleHelper(kFP64SignallingNaN, 0,
-                       kFP64SignallingNaN, kFP64SignallingNaN,
-                       kFP64SignallingNaN, kFP64SignallingNaN);
-  FminFmaxDoubleHelper(kFP64QuietNaN, 0,
-                       kFP64QuietNaN, kFP64QuietNaN,
+  FminFmaxDoubleHelper(snan, 0,
+                       snan_processed, snan_processed,
+                       snan_processed, snan_processed);
+  FminFmaxDoubleHelper(0, snan,
+                       snan_processed, snan_processed,
+                       snan_processed, snan_processed);
+  FminFmaxDoubleHelper(qnan, 0,
+                       qnan_processed, qnan_processed,
                        0, 0);
-  FminFmaxDoubleHelper(kFP64QuietNaN, kFP64SignallingNaN,
-                       kFP64SignallingNaN, kFP64SignallingNaN,
-                       kFP64SignallingNaN, kFP64SignallingNaN);
+  FminFmaxDoubleHelper(0, qnan,
+                       qnan_processed, qnan_processed,
+                       0, 0);
+  FminFmaxDoubleHelper(qnan, snan,
+                       snan_processed, snan_processed,
+                       snan_processed, snan_processed);
+  FminFmaxDoubleHelper(snan, qnan,
+                       snan_processed, snan_processed,
+                       snan_processed, snan_processed);
 
   // Iterate over all combinations of inputs.
   double inputs[] = { DBL_MAX, DBL_MIN, 1.0, 0.0,
@@ -5085,14 +5593,8 @@ static void FminFmaxFloatHelper(float n, float m, float min, float max,
   SETUP();
 
   START();
-  // TODO(all): Signalling NaNs are sometimes converted by the C compiler to
-  // quiet NaNs on implicit casts from float to double. Here, we move the raw
-  // bits into a W register first, so we get the correct value. Fix Fmov so this
-  // additional step is no longer needed.
-  __ Mov(w0, float_to_rawbits(n));
-  __ Fmov(s0, w0);
-  __ Mov(w0, float_to_rawbits(m));
-  __ Fmov(s1, w0);
+  __ Fmov(s0, n);
+  __ Fmov(s1, m);
   __ Fmin(s28, s0, s1);
   __ Fmax(s29, s0, s1);
   __ Fminnm(s30, s0, s1);
@@ -5112,21 +5614,42 @@ static void FminFmaxFloatHelper(float n, float m, float min, float max,
 
 TEST(fmax_fmin_s) {
   INIT_V8();
+  // Use non-standard NaNs to check that the payload bits are preserved.
+  float snan = rawbits_to_float(0x7f951234);
+  float qnan = rawbits_to_float(0x7fea8765);
+
+  float snan_processed = rawbits_to_float(0x7fd51234);
+  float qnan_processed = qnan;
+
+  ASSERT(IsSignallingNaN(snan));
+  ASSERT(IsQuietNaN(qnan));
+  ASSERT(IsQuietNaN(snan_processed));
+  ASSERT(IsQuietNaN(qnan_processed));
+
   // Bootstrap tests.
   FminFmaxFloatHelper(0, 0, 0, 0, 0, 0);
   FminFmaxFloatHelper(0, 1, 0, 1, 0, 1);
   FminFmaxFloatHelper(kFP32PositiveInfinity, kFP32NegativeInfinity,
                       kFP32NegativeInfinity, kFP32PositiveInfinity,
                       kFP32NegativeInfinity, kFP32PositiveInfinity);
-  FminFmaxFloatHelper(kFP32SignallingNaN, 0,
-                      kFP32SignallingNaN, kFP32SignallingNaN,
-                      kFP32SignallingNaN, kFP32SignallingNaN);
-  FminFmaxFloatHelper(kFP32QuietNaN, 0,
-                      kFP32QuietNaN, kFP32QuietNaN,
+  FminFmaxFloatHelper(snan, 0,
+                      snan_processed, snan_processed,
+                      snan_processed, snan_processed);
+  FminFmaxFloatHelper(0, snan,
+                      snan_processed, snan_processed,
+                      snan_processed, snan_processed);
+  FminFmaxFloatHelper(qnan, 0,
+                      qnan_processed, qnan_processed,
                       0, 0);
-  FminFmaxFloatHelper(kFP32QuietNaN, kFP32SignallingNaN,
-                      kFP32SignallingNaN, kFP32SignallingNaN,
-                      kFP32SignallingNaN, kFP32SignallingNaN);
+  FminFmaxFloatHelper(0, qnan,
+                      qnan_processed, qnan_processed,
+                      0, 0);
+  FminFmaxFloatHelper(qnan, snan,
+                      snan_processed, snan_processed,
+                      snan_processed, snan_processed);
+  FminFmaxFloatHelper(snan, qnan,
+                      snan_processed, snan_processed,
+                      snan_processed, snan_processed);
 
   // Iterate over all combinations of inputs.
   float inputs[] = { FLT_MAX, FLT_MIN, 1.0, 0.0,
@@ -5226,51 +5749,58 @@ TEST(fcmp) {
 
   // Some of these tests require a floating-point scratch register assigned to
   // the macro assembler, but most do not.
-  __ SetFPScratchRegister(NoFPReg);
+  {
+    // We're going to mess around with the available scratch registers in this
+    // test. A UseScratchRegisterScope will make sure that they are restored to
+    // the default values once we're finished.
+    UseScratchRegisterScope temps(&masm);
+    masm.FPTmpList()->set_list(0);
 
-  __ Fmov(s8, 0.0);
-  __ Fmov(s9, 0.5);
-  __ Mov(w18, 0x7f800001);  // Single precision NaN.
-  __ Fmov(s18, w18);
+    __ Fmov(s8, 0.0);
+    __ Fmov(s9, 0.5);
+    __ Mov(w18, 0x7f800001);  // Single precision NaN.
+    __ Fmov(s18, w18);
 
-  __ Fcmp(s8, s8);
-  __ Mrs(x0, NZCV);
-  __ Fcmp(s8, s9);
-  __ Mrs(x1, NZCV);
-  __ Fcmp(s9, s8);
-  __ Mrs(x2, NZCV);
-  __ Fcmp(s8, s18);
-  __ Mrs(x3, NZCV);
-  __ Fcmp(s18, s18);
-  __ Mrs(x4, NZCV);
-  __ Fcmp(s8, 0.0);
-  __ Mrs(x5, NZCV);
-  __ SetFPScratchRegister(d0);
-  __ Fcmp(s8, 255.0);
-  __ SetFPScratchRegister(NoFPReg);
-  __ Mrs(x6, NZCV);
+    __ Fcmp(s8, s8);
+    __ Mrs(x0, NZCV);
+    __ Fcmp(s8, s9);
+    __ Mrs(x1, NZCV);
+    __ Fcmp(s9, s8);
+    __ Mrs(x2, NZCV);
+    __ Fcmp(s8, s18);
+    __ Mrs(x3, NZCV);
+    __ Fcmp(s18, s18);
+    __ Mrs(x4, NZCV);
+    __ Fcmp(s8, 0.0);
+    __ Mrs(x5, NZCV);
+    masm.FPTmpList()->set_list(d0.Bit());
+    __ Fcmp(s8, 255.0);
+    masm.FPTmpList()->set_list(0);
+    __ Mrs(x6, NZCV);
 
-  __ Fmov(d19, 0.0);
-  __ Fmov(d20, 0.5);
-  __ Mov(x21, 0x7ff0000000000001UL);   // Double precision NaN.
-  __ Fmov(d21, x21);
+    __ Fmov(d19, 0.0);
+    __ Fmov(d20, 0.5);
+    __ Mov(x21, 0x7ff0000000000001UL);   // Double precision NaN.
+    __ Fmov(d21, x21);
 
-  __ Fcmp(d19, d19);
-  __ Mrs(x10, NZCV);
-  __ Fcmp(d19, d20);
-  __ Mrs(x11, NZCV);
-  __ Fcmp(d20, d19);
-  __ Mrs(x12, NZCV);
-  __ Fcmp(d19, d21);
-  __ Mrs(x13, NZCV);
-  __ Fcmp(d21, d21);
-  __ Mrs(x14, NZCV);
-  __ Fcmp(d19, 0.0);
-  __ Mrs(x15, NZCV);
-  __ SetFPScratchRegister(d0);
-  __ Fcmp(d19, 12.3456);
-  __ SetFPScratchRegister(NoFPReg);
-  __ Mrs(x16, NZCV);
+    __ Fcmp(d19, d19);
+    __ Mrs(x10, NZCV);
+    __ Fcmp(d19, d20);
+    __ Mrs(x11, NZCV);
+    __ Fcmp(d20, d19);
+    __ Mrs(x12, NZCV);
+    __ Fcmp(d19, d21);
+    __ Mrs(x13, NZCV);
+    __ Fcmp(d21, d21);
+    __ Mrs(x14, NZCV);
+    __ Fcmp(d19, 0.0);
+    __ Mrs(x15, NZCV);
+    masm.FPTmpList()->set_list(d0.Bit());
+    __ Fcmp(d19, 12.3456);
+    masm.FPTmpList()->set_list(0);
+    __ Mrs(x16, NZCV);
+  }
+
   END();
 
   RUN();
@@ -5420,12 +5950,14 @@ TEST(fsqrt) {
   __ Fmov(s19, 65536.0);
   __ Fmov(s20, -0.0);
   __ Fmov(s21, kFP32PositiveInfinity);
-  __ Fmov(d22, 0.0);
-  __ Fmov(d23, 1.0);
-  __ Fmov(d24, 0.25);
-  __ Fmov(d25, 4294967296.0);
-  __ Fmov(d26, -0.0);
-  __ Fmov(d27, kFP64PositiveInfinity);
+  __ Fmov(s22, -1.0);
+  __ Fmov(d23, 0.0);
+  __ Fmov(d24, 1.0);
+  __ Fmov(d25, 0.25);
+  __ Fmov(d26, 4294967296.0);
+  __ Fmov(d27, -0.0);
+  __ Fmov(d28, kFP64PositiveInfinity);
+  __ Fmov(d29, -1.0);
 
   __ Fsqrt(s0, s16);
   __ Fsqrt(s1, s17);
@@ -5433,12 +5965,14 @@ TEST(fsqrt) {
   __ Fsqrt(s3, s19);
   __ Fsqrt(s4, s20);
   __ Fsqrt(s5, s21);
-  __ Fsqrt(d6, d22);
+  __ Fsqrt(s6, s22);
   __ Fsqrt(d7, d23);
   __ Fsqrt(d8, d24);
   __ Fsqrt(d9, d25);
   __ Fsqrt(d10, d26);
   __ Fsqrt(d11, d27);
+  __ Fsqrt(d12, d28);
+  __ Fsqrt(d13, d29);
   END();
 
   RUN();
@@ -5449,12 +5983,14 @@ TEST(fsqrt) {
   ASSERT_EQUAL_FP32(256.0, s3);
   ASSERT_EQUAL_FP32(-0.0, s4);
   ASSERT_EQUAL_FP32(kFP32PositiveInfinity, s5);
-  ASSERT_EQUAL_FP64(0.0, d6);
-  ASSERT_EQUAL_FP64(1.0, d7);
-  ASSERT_EQUAL_FP64(0.5, d8);
-  ASSERT_EQUAL_FP64(65536.0, d9);
-  ASSERT_EQUAL_FP64(-0.0, d10);
-  ASSERT_EQUAL_FP64(kFP32PositiveInfinity, d11);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s6);
+  ASSERT_EQUAL_FP64(0.0, d7);
+  ASSERT_EQUAL_FP64(1.0, d8);
+  ASSERT_EQUAL_FP64(0.5, d9);
+  ASSERT_EQUAL_FP64(65536.0, d10);
+  ASSERT_EQUAL_FP64(-0.0, d11);
+  ASSERT_EQUAL_FP64(kFP32PositiveInfinity, d12);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d13);
 
   TEARDOWN();
 }
@@ -6755,7 +7291,7 @@ static void TestUScvtfHelper(uint64_t in,
   // Corrupt the top word, in case it is accidentally used during W-register
   // conversions.
   __ Mov(x11, 0x5555555555555555);
-  __ Bfi(x11, x10, 0, kWRegSize);
+  __ Bfi(x11, x10, 0, kWRegSizeInBits);
 
   // Test integer conversions.
   __ Scvtf(d0, x10);
@@ -6773,10 +7309,10 @@ static void TestUScvtfHelper(uint64_t in,
     __ Ucvtf(d1, x10, fbits);
     __ Scvtf(d2, w11, fbits);
     __ Ucvtf(d3, w11, fbits);
-    __ Str(d0, MemOperand(x0, fbits * kDRegSizeInBytes));
-    __ Str(d1, MemOperand(x1, fbits * kDRegSizeInBytes));
-    __ Str(d2, MemOperand(x2, fbits * kDRegSizeInBytes));
-    __ Str(d3, MemOperand(x3, fbits * kDRegSizeInBytes));
+    __ Str(d0, MemOperand(x0, fbits * kDRegSize));
+    __ Str(d1, MemOperand(x1, fbits * kDRegSize));
+    __ Str(d2, MemOperand(x2, fbits * kDRegSize));
+    __ Str(d3, MemOperand(x3, fbits * kDRegSize));
   }
 
   // Conversions from W registers can only handle fbits values <= 32, so just
@@ -6784,8 +7320,8 @@ static void TestUScvtfHelper(uint64_t in,
   for (int fbits = 33; fbits <= 64; fbits++) {
     __ Scvtf(d0, x10, fbits);
     __ Ucvtf(d1, x10, fbits);
-    __ Str(d0, MemOperand(x0, fbits * kDRegSizeInBytes));
-    __ Str(d1, MemOperand(x1, fbits * kDRegSizeInBytes));
+    __ Str(d0, MemOperand(x0, fbits * kDRegSize));
+    __ Str(d1, MemOperand(x1, fbits * kDRegSize));
   }
 
   END();
@@ -6910,7 +7446,7 @@ static void TestUScvtf32Helper(uint64_t in,
   // Corrupt the top word, in case it is accidentally used during W-register
   // conversions.
   __ Mov(x11, 0x5555555555555555);
-  __ Bfi(x11, x10, 0, kWRegSize);
+  __ Bfi(x11, x10, 0, kWRegSizeInBits);
 
   // Test integer conversions.
   __ Scvtf(s0, x10);
@@ -6928,10 +7464,10 @@ static void TestUScvtf32Helper(uint64_t in,
     __ Ucvtf(s1, x10, fbits);
     __ Scvtf(s2, w11, fbits);
     __ Ucvtf(s3, w11, fbits);
-    __ Str(s0, MemOperand(x0, fbits * kSRegSizeInBytes));
-    __ Str(s1, MemOperand(x1, fbits * kSRegSizeInBytes));
-    __ Str(s2, MemOperand(x2, fbits * kSRegSizeInBytes));
-    __ Str(s3, MemOperand(x3, fbits * kSRegSizeInBytes));
+    __ Str(s0, MemOperand(x0, fbits * kSRegSize));
+    __ Str(s1, MemOperand(x1, fbits * kSRegSize));
+    __ Str(s2, MemOperand(x2, fbits * kSRegSize));
+    __ Str(s3, MemOperand(x3, fbits * kSRegSize));
   }
 
   // Conversions from W registers can only handle fbits values <= 32, so just
@@ -6939,8 +7475,8 @@ static void TestUScvtf32Helper(uint64_t in,
   for (int fbits = 33; fbits <= 64; fbits++) {
     __ Scvtf(s0, x10, fbits);
     __ Ucvtf(s1, x10, fbits);
-    __ Str(s0, MemOperand(x0, fbits * kSRegSizeInBytes));
-    __ Str(s1, MemOperand(x1, fbits * kSRegSizeInBytes));
+    __ Str(s0, MemOperand(x0, fbits * kSRegSize));
+    __ Str(s1, MemOperand(x1, fbits * kSRegSize));
   }
 
   END();
@@ -7586,7 +8122,7 @@ TEST(peek_poke_mixed) {
     __ SetStackPointer(x4);
 
     __ Poke(wzr, 0);    // Clobber the space we're about to drop.
-    __ Drop(1, kWRegSizeInBytes);
+    __ Drop(1, kWRegSize);
     __ Peek(x6, 0);
     __ Claim(1);
     __ Peek(w7, 10);
@@ -7768,23 +8304,23 @@ TEST(push_pop_jssp_simple_32) {
   INIT_V8();
   for (int claim = 0; claim <= 8; claim++) {
     for (int count = 0; count <= 8; count++) {
-      PushPopJsspSimpleHelper(count, claim, kWRegSize,
+      PushPopJsspSimpleHelper(count, claim, kWRegSizeInBits,
                               PushPopByFour, PushPopByFour);
-      PushPopJsspSimpleHelper(count, claim, kWRegSize,
+      PushPopJsspSimpleHelper(count, claim, kWRegSizeInBits,
                               PushPopByFour, PushPopRegList);
-      PushPopJsspSimpleHelper(count, claim, kWRegSize,
+      PushPopJsspSimpleHelper(count, claim, kWRegSizeInBits,
                               PushPopRegList, PushPopByFour);
-      PushPopJsspSimpleHelper(count, claim, kWRegSize,
+      PushPopJsspSimpleHelper(count, claim, kWRegSizeInBits,
                               PushPopRegList, PushPopRegList);
     }
     // Test with the maximum number of registers.
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSizeInBits,
                             PushPopByFour, PushPopByFour);
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSizeInBits,
                             PushPopByFour, PushPopRegList);
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSizeInBits,
                             PushPopRegList, PushPopByFour);
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kWRegSizeInBits,
                             PushPopRegList, PushPopRegList);
   }
 }
@@ -7794,23 +8330,23 @@ TEST(push_pop_jssp_simple_64) {
   INIT_V8();
   for (int claim = 0; claim <= 8; claim++) {
     for (int count = 0; count <= 8; count++) {
-      PushPopJsspSimpleHelper(count, claim, kXRegSize,
+      PushPopJsspSimpleHelper(count, claim, kXRegSizeInBits,
                               PushPopByFour, PushPopByFour);
-      PushPopJsspSimpleHelper(count, claim, kXRegSize,
+      PushPopJsspSimpleHelper(count, claim, kXRegSizeInBits,
                               PushPopByFour, PushPopRegList);
-      PushPopJsspSimpleHelper(count, claim, kXRegSize,
+      PushPopJsspSimpleHelper(count, claim, kXRegSizeInBits,
                               PushPopRegList, PushPopByFour);
-      PushPopJsspSimpleHelper(count, claim, kXRegSize,
+      PushPopJsspSimpleHelper(count, claim, kXRegSizeInBits,
                               PushPopRegList, PushPopRegList);
     }
     // Test with the maximum number of registers.
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSizeInBits,
                             PushPopByFour, PushPopByFour);
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSizeInBits,
                             PushPopByFour, PushPopRegList);
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSizeInBits,
                             PushPopRegList, PushPopByFour);
-    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSize,
+    PushPopJsspSimpleHelper(kPushPopJsspMaxRegCount, claim, kXRegSizeInBits,
                             PushPopRegList, PushPopRegList);
   }
 }
@@ -7951,23 +8487,23 @@ TEST(push_pop_fp_jssp_simple_32) {
   INIT_V8();
   for (int claim = 0; claim <= 8; claim++) {
     for (int count = 0; count <= 8; count++) {
-      PushPopFPJsspSimpleHelper(count, claim, kSRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kSRegSizeInBits,
                                 PushPopByFour, PushPopByFour);
-      PushPopFPJsspSimpleHelper(count, claim, kSRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kSRegSizeInBits,
                                 PushPopByFour, PushPopRegList);
-      PushPopFPJsspSimpleHelper(count, claim, kSRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kSRegSizeInBits,
                                 PushPopRegList, PushPopByFour);
-      PushPopFPJsspSimpleHelper(count, claim, kSRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kSRegSizeInBits,
                                 PushPopRegList, PushPopRegList);
     }
     // Test with the maximum number of registers.
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSizeInBits,
                               PushPopByFour, PushPopByFour);
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSizeInBits,
                               PushPopByFour, PushPopRegList);
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSizeInBits,
                               PushPopRegList, PushPopByFour);
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kSRegSizeInBits,
                               PushPopRegList, PushPopRegList);
   }
 }
@@ -7977,23 +8513,23 @@ TEST(push_pop_fp_jssp_simple_64) {
   INIT_V8();
   for (int claim = 0; claim <= 8; claim++) {
     for (int count = 0; count <= 8; count++) {
-      PushPopFPJsspSimpleHelper(count, claim, kDRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kDRegSizeInBits,
                                 PushPopByFour, PushPopByFour);
-      PushPopFPJsspSimpleHelper(count, claim, kDRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kDRegSizeInBits,
                                 PushPopByFour, PushPopRegList);
-      PushPopFPJsspSimpleHelper(count, claim, kDRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kDRegSizeInBits,
                                 PushPopRegList, PushPopByFour);
-      PushPopFPJsspSimpleHelper(count, claim, kDRegSize,
+      PushPopFPJsspSimpleHelper(count, claim, kDRegSizeInBits,
                                 PushPopRegList, PushPopRegList);
     }
     // Test with the maximum number of registers.
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSizeInBits,
                               PushPopByFour, PushPopByFour);
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSizeInBits,
                               PushPopByFour, PushPopRegList);
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSizeInBits,
                               PushPopRegList, PushPopByFour);
-    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSize,
+    PushPopFPJsspSimpleHelper(kPushPopFPJsspMaxRegCount, claim, kDRegSizeInBits,
                               PushPopRegList, PushPopRegList);
   }
 }
@@ -8091,7 +8627,7 @@ static void PushPopJsspMixedMethodsHelper(int claim, int reg_size) {
 TEST(push_pop_jssp_mixed_methods_64) {
   INIT_V8();
   for (int claim = 0; claim <= 8; claim++) {
-    PushPopJsspMixedMethodsHelper(claim, kXRegSize);
+    PushPopJsspMixedMethodsHelper(claim, kXRegSizeInBits);
   }
 }
 
@@ -8099,7 +8635,7 @@ TEST(push_pop_jssp_mixed_methods_64) {
 TEST(push_pop_jssp_mixed_methods_32) {
   INIT_V8();
   for (int claim = 0; claim <= 8; claim++) {
-    PushPopJsspMixedMethodsHelper(claim, kWRegSize);
+    PushPopJsspMixedMethodsHelper(claim, kWRegSizeInBits);
   }
 }
 
@@ -8110,7 +8646,8 @@ static void PushPopJsspWXOverlapHelper(int reg_count, int claim) {
   SETUP_SIZE(BUF_SIZE * 2);
 
   // Work out which registers to use, based on reg_size.
-  static RegList const allowed = ~(x8.Bit() | x9.Bit() | jssp.Bit());
+  Register tmp = x8;
+  static RegList const allowed = ~(tmp.Bit() | jssp.Bit());
   if (reg_count == kPushPopJsspMaxRegCount) {
     reg_count = CountSetBits(allowed, kNumberOfRegisters);
   }
@@ -8196,7 +8733,13 @@ static void PushPopJsspWXOverlapHelper(int reg_count, int claim) {
       int times = i % 4 + 1;
       if (i & 1) {
         // Push odd-numbered registers as W registers.
-        __ PushMultipleTimes(times, w[i]);
+        if (i & 2) {
+          __ PushMultipleTimes(w[i], times);
+        } else {
+          // Use a register to specify the count.
+          __ Mov(tmp.W(), times);
+          __ PushMultipleTimes(w[i], tmp.W());
+        }
         // Fill in the expected stack slots.
         for (int j = 0; j < times; j++) {
           if (w[i].Is(wzr)) {
@@ -8208,7 +8751,13 @@ static void PushPopJsspWXOverlapHelper(int reg_count, int claim) {
         }
       } else {
         // Push even-numbered registers as X registers.
-        __ PushMultipleTimes(times, x[i]);
+        if (i & 2) {
+          __ PushMultipleTimes(x[i], times);
+        } else {
+          // Use a register to specify the count.
+          __ Mov(tmp, times);
+          __ PushMultipleTimes(x[i], tmp);
+        }
         // Fill in the expected stack slots.
         for (int j = 0; j < times; j++) {
           if (x[i].IsZero()) {
@@ -8225,7 +8774,7 @@ static void PushPopJsspWXOverlapHelper(int reg_count, int claim) {
     // Because we were pushing several registers at a time, we probably pushed
     // more than we needed to.
     if (active_w_slots > requested_w_slots) {
-      __ Drop(active_w_slots - requested_w_slots, kWRegSizeInBytes);
+      __ Drop(active_w_slots - requested_w_slots, kWRegSize);
       // Bump the number of active W-sized slots back to where it should be,
       // and fill the empty space with a dummy value.
       do {
@@ -8395,6 +8944,156 @@ TEST(push_pop_csp) {
   ASSERT_EQUAL_32(0x00000000U, w27);
   ASSERT_EQUAL_32(0x22222222U, w28);
   ASSERT_EQUAL_32(0x33333333U, w29);
+  TEARDOWN();
+}
+
+
+TEST(push_queued) {
+  INIT_V8();
+  SETUP();
+
+  START();
+
+  ASSERT(__ StackPointer().Is(csp));
+  __ Mov(jssp, __ StackPointer());
+  __ SetStackPointer(jssp);
+
+  MacroAssembler::PushPopQueue queue(&masm);
+
+  // Queue up registers.
+  queue.Queue(x0);
+  queue.Queue(x1);
+  queue.Queue(x2);
+  queue.Queue(x3);
+
+  queue.Queue(w4);
+  queue.Queue(w5);
+  queue.Queue(w6);
+
+  queue.Queue(d0);
+  queue.Queue(d1);
+
+  queue.Queue(s2);
+
+  __ Mov(x0, 0x1234000000000000);
+  __ Mov(x1, 0x1234000100010001);
+  __ Mov(x2, 0x1234000200020002);
+  __ Mov(x3, 0x1234000300030003);
+  __ Mov(w4, 0x12340004);
+  __ Mov(w5, 0x12340005);
+  __ Mov(w6, 0x12340006);
+  __ Fmov(d0, 123400.0);
+  __ Fmov(d1, 123401.0);
+  __ Fmov(s2, 123402.0);
+
+  // Actually push them.
+  queue.PushQueued();
+
+  Clobber(&masm, CPURegList(CPURegister::kRegister, kXRegSizeInBits, 0, 6));
+  Clobber(&masm, CPURegList(CPURegister::kFPRegister, kDRegSizeInBits, 0, 2));
+
+  // Pop them conventionally.
+  __ Pop(s2);
+  __ Pop(d1, d0);
+  __ Pop(w6, w5, w4);
+  __ Pop(x3, x2, x1, x0);
+
+  __ Mov(csp, __ StackPointer());
+  __ SetStackPointer(csp);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x1234000000000000, x0);
+  ASSERT_EQUAL_64(0x1234000100010001, x1);
+  ASSERT_EQUAL_64(0x1234000200020002, x2);
+  ASSERT_EQUAL_64(0x1234000300030003, x3);
+
+  ASSERT_EQUAL_32(0x12340004, w4);
+  ASSERT_EQUAL_32(0x12340005, w5);
+  ASSERT_EQUAL_32(0x12340006, w6);
+
+  ASSERT_EQUAL_FP64(123400.0, d0);
+  ASSERT_EQUAL_FP64(123401.0, d1);
+
+  ASSERT_EQUAL_FP32(123402.0, s2);
+
+  TEARDOWN();
+}
+
+
+TEST(pop_queued) {
+  INIT_V8();
+  SETUP();
+
+  START();
+
+  ASSERT(__ StackPointer().Is(csp));
+  __ Mov(jssp, __ StackPointer());
+  __ SetStackPointer(jssp);
+
+  MacroAssembler::PushPopQueue queue(&masm);
+
+  __ Mov(x0, 0x1234000000000000);
+  __ Mov(x1, 0x1234000100010001);
+  __ Mov(x2, 0x1234000200020002);
+  __ Mov(x3, 0x1234000300030003);
+  __ Mov(w4, 0x12340004);
+  __ Mov(w5, 0x12340005);
+  __ Mov(w6, 0x12340006);
+  __ Fmov(d0, 123400.0);
+  __ Fmov(d1, 123401.0);
+  __ Fmov(s2, 123402.0);
+
+  // Push registers conventionally.
+  __ Push(x0, x1, x2, x3);
+  __ Push(w4, w5, w6);
+  __ Push(d0, d1);
+  __ Push(s2);
+
+  // Queue up a pop.
+  queue.Queue(s2);
+
+  queue.Queue(d1);
+  queue.Queue(d0);
+
+  queue.Queue(w6);
+  queue.Queue(w5);
+  queue.Queue(w4);
+
+  queue.Queue(x3);
+  queue.Queue(x2);
+  queue.Queue(x1);
+  queue.Queue(x0);
+
+  Clobber(&masm, CPURegList(CPURegister::kRegister, kXRegSizeInBits, 0, 6));
+  Clobber(&masm, CPURegList(CPURegister::kFPRegister, kDRegSizeInBits, 0, 2));
+
+  // Actually pop them.
+  queue.PopQueued();
+
+  __ Mov(csp, __ StackPointer());
+  __ SetStackPointer(csp);
+
+  END();
+
+  RUN();
+
+  ASSERT_EQUAL_64(0x1234000000000000, x0);
+  ASSERT_EQUAL_64(0x1234000100010001, x1);
+  ASSERT_EQUAL_64(0x1234000200020002, x2);
+  ASSERT_EQUAL_64(0x1234000300030003, x3);
+
+  ASSERT_EQUAL_64(0x0000000012340004, x4);
+  ASSERT_EQUAL_64(0x0000000012340005, x5);
+  ASSERT_EQUAL_64(0x0000000012340006, x6);
+
+  ASSERT_EQUAL_FP64(123400.0, d0);
+  ASSERT_EQUAL_FP64(123401.0, d1);
+
+  ASSERT_EQUAL_FP32(123402.0, s2);
+
   TEARDOWN();
 }
 
@@ -8861,10 +9560,10 @@ TEST(cpureglist_utils_empty) {
   // Test an empty list.
   // Empty lists can have type and size properties. Check that we can create
   // them, and that they are empty.
-  CPURegList reg32(CPURegister::kRegister, kWRegSize, 0);
-  CPURegList reg64(CPURegister::kRegister, kXRegSize, 0);
-  CPURegList fpreg32(CPURegister::kFPRegister, kSRegSize, 0);
-  CPURegList fpreg64(CPURegister::kFPRegister, kDRegSize, 0);
+  CPURegList reg32(CPURegister::kRegister, kWRegSizeInBits, 0);
+  CPURegList reg64(CPURegister::kRegister, kXRegSizeInBits, 0);
+  CPURegList fpreg32(CPURegister::kFPRegister, kSRegSizeInBits, 0);
+  CPURegList fpreg64(CPURegister::kFPRegister, kDRegSizeInBits, 0);
 
   CHECK(reg32.IsEmpty());
   CHECK(reg64.IsEmpty());
@@ -9301,6 +10000,558 @@ TEST(barriers) {
 }
 
 
+TEST(process_nan_double) {
+  INIT_V8();
+  // Make sure that NaN propagation works correctly.
+  double sn = rawbits_to_double(0x7ff5555511111111);
+  double qn = rawbits_to_double(0x7ffaaaaa11111111);
+  ASSERT(IsSignallingNaN(sn));
+  ASSERT(IsQuietNaN(qn));
+
+  // The input NaNs after passing through ProcessNaN.
+  double sn_proc = rawbits_to_double(0x7ffd555511111111);
+  double qn_proc = qn;
+  ASSERT(IsQuietNaN(sn_proc));
+  ASSERT(IsQuietNaN(qn_proc));
+
+  SETUP();
+  START();
+
+  // Execute a number of instructions which all use ProcessNaN, and check that
+  // they all handle the NaN correctly.
+  __ Fmov(d0, sn);
+  __ Fmov(d10, qn);
+
+  // Operations that always propagate NaNs unchanged, even signalling NaNs.
+  //   - Signalling NaN
+  __ Fmov(d1, d0);
+  __ Fabs(d2, d0);
+  __ Fneg(d3, d0);
+  //   - Quiet NaN
+  __ Fmov(d11, d10);
+  __ Fabs(d12, d10);
+  __ Fneg(d13, d10);
+
+  // Operations that use ProcessNaN.
+  //   - Signalling NaN
+  __ Fsqrt(d4, d0);
+  __ Frinta(d5, d0);
+  __ Frintn(d6, d0);
+  __ Frintz(d7, d0);
+  //   - Quiet NaN
+  __ Fsqrt(d14, d10);
+  __ Frinta(d15, d10);
+  __ Frintn(d16, d10);
+  __ Frintz(d17, d10);
+
+  // The behaviour of fcvt is checked in TEST(fcvt_sd).
+
+  END();
+  RUN();
+
+  uint64_t qn_raw = double_to_rawbits(qn);
+  uint64_t sn_raw = double_to_rawbits(sn);
+
+  //   - Signalling NaN
+  ASSERT_EQUAL_FP64(sn, d1);
+  ASSERT_EQUAL_FP64(rawbits_to_double(sn_raw & ~kDSignMask), d2);
+  ASSERT_EQUAL_FP64(rawbits_to_double(sn_raw ^ kDSignMask), d3);
+  //   - Quiet NaN
+  ASSERT_EQUAL_FP64(qn, d11);
+  ASSERT_EQUAL_FP64(rawbits_to_double(qn_raw & ~kDSignMask), d12);
+  ASSERT_EQUAL_FP64(rawbits_to_double(qn_raw ^ kDSignMask), d13);
+
+  //   - Signalling NaN
+  ASSERT_EQUAL_FP64(sn_proc, d4);
+  ASSERT_EQUAL_FP64(sn_proc, d5);
+  ASSERT_EQUAL_FP64(sn_proc, d6);
+  ASSERT_EQUAL_FP64(sn_proc, d7);
+  //   - Quiet NaN
+  ASSERT_EQUAL_FP64(qn_proc, d14);
+  ASSERT_EQUAL_FP64(qn_proc, d15);
+  ASSERT_EQUAL_FP64(qn_proc, d16);
+  ASSERT_EQUAL_FP64(qn_proc, d17);
+
+  TEARDOWN();
+}
+
+
+TEST(process_nan_float) {
+  INIT_V8();
+  // Make sure that NaN propagation works correctly.
+  float sn = rawbits_to_float(0x7f951111);
+  float qn = rawbits_to_float(0x7fea1111);
+  ASSERT(IsSignallingNaN(sn));
+  ASSERT(IsQuietNaN(qn));
+
+  // The input NaNs after passing through ProcessNaN.
+  float sn_proc = rawbits_to_float(0x7fd51111);
+  float qn_proc = qn;
+  ASSERT(IsQuietNaN(sn_proc));
+  ASSERT(IsQuietNaN(qn_proc));
+
+  SETUP();
+  START();
+
+  // Execute a number of instructions which all use ProcessNaN, and check that
+  // they all handle the NaN correctly.
+  __ Fmov(s0, sn);
+  __ Fmov(s10, qn);
+
+  // Operations that always propagate NaNs unchanged, even signalling NaNs.
+  //   - Signalling NaN
+  __ Fmov(s1, s0);
+  __ Fabs(s2, s0);
+  __ Fneg(s3, s0);
+  //   - Quiet NaN
+  __ Fmov(s11, s10);
+  __ Fabs(s12, s10);
+  __ Fneg(s13, s10);
+
+  // Operations that use ProcessNaN.
+  //   - Signalling NaN
+  __ Fsqrt(s4, s0);
+  __ Frinta(s5, s0);
+  __ Frintn(s6, s0);
+  __ Frintz(s7, s0);
+  //   - Quiet NaN
+  __ Fsqrt(s14, s10);
+  __ Frinta(s15, s10);
+  __ Frintn(s16, s10);
+  __ Frintz(s17, s10);
+
+  // The behaviour of fcvt is checked in TEST(fcvt_sd).
+
+  END();
+  RUN();
+
+  uint32_t qn_raw = float_to_rawbits(qn);
+  uint32_t sn_raw = float_to_rawbits(sn);
+
+  //   - Signalling NaN
+  ASSERT_EQUAL_FP32(sn, s1);
+  ASSERT_EQUAL_FP32(rawbits_to_float(sn_raw & ~kSSignMask), s2);
+  ASSERT_EQUAL_FP32(rawbits_to_float(sn_raw ^ kSSignMask), s3);
+  //   - Quiet NaN
+  ASSERT_EQUAL_FP32(qn, s11);
+  ASSERT_EQUAL_FP32(rawbits_to_float(qn_raw & ~kSSignMask), s12);
+  ASSERT_EQUAL_FP32(rawbits_to_float(qn_raw ^ kSSignMask), s13);
+
+  //   - Signalling NaN
+  ASSERT_EQUAL_FP32(sn_proc, s4);
+  ASSERT_EQUAL_FP32(sn_proc, s5);
+  ASSERT_EQUAL_FP32(sn_proc, s6);
+  ASSERT_EQUAL_FP32(sn_proc, s7);
+  //   - Quiet NaN
+  ASSERT_EQUAL_FP32(qn_proc, s14);
+  ASSERT_EQUAL_FP32(qn_proc, s15);
+  ASSERT_EQUAL_FP32(qn_proc, s16);
+  ASSERT_EQUAL_FP32(qn_proc, s17);
+
+  TEARDOWN();
+}
+
+
+static void ProcessNaNsHelper(double n, double m, double expected) {
+  ASSERT(isnan(n) || isnan(m));
+  ASSERT(isnan(expected));
+
+  SETUP();
+  START();
+
+  // Execute a number of instructions which all use ProcessNaNs, and check that
+  // they all propagate NaNs correctly.
+  __ Fmov(d0, n);
+  __ Fmov(d1, m);
+
+  __ Fadd(d2, d0, d1);
+  __ Fsub(d3, d0, d1);
+  __ Fmul(d4, d0, d1);
+  __ Fdiv(d5, d0, d1);
+  __ Fmax(d6, d0, d1);
+  __ Fmin(d7, d0, d1);
+
+  END();
+  RUN();
+
+  ASSERT_EQUAL_FP64(expected, d2);
+  ASSERT_EQUAL_FP64(expected, d3);
+  ASSERT_EQUAL_FP64(expected, d4);
+  ASSERT_EQUAL_FP64(expected, d5);
+  ASSERT_EQUAL_FP64(expected, d6);
+  ASSERT_EQUAL_FP64(expected, d7);
+
+  TEARDOWN();
+}
+
+
+TEST(process_nans_double) {
+  INIT_V8();
+  // Make sure that NaN propagation works correctly.
+  double sn = rawbits_to_double(0x7ff5555511111111);
+  double sm = rawbits_to_double(0x7ff5555522222222);
+  double qn = rawbits_to_double(0x7ffaaaaa11111111);
+  double qm = rawbits_to_double(0x7ffaaaaa22222222);
+  ASSERT(IsSignallingNaN(sn));
+  ASSERT(IsSignallingNaN(sm));
+  ASSERT(IsQuietNaN(qn));
+  ASSERT(IsQuietNaN(qm));
+
+  // The input NaNs after passing through ProcessNaN.
+  double sn_proc = rawbits_to_double(0x7ffd555511111111);
+  double sm_proc = rawbits_to_double(0x7ffd555522222222);
+  double qn_proc = qn;
+  double qm_proc = qm;
+  ASSERT(IsQuietNaN(sn_proc));
+  ASSERT(IsQuietNaN(sm_proc));
+  ASSERT(IsQuietNaN(qn_proc));
+  ASSERT(IsQuietNaN(qm_proc));
+
+  // Quiet NaNs are propagated.
+  ProcessNaNsHelper(qn, 0, qn_proc);
+  ProcessNaNsHelper(0, qm, qm_proc);
+  ProcessNaNsHelper(qn, qm, qn_proc);
+
+  // Signalling NaNs are propagated, and made quiet.
+  ProcessNaNsHelper(sn, 0, sn_proc);
+  ProcessNaNsHelper(0, sm, sm_proc);
+  ProcessNaNsHelper(sn, sm, sn_proc);
+
+  // Signalling NaNs take precedence over quiet NaNs.
+  ProcessNaNsHelper(sn, qm, sn_proc);
+  ProcessNaNsHelper(qn, sm, sm_proc);
+  ProcessNaNsHelper(sn, sm, sn_proc);
+}
+
+
+static void ProcessNaNsHelper(float n, float m, float expected) {
+  ASSERT(isnan(n) || isnan(m));
+  ASSERT(isnan(expected));
+
+  SETUP();
+  START();
+
+  // Execute a number of instructions which all use ProcessNaNs, and check that
+  // they all propagate NaNs correctly.
+  __ Fmov(s0, n);
+  __ Fmov(s1, m);
+
+  __ Fadd(s2, s0, s1);
+  __ Fsub(s3, s0, s1);
+  __ Fmul(s4, s0, s1);
+  __ Fdiv(s5, s0, s1);
+  __ Fmax(s6, s0, s1);
+  __ Fmin(s7, s0, s1);
+
+  END();
+  RUN();
+
+  ASSERT_EQUAL_FP32(expected, s2);
+  ASSERT_EQUAL_FP32(expected, s3);
+  ASSERT_EQUAL_FP32(expected, s4);
+  ASSERT_EQUAL_FP32(expected, s5);
+  ASSERT_EQUAL_FP32(expected, s6);
+  ASSERT_EQUAL_FP32(expected, s7);
+
+  TEARDOWN();
+}
+
+
+TEST(process_nans_float) {
+  INIT_V8();
+  // Make sure that NaN propagation works correctly.
+  float sn = rawbits_to_float(0x7f951111);
+  float sm = rawbits_to_float(0x7f952222);
+  float qn = rawbits_to_float(0x7fea1111);
+  float qm = rawbits_to_float(0x7fea2222);
+  ASSERT(IsSignallingNaN(sn));
+  ASSERT(IsSignallingNaN(sm));
+  ASSERT(IsQuietNaN(qn));
+  ASSERT(IsQuietNaN(qm));
+
+  // The input NaNs after passing through ProcessNaN.
+  float sn_proc = rawbits_to_float(0x7fd51111);
+  float sm_proc = rawbits_to_float(0x7fd52222);
+  float qn_proc = qn;
+  float qm_proc = qm;
+  ASSERT(IsQuietNaN(sn_proc));
+  ASSERT(IsQuietNaN(sm_proc));
+  ASSERT(IsQuietNaN(qn_proc));
+  ASSERT(IsQuietNaN(qm_proc));
+
+  // Quiet NaNs are propagated.
+  ProcessNaNsHelper(qn, 0, qn_proc);
+  ProcessNaNsHelper(0, qm, qm_proc);
+  ProcessNaNsHelper(qn, qm, qn_proc);
+
+  // Signalling NaNs are propagated, and made quiet.
+  ProcessNaNsHelper(sn, 0, sn_proc);
+  ProcessNaNsHelper(0, sm, sm_proc);
+  ProcessNaNsHelper(sn, sm, sn_proc);
+
+  // Signalling NaNs take precedence over quiet NaNs.
+  ProcessNaNsHelper(sn, qm, sn_proc);
+  ProcessNaNsHelper(qn, sm, sm_proc);
+  ProcessNaNsHelper(sn, sm, sn_proc);
+}
+
+
+static void DefaultNaNHelper(float n, float m, float a) {
+  ASSERT(isnan(n) || isnan(m) || isnan(a));
+
+  bool test_1op = isnan(n);
+  bool test_2op = isnan(n) || isnan(m);
+
+  SETUP();
+  START();
+
+  // Enable Default-NaN mode in the FPCR.
+  __ Mrs(x0, FPCR);
+  __ Orr(x1, x0, DN_mask);
+  __ Msr(FPCR, x1);
+
+  // Execute a number of instructions which all use ProcessNaNs, and check that
+  // they all produce the default NaN.
+  __ Fmov(s0, n);
+  __ Fmov(s1, m);
+  __ Fmov(s2, a);
+
+  if (test_1op) {
+    // Operations that always propagate NaNs unchanged, even signalling NaNs.
+    __ Fmov(s10, s0);
+    __ Fabs(s11, s0);
+    __ Fneg(s12, s0);
+
+    // Operations that use ProcessNaN.
+    __ Fsqrt(s13, s0);
+    __ Frinta(s14, s0);
+    __ Frintn(s15, s0);
+    __ Frintz(s16, s0);
+
+    // Fcvt usually has special NaN handling, but it respects default-NaN mode.
+    __ Fcvt(d17, s0);
+  }
+
+  if (test_2op) {
+    __ Fadd(s18, s0, s1);
+    __ Fsub(s19, s0, s1);
+    __ Fmul(s20, s0, s1);
+    __ Fdiv(s21, s0, s1);
+    __ Fmax(s22, s0, s1);
+    __ Fmin(s23, s0, s1);
+  }
+
+  __ Fmadd(s24, s0, s1, s2);
+  __ Fmsub(s25, s0, s1, s2);
+  __ Fnmadd(s26, s0, s1, s2);
+  __ Fnmsub(s27, s0, s1, s2);
+
+  // Restore FPCR.
+  __ Msr(FPCR, x0);
+
+  END();
+  RUN();
+
+  if (test_1op) {
+    uint32_t n_raw = float_to_rawbits(n);
+    ASSERT_EQUAL_FP32(n, s10);
+    ASSERT_EQUAL_FP32(rawbits_to_float(n_raw & ~kSSignMask), s11);
+    ASSERT_EQUAL_FP32(rawbits_to_float(n_raw ^ kSSignMask), s12);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s13);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s14);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s15);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s16);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d17);
+  }
+
+  if (test_2op) {
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s18);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s19);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s20);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s21);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s22);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s23);
+  }
+
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s24);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s25);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s26);
+  ASSERT_EQUAL_FP32(kFP32DefaultNaN, s27);
+
+  TEARDOWN();
+}
+
+
+TEST(default_nan_float) {
+  INIT_V8();
+  float sn = rawbits_to_float(0x7f951111);
+  float sm = rawbits_to_float(0x7f952222);
+  float sa = rawbits_to_float(0x7f95aaaa);
+  float qn = rawbits_to_float(0x7fea1111);
+  float qm = rawbits_to_float(0x7fea2222);
+  float qa = rawbits_to_float(0x7feaaaaa);
+  ASSERT(IsSignallingNaN(sn));
+  ASSERT(IsSignallingNaN(sm));
+  ASSERT(IsSignallingNaN(sa));
+  ASSERT(IsQuietNaN(qn));
+  ASSERT(IsQuietNaN(qm));
+  ASSERT(IsQuietNaN(qa));
+
+  //   - Signalling NaNs
+  DefaultNaNHelper(sn, 0.0f, 0.0f);
+  DefaultNaNHelper(0.0f, sm, 0.0f);
+  DefaultNaNHelper(0.0f, 0.0f, sa);
+  DefaultNaNHelper(sn, sm, 0.0f);
+  DefaultNaNHelper(0.0f, sm, sa);
+  DefaultNaNHelper(sn, 0.0f, sa);
+  DefaultNaNHelper(sn, sm, sa);
+  //   - Quiet NaNs
+  DefaultNaNHelper(qn, 0.0f, 0.0f);
+  DefaultNaNHelper(0.0f, qm, 0.0f);
+  DefaultNaNHelper(0.0f, 0.0f, qa);
+  DefaultNaNHelper(qn, qm, 0.0f);
+  DefaultNaNHelper(0.0f, qm, qa);
+  DefaultNaNHelper(qn, 0.0f, qa);
+  DefaultNaNHelper(qn, qm, qa);
+  //   - Mixed NaNs
+  DefaultNaNHelper(qn, sm, sa);
+  DefaultNaNHelper(sn, qm, sa);
+  DefaultNaNHelper(sn, sm, qa);
+  DefaultNaNHelper(qn, qm, sa);
+  DefaultNaNHelper(sn, qm, qa);
+  DefaultNaNHelper(qn, sm, qa);
+  DefaultNaNHelper(qn, qm, qa);
+}
+
+
+static void DefaultNaNHelper(double n, double m, double a) {
+  ASSERT(isnan(n) || isnan(m) || isnan(a));
+
+  bool test_1op = isnan(n);
+  bool test_2op = isnan(n) || isnan(m);
+
+  SETUP();
+  START();
+
+  // Enable Default-NaN mode in the FPCR.
+  __ Mrs(x0, FPCR);
+  __ Orr(x1, x0, DN_mask);
+  __ Msr(FPCR, x1);
+
+  // Execute a number of instructions which all use ProcessNaNs, and check that
+  // they all produce the default NaN.
+  __ Fmov(d0, n);
+  __ Fmov(d1, m);
+  __ Fmov(d2, a);
+
+  if (test_1op) {
+    // Operations that always propagate NaNs unchanged, even signalling NaNs.
+    __ Fmov(d10, d0);
+    __ Fabs(d11, d0);
+    __ Fneg(d12, d0);
+
+    // Operations that use ProcessNaN.
+    __ Fsqrt(d13, d0);
+    __ Frinta(d14, d0);
+    __ Frintn(d15, d0);
+    __ Frintz(d16, d0);
+
+    // Fcvt usually has special NaN handling, but it respects default-NaN mode.
+    __ Fcvt(s17, d0);
+  }
+
+  if (test_2op) {
+    __ Fadd(d18, d0, d1);
+    __ Fsub(d19, d0, d1);
+    __ Fmul(d20, d0, d1);
+    __ Fdiv(d21, d0, d1);
+    __ Fmax(d22, d0, d1);
+    __ Fmin(d23, d0, d1);
+  }
+
+  __ Fmadd(d24, d0, d1, d2);
+  __ Fmsub(d25, d0, d1, d2);
+  __ Fnmadd(d26, d0, d1, d2);
+  __ Fnmsub(d27, d0, d1, d2);
+
+  // Restore FPCR.
+  __ Msr(FPCR, x0);
+
+  END();
+  RUN();
+
+  if (test_1op) {
+    uint64_t n_raw = double_to_rawbits(n);
+    ASSERT_EQUAL_FP64(n, d10);
+    ASSERT_EQUAL_FP64(rawbits_to_double(n_raw & ~kDSignMask), d11);
+    ASSERT_EQUAL_FP64(rawbits_to_double(n_raw ^ kDSignMask), d12);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d13);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d14);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d15);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d16);
+    ASSERT_EQUAL_FP32(kFP32DefaultNaN, s17);
+  }
+
+  if (test_2op) {
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d18);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d19);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d20);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d21);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d22);
+    ASSERT_EQUAL_FP64(kFP64DefaultNaN, d23);
+  }
+
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d24);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d25);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d26);
+  ASSERT_EQUAL_FP64(kFP64DefaultNaN, d27);
+
+  TEARDOWN();
+}
+
+
+TEST(default_nan_double) {
+  INIT_V8();
+  double sn = rawbits_to_double(0x7ff5555511111111);
+  double sm = rawbits_to_double(0x7ff5555522222222);
+  double sa = rawbits_to_double(0x7ff55555aaaaaaaa);
+  double qn = rawbits_to_double(0x7ffaaaaa11111111);
+  double qm = rawbits_to_double(0x7ffaaaaa22222222);
+  double qa = rawbits_to_double(0x7ffaaaaaaaaaaaaa);
+  ASSERT(IsSignallingNaN(sn));
+  ASSERT(IsSignallingNaN(sm));
+  ASSERT(IsSignallingNaN(sa));
+  ASSERT(IsQuietNaN(qn));
+  ASSERT(IsQuietNaN(qm));
+  ASSERT(IsQuietNaN(qa));
+
+  //   - Signalling NaNs
+  DefaultNaNHelper(sn, 0.0, 0.0);
+  DefaultNaNHelper(0.0, sm, 0.0);
+  DefaultNaNHelper(0.0, 0.0, sa);
+  DefaultNaNHelper(sn, sm, 0.0);
+  DefaultNaNHelper(0.0, sm, sa);
+  DefaultNaNHelper(sn, 0.0, sa);
+  DefaultNaNHelper(sn, sm, sa);
+  //   - Quiet NaNs
+  DefaultNaNHelper(qn, 0.0, 0.0);
+  DefaultNaNHelper(0.0, qm, 0.0);
+  DefaultNaNHelper(0.0, 0.0, qa);
+  DefaultNaNHelper(qn, qm, 0.0);
+  DefaultNaNHelper(0.0, qm, qa);
+  DefaultNaNHelper(qn, 0.0, qa);
+  DefaultNaNHelper(qn, qm, qa);
+  //   - Mixed NaNs
+  DefaultNaNHelper(qn, sm, sa);
+  DefaultNaNHelper(sn, qm, sa);
+  DefaultNaNHelper(sn, sm, qa);
+  DefaultNaNHelper(qn, qm, sa);
+  DefaultNaNHelper(sn, qm, qa);
+  DefaultNaNHelper(qn, sm, qa);
+  DefaultNaNHelper(qn, qm, qa);
+}
+
+
 TEST(call_no_relocation) {
   Address call_start;
   Address return_address;
@@ -9343,107 +10594,6 @@ TEST(call_no_relocation) {
         Assembler::return_address_from_call_start(call_start));
 
   TEARDOWN();
-}
-
-
-static void ECMA262ToInt32Helper(int32_t expected, double input) {
-  SETUP();
-  START();
-
-  __ Fmov(d0, input);
-
-  __ ECMA262ToInt32(x0, d0, x10, x11, MacroAssembler::INT32_IN_W);
-  __ ECMA262ToInt32(x1, d0, x10, x11, MacroAssembler::INT32_IN_X);
-  __ ECMA262ToInt32(x2, d0, x10, x11, MacroAssembler::SMI);
-
-  // The upper bits of INT32_IN_W are undefined, so make sure we don't try to
-  // test them.
-  __ Mov(w0, w0);
-
-  END();
-
-  RUN();
-
-  int64_t expected64 = expected;
-
-  ASSERT_EQUAL_32(expected, w0);
-  ASSERT_EQUAL_64(expected64, x1);
-  ASSERT_EQUAL_64(expected64 << kSmiShift | kSmiTag, x2);
-
-  TEARDOWN();
-}
-
-
-TEST(ecma_262_to_int32) {
-  INIT_V8();
-  // ==== exponent < 64 ====
-
-  ECMA262ToInt32Helper(0, 0.0);
-  ECMA262ToInt32Helper(0, -0.0);
-  ECMA262ToInt32Helper(1, 1.0);
-  ECMA262ToInt32Helper(-1, -1.0);
-
-  // The largest representable value that is less than 1.
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * pow(2.0, -53));
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * -pow(2.0, -53));
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::denorm_min());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::denorm_min());
-
-  // The largest conversion which doesn't require the integer modulo-2^32 step.
-  ECMA262ToInt32Helper(0x7fffffff, 0x7fffffff);
-  ECMA262ToInt32Helper(-0x80000000, -0x80000000);
-
-  // The largest simple conversion, requiring module-2^32, but where the fcvt
-  // does not saturate when converting to int64_t.
-  ECMA262ToInt32Helper(0xfffffc00, 0x7ffffffffffffc00);
-  ECMA262ToInt32Helper(-0xfffffc00, 0x7ffffffffffffc00 * -1.0);
-
-  // ==== 64 <= exponent < 84 ====
-
-  // The smallest conversion where the fcvt saturates.
-  ECMA262ToInt32Helper(0, 0x8000000000000000);
-  ECMA262ToInt32Helper(0, 0x8000000000000000 * -1.0);
-
-  // The smallest conversion where the fcvt saturates, and where all the
-  // mantissa bits are '1' (to check the shift logic).
-  ECMA262ToInt32Helper(0xfffff800, 0xfffffffffffff800);
-  ECMA262ToInt32Helper(-0xfffff800, 0xfffffffffffff800 * -1.0);
-
-  // The largest conversion which doesn't produce a zero result.
-  ECMA262ToInt32Helper(0x80000000, 0x001fffffffffffff * pow(2.0, 31));
-  ECMA262ToInt32Helper(-0x80000000, 0x001fffffffffffff * -pow(2.0, 31));
-
-  // Some large conversions to check the shifting function.
-  ECMA262ToInt32Helper(0x6789abcd, 0x001123456789abcd);
-  ECMA262ToInt32Helper(0x12345678, 0x001123456789abcd * pow(2.0, -20));
-  ECMA262ToInt32Helper(0x891a2b3c, 0x001123456789abcd * pow(2.0, -21));
-  ECMA262ToInt32Helper(0x11234567, 0x001123456789abcd * pow(2.0, -24));
-  ECMA262ToInt32Helper(-0x6789abcd, 0x001123456789abcd * -1.0);
-  ECMA262ToInt32Helper(-0x12345678, 0x001123456789abcd * -pow(2.0, -20));
-  ECMA262ToInt32Helper(-0x891a2b3c, 0x001123456789abcd * -pow(2.0, -21));
-  ECMA262ToInt32Helper(-0x11234567, 0x001123456789abcd * -pow(2.0, -24));
-
-  // ==== 84 <= exponent ====
-
-  // The smallest conversion which produces a zero result by shifting the
-  // mantissa out of the int32_t range.
-  ECMA262ToInt32Helper(0, pow(2.0, 32));
-  ECMA262ToInt32Helper(0, -pow(2.0, 32));
-
-  // Some very large conversions.
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * pow(2.0, 32));
-  ECMA262ToInt32Helper(0, 0x001fffffffffffff * -pow(2.0, 32));
-  ECMA262ToInt32Helper(0, DBL_MAX);
-  ECMA262ToInt32Helper(0, -DBL_MAX);
-
-  // ==== Special values. ====
-
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::infinity());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::infinity());
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::quiet_NaN());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::quiet_NaN());
-  ECMA262ToInt32Helper(0, std::numeric_limits<double>::signaling_NaN());
-  ECMA262ToInt32Helper(0, -std::numeric_limits<double>::signaling_NaN());
 }
 
 
@@ -9572,4 +10722,59 @@ TEST(abs) {
   AbsHelperW(-42);
   AbsHelperW(kWMinInt);
   AbsHelperW(kWMaxInt);
+}
+
+
+TEST(pool_size) {
+  INIT_V8();
+  SETUP();
+
+  // This test does not execute any code. It only tests that the size of the
+  // pools is read correctly from the RelocInfo.
+
+  Label exit;
+  __ b(&exit);
+
+  const unsigned constant_pool_size = 312;
+  const unsigned veneer_pool_size = 184;
+
+  __ RecordConstPool(constant_pool_size);
+  for (unsigned i = 0; i < constant_pool_size / 4; ++i) {
+    __ dc32(0);
+  }
+
+  __ RecordVeneerPool(masm.pc_offset(), veneer_pool_size);
+  for (unsigned i = 0; i < veneer_pool_size / kInstructionSize; ++i) {
+    __ nop();
+  }
+
+  __ bind(&exit);
+
+  Heap* heap = isolate->heap();
+  CodeDesc desc;
+  Object* code_object = NULL;
+  Code* code;
+  masm.GetCode(&desc);
+  MaybeObject* maybe_code = heap->CreateCode(desc, 0, masm.CodeObject());
+  maybe_code->ToObject(&code_object);
+  code = Code::cast(code_object);
+
+  unsigned pool_count = 0;
+  int pool_mask = RelocInfo::ModeMask(RelocInfo::CONST_POOL) |
+                  RelocInfo::ModeMask(RelocInfo::VENEER_POOL);
+  for (RelocIterator it(code, pool_mask); !it.done(); it.next()) {
+    RelocInfo* info = it.rinfo();
+    if (RelocInfo::IsConstPool(info->rmode())) {
+      ASSERT(info->data() == constant_pool_size);
+      ++pool_count;
+    }
+    if (RelocInfo::IsVeneerPool(info->rmode())) {
+      ASSERT(info->data() == veneer_pool_size);
+      ++pool_count;
+    }
+  }
+
+  ASSERT(pool_count == 2);
+
+  TEARDOWN();
 }

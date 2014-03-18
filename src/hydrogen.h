@@ -1398,8 +1398,6 @@ class HGraphBuilder {
       PropertyAccessType access_type,
       LoadKeyedHoleMode load_mode = NEVER_RETURN_HOLE);
 
-  HLoadNamedField* BuildLoadNamedField(HValue* object, HObjectAccess access);
-  HInstruction* AddLoadNamedField(HValue* object, HObjectAccess access);
   HInstruction* AddLoadStringInstanceType(HValue* string);
   HInstruction* AddLoadStringLength(HValue* string);
   HStoreNamedField* AddStoreMapNoWriteBarrier(HValue* object, HValue* map) {
@@ -2111,9 +2109,8 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
   void ClearInlinedTestContext() {
     function_state()->ClearInlinedTestContext();
   }
-  StrictModeFlag function_strict_mode_flag() {
-    return function_state()->compilation_info()->is_classic_mode()
-        ? kNonStrictMode : kStrictMode;
+  StrictMode function_strict_mode() {
+    return function_state()->compilation_info()->strict_mode();
   }
 
   // Generators for inline runtime functions.
@@ -2121,7 +2118,6 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
   void Generate##Name(CallRuntime* call);
 
   INLINE_FUNCTION_LIST(INLINE_FUNCTION_GENERATOR_DECLARATION)
-  INLINE_RUNTIME_FUNCTION_LIST(INLINE_FUNCTION_GENERATOR_DECLARATION)
 #undef INLINE_FUNCTION_GENERATOR_DECLARATION
 
   void VisitDelete(UnaryOperation* expr);
@@ -2215,11 +2211,6 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
   void VisitForControl(Expression* expr,
                        HBasicBlock* true_block,
                        HBasicBlock* false_block);
-
-  // Visit an argument subexpression and emit a push to the outgoing arguments.
-  void VisitArgument(Expression* expr);
-
-  void VisitArgumentList(ZoneList<Expression*>* arguments);
 
   // Visit a list of expressions from left to right, each in a value context.
   void VisitExpressions(ZoneList<Expression*>* exprs);
@@ -2410,7 +2401,7 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
     Handle<JSObject> holder() { return holder_; }
     Handle<JSFunction> accessor() { return accessor_; }
     Handle<Object> constant() { return constant_; }
-    Handle<Object> transition() { return transition_; }
+    Handle<Map> transition() { return handle(lookup_.GetTransitionTarget()); }
     HObjectAccess access() { return access_; }
 
    private:
@@ -2437,7 +2428,6 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
     Handle<JSFunction> accessor_;
     Handle<JSObject> api_holder_;
     Handle<Object> constant_;
-    Handle<Map> transition_;
     HObjectAccess access_;
   };
 
@@ -2468,23 +2458,27 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
   void HandleLiteralCompareNil(CompareOperation* expr,
                                Expression* sub_expr,
                                NilValue nil);
-  HControlInstruction* BuildCompareInstruction(Token::Value op,
-                                               HValue* left,
-                                               HValue* right,
-                                               Type* left_type,
-                                               Type* right_type,
-                                               Type* combined_type,
-                                               HSourcePosition left_position,
-                                               HSourcePosition right_position,
-                                               BailoutId bailout_id);
-
-  HInstruction* BuildStringCharCodeAt(HValue* string,
-                                      HValue* index);
 
   enum PushBeforeSimulateBehavior {
     PUSH_BEFORE_SIMULATE,
     NO_PUSH_BEFORE_SIMULATE
   };
+
+  HControlInstruction* BuildCompareInstruction(
+      Token::Value op,
+      HValue* left,
+      HValue* right,
+      Type* left_type,
+      Type* right_type,
+      Type* combined_type,
+      HSourcePosition left_position,
+      HSourcePosition right_position,
+      PushBeforeSimulateBehavior push_sim_result,
+      BailoutId bailout_id);
+
+  HInstruction* BuildStringCharCodeAt(HValue* string,
+                                      HValue* index);
+
   HValue* BuildBinaryOperation(
       BinaryOperation* expr,
       HValue* left,
@@ -2555,6 +2549,8 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
                   BailoutId return_id,
                   bool is_uninitialized = false);
 
+  HInstruction* BuildLoadNamedField(PropertyAccessInfo* info,
+                                    HValue* checked_object);
   HInstruction* BuildStoreNamedField(PropertyAccessInfo* info,
                                      HValue* checked_object,
                                      HValue* value);

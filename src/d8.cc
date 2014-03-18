@@ -119,6 +119,8 @@ class PerIsolateData {
   Persistent<Context>* realms_;
   Persistent<Value> realm_shared_;
 
+  int RealmIndexOrThrow(const v8::FunctionCallbackInfo<v8::Value>& args,
+                        int arg_offset);
   int RealmFind(Handle<Context> context);
 };
 
@@ -203,7 +205,9 @@ bool Shell::ExecuteString(Isolate* isolate,
     // When debugging make exceptions appear to be uncaught.
     try_catch.SetVerbose(true);
   }
-  Handle<Script> script = Script::New(source, name);
+  ScriptOrigin origin(name);
+  Handle<UnboundScript> script = ScriptCompiler::CompileUnbound(
+      isolate, ScriptCompiler::Source(source, origin));
   if (script.IsEmpty()) {
     // Print errors that happened during compilation.
     if (report_exceptions && !FLAG_debugger)
@@ -214,7 +218,7 @@ bool Shell::ExecuteString(Isolate* isolate,
     Local<Context> realm =
         Local<Context>::New(isolate, data->realms_[data->realm_current_]);
     realm->Enter();
-    Handle<Value> result = script->Run();
+    Handle<Value> result = script->BindToCurrentContext()->Run();
     realm->Exit();
     data->realm_current_ = data->realm_switch_;
     if (result.IsEmpty()) {
@@ -288,6 +292,24 @@ int PerIsolateData::RealmFind(Handle<Context> context) {
 }
 
 
+int PerIsolateData::RealmIndexOrThrow(
+    const v8::FunctionCallbackInfo<v8::Value>& args,
+    int arg_offset) {
+  if (args.Length() < arg_offset || !args[arg_offset]->IsNumber()) {
+    Throw(args.GetIsolate(), "Invalid argument");
+    return -1;
+  }
+  int index = args[arg_offset]->Int32Value();
+  if (index < 0 ||
+      index >= realm_count_ ||
+      realms_[index].IsEmpty()) {
+    Throw(args.GetIsolate(), "Invalid realm index");
+    return -1;
+  }
+  return index;
+}
+
+
 #ifndef V8_SHARED
 // performance.now() returns a time stamp as double, measured in milliseconds.
 void Shell::PerformanceNow(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -325,15 +347,8 @@ void Shell::RealmOwner(const v8::FunctionCallbackInfo<v8::Value>& args) {
 // (Note that properties of global objects cannot be read/written cross-realm.)
 void Shell::RealmGlobal(const v8::FunctionCallbackInfo<v8::Value>& args) {
   PerIsolateData* data = PerIsolateData::Get(args.GetIsolate());
-  if (args.Length() < 1 || !args[0]->IsNumber()) {
-    Throw(args.GetIsolate(), "Invalid argument");
-    return;
-  }
-  int index = args[0]->Uint32Value();
-  if (index >= data->realm_count_ || data->realms_[index].IsEmpty()) {
-    Throw(args.GetIsolate(), "Invalid realm index");
-    return;
-  }
+  int index = data->RealmIndexOrThrow(args, 0);
+  if (index == -1) return;
   args.GetReturnValue().Set(
       Local<Context>::New(args.GetIsolate(), data->realms_[index])->Global());
 }
@@ -361,13 +376,9 @@ void Shell::RealmCreate(const v8::FunctionCallbackInfo<v8::Value>& args) {
 void Shell::RealmDispose(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
   PerIsolateData* data = PerIsolateData::Get(isolate);
-  if (args.Length() < 1 || !args[0]->IsNumber()) {
-    Throw(args.GetIsolate(), "Invalid argument");
-    return;
-  }
-  int index = args[0]->Uint32Value();
-  if (index >= data->realm_count_ || data->realms_[index].IsEmpty() ||
-      index == 0 ||
+  int index = data->RealmIndexOrThrow(args, 0);
+  if (index == -1) return;
+  if (index == 0 ||
       index == data->realm_current_ || index == data->realm_switch_) {
     Throw(args.GetIsolate(), "Invalid realm index");
     return;
@@ -380,15 +391,8 @@ void Shell::RealmDispose(const v8::FunctionCallbackInfo<v8::Value>& args) {
 void Shell::RealmSwitch(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
   PerIsolateData* data = PerIsolateData::Get(isolate);
-  if (args.Length() < 1 || !args[0]->IsNumber()) {
-    Throw(args.GetIsolate(), "Invalid argument");
-    return;
-  }
-  int index = args[0]->Uint32Value();
-  if (index >= data->realm_count_ || data->realms_[index].IsEmpty()) {
-    Throw(args.GetIsolate(), "Invalid realm index");
-    return;
-  }
+  int index = data->RealmIndexOrThrow(args, 0);
+  if (index == -1) return;
   data->realm_switch_ = index;
 }
 
@@ -397,20 +401,18 @@ void Shell::RealmSwitch(const v8::FunctionCallbackInfo<v8::Value>& args) {
 void Shell::RealmEval(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
   PerIsolateData* data = PerIsolateData::Get(isolate);
-  if (args.Length() < 2 || !args[0]->IsNumber() || !args[1]->IsString()) {
+  int index = data->RealmIndexOrThrow(args, 0);
+  if (index == -1) return;
+  if (args.Length() < 2 || !args[1]->IsString()) {
     Throw(args.GetIsolate(), "Invalid argument");
     return;
   }
-  int index = args[0]->Uint32Value();
-  if (index >= data->realm_count_ || data->realms_[index].IsEmpty()) {
-    Throw(args.GetIsolate(), "Invalid realm index");
-    return;
-  }
-  Handle<Script> script = Script::New(args[1]->ToString());
+  Handle<UnboundScript> script = ScriptCompiler::CompileUnbound(
+      isolate, ScriptCompiler::Source(args[1]->ToString()));
   if (script.IsEmpty()) return;
   Local<Context> realm = Local<Context>::New(isolate, data->realms_[index]);
   realm->Enter();
-  Handle<Value> result = script->Run();
+  Handle<Value> result = script->BindToCurrentContext()->Run();
   realm->Exit();
   args.GetReturnValue().Set(result);
 }
@@ -807,7 +809,8 @@ void Shell::InstallUtilityScript(Isolate* isolate) {
   Handle<String> name =
       String::NewFromUtf8(isolate, shell_source_name.start(),
                           String::kNormalString, shell_source_name.length());
-  Handle<Script> script = Script::Compile(source, name);
+  ScriptOrigin origin(name);
+  Handle<Script> script = Script::Compile(source, &origin);
   script->Run();
   // Mark the d8 shell script as native to avoid it showing up as normal source
   // in the debugger.

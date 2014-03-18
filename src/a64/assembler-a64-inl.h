@@ -44,7 +44,7 @@ void RelocInfo::apply(intptr_t delta) {
 
 void RelocInfo::set_target_address(Address target, WriteBarrierMode mode) {
   ASSERT(IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_));
-  Assembler::set_target_address_at(pc_, target);
+  Assembler::set_target_address_at(pc_, host_, target);
   if (mode == UPDATE_WRITE_BARRIER && host() != NULL && IsCodeTarget(rmode_)) {
     Object* target_code = Code::GetCodeFromTargetAddress(target);
     host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(
@@ -109,14 +109,14 @@ inline bool CPURegister::IsValid() const {
 
 inline bool CPURegister::IsValidRegister() const {
   return IsRegister() &&
-         ((reg_size == kWRegSize) || (reg_size == kXRegSize)) &&
+         ((reg_size == kWRegSizeInBits) || (reg_size == kXRegSizeInBits)) &&
          ((reg_code < kNumberOfRegisters) || (reg_code == kSPRegInternalCode));
 }
 
 
 inline bool CPURegister::IsValidFPRegister() const {
   return IsFPRegister() &&
-         ((reg_size == kSRegSize) || (reg_size == kDRegSize)) &&
+         ((reg_size == kSRegSizeInBits) || (reg_size == kDRegSizeInBits)) &&
          (reg_code < kNumberOfFPRegisters);
 }
 
@@ -179,9 +179,9 @@ inline void CPURegList::Combine(const CPURegList& other) {
 
 inline void CPURegList::Remove(const CPURegList& other) {
   ASSERT(IsValid());
-  ASSERT(other.type() == type_);
-  ASSERT(other.RegisterSizeInBits() == size_);
-  list_ &= ~other.list();
+  if (other.type() == type_) {
+    list_ &= ~other.list();
+  }
 }
 
 
@@ -192,10 +192,14 @@ inline void CPURegList::Combine(const CPURegister& other) {
 }
 
 
-inline void CPURegList::Remove(const CPURegister& other) {
-  ASSERT(other.type() == type_);
-  ASSERT(other.SizeInBits() == size_);
-  Remove(other.code());
+inline void CPURegList::Remove(const CPURegister& other1,
+                               const CPURegister& other2,
+                               const CPURegister& other3,
+                               const CPURegister& other4) {
+  if (!other1.IsNone() && (other1.type() == type_)) Remove(other1.code());
+  if (!other2.IsNone() && (other2.type() == type_)) Remove(other2.code());
+  if (!other3.IsNone() && (other3.type() == type_)) Remove(other3.code());
+  if (!other4.IsNone() && (other4.type() == type_)) Remove(other4.code());
 }
 
 
@@ -217,25 +221,25 @@ inline Register Register::XRegFromCode(unsigned code) {
   // This function returns the zero register when code = 31. The stack pointer
   // can not be returned.
   ASSERT(code < kNumberOfRegisters);
-  return Register::Create(code, kXRegSize);
+  return Register::Create(code, kXRegSizeInBits);
 }
 
 
 inline Register Register::WRegFromCode(unsigned code) {
   ASSERT(code < kNumberOfRegisters);
-  return Register::Create(code, kWRegSize);
+  return Register::Create(code, kWRegSizeInBits);
 }
 
 
 inline FPRegister FPRegister::SRegFromCode(unsigned code) {
   ASSERT(code < kNumberOfFPRegisters);
-  return FPRegister::Create(code, kSRegSize);
+  return FPRegister::Create(code, kSRegSizeInBits);
 }
 
 
 inline FPRegister FPRegister::DRegFromCode(unsigned code) {
   ASSERT(code < kNumberOfFPRegisters);
-  return FPRegister::Create(code, kDRegSize);
+  return FPRegister::Create(code, kDRegSizeInBits);
 }
 
 
@@ -264,16 +268,65 @@ inline FPRegister CPURegister::D() const {
 
 
 // Operand.
-#define DECLARE_INT_OPERAND_CONSTRUCTOR(type)                                  \
-Operand::Operand(type immediate, RelocInfo::Mode rmode)                        \
-    : immediate_(immediate),                                                   \
-      reg_(NoReg),                                                             \
-      rmode_(rmode) {}
-DECLARE_INT_OPERAND_CONSTRUCTOR(int64_t)
-DECLARE_INT_OPERAND_CONSTRUCTOR(uint64_t)
-DECLARE_INT_OPERAND_CONSTRUCTOR(int32_t)      // NOLINT(readability/casting)
-DECLARE_INT_OPERAND_CONSTRUCTOR(uint32_t)
-#undef DECLARE_INT_OPERAND_CONSTRUCTOR
+template<typename T>
+Operand::Operand(Handle<T> value) : reg_(NoReg) {
+  initialize_handle(value);
+}
+
+
+// Default initializer is for int types
+template<typename int_t>
+struct OperandInitializer {
+  static const bool kIsIntType = true;
+  static inline RelocInfo::Mode rmode_for(int_t) {
+    return sizeof(int_t) == 8 ? RelocInfo::NONE64 : RelocInfo::NONE32;
+  }
+  static inline int64_t immediate_for(int_t t) {
+    STATIC_ASSERT(sizeof(int_t) <= 8);
+    return t;
+  }
+};
+
+
+template<>
+struct OperandInitializer<Smi*> {
+  static const bool kIsIntType = false;
+  static inline RelocInfo::Mode rmode_for(Smi* t) {
+    return RelocInfo::NONE64;
+  }
+  static inline int64_t immediate_for(Smi* t) {;
+    return reinterpret_cast<int64_t>(t);
+  }
+};
+
+
+template<>
+struct OperandInitializer<ExternalReference> {
+  static const bool kIsIntType = false;
+  static inline RelocInfo::Mode rmode_for(ExternalReference t) {
+    return RelocInfo::EXTERNAL_REFERENCE;
+  }
+  static inline int64_t immediate_for(ExternalReference t) {;
+    return reinterpret_cast<int64_t>(t.address());
+  }
+};
+
+
+template<typename T>
+Operand::Operand(T t)
+    : immediate_(OperandInitializer<T>::immediate_for(t)),
+      reg_(NoReg),
+      rmode_(OperandInitializer<T>::rmode_for(t)) {}
+
+
+template<typename T>
+Operand::Operand(T t, RelocInfo::Mode rmode)
+    : immediate_(OperandInitializer<T>::immediate_for(t)),
+      reg_(NoReg),
+      rmode_(rmode) {
+  STATIC_ASSERT(OperandInitializer<T>::kIsIntType);
+}
+
 
 Operand::Operand(Register reg, Shift shift, unsigned shift_amount)
     : reg_(reg),
@@ -281,8 +334,8 @@ Operand::Operand(Register reg, Shift shift, unsigned shift_amount)
       extend_(NO_EXTEND),
       shift_amount_(shift_amount),
       rmode_(reg.Is64Bits() ? RelocInfo::NONE64 : RelocInfo::NONE32) {
-  ASSERT(reg.Is64Bits() || (shift_amount < kWRegSize));
-  ASSERT(reg.Is32Bits() || (shift_amount < kXRegSize));
+  ASSERT(reg.Is64Bits() || (shift_amount < kWRegSizeInBits));
+  ASSERT(reg.Is32Bits() || (shift_amount < kXRegSizeInBits));
   ASSERT(!reg.IsSP());
 }
 
@@ -300,12 +353,6 @@ Operand::Operand(Register reg, Extend extend, unsigned shift_amount)
   // Extend modes SXTX and UXTX require a 64-bit register.
   ASSERT(reg.Is64Bits() || ((extend != SXTX) && (extend != UXTX)));
 }
-
-
-Operand::Operand(Smi* value)
-    : immediate_(reinterpret_cast<intptr_t>(value)),
-      reg_(NoReg),
-      rmode_(RelocInfo::NONE64) {}
 
 
 bool Operand::IsImmediate() const {
@@ -493,6 +540,16 @@ Operand MemOperand::OffsetAsOperand() const {
 }
 
 
+void Assembler::Unreachable() {
+#ifdef USE_SIMULATOR
+  debug("UNREACHABLE", __LINE__, BREAK);
+#else
+  // Crash by branching to 0. lr now points near the fault.
+  Emit(BLR | Rn(xzr));
+#endif
+}
+
+
 Address Assembler::target_pointer_address_at(Address pc) {
   Instruction* instr = reinterpret_cast<Instruction*>(pc);
   ASSERT(instr->IsLdrLiteralX());
@@ -501,8 +558,15 @@ Address Assembler::target_pointer_address_at(Address pc) {
 
 
 // Read/Modify the code target address in the branch/call instruction at pc.
-Address Assembler::target_address_at(Address pc) {
+Address Assembler::target_address_at(Address pc,
+                                     ConstantPoolArray* constant_pool) {
   return Memory::Address_at(target_pointer_address_at(pc));
+}
+
+
+Address Assembler::target_address_at(Address pc, Code* code) {
+  ConstantPoolArray* constant_pool = code ? code->constant_pool() : NULL;
+  return target_address_at(pc, constant_pool);
 }
 
 
@@ -559,12 +623,14 @@ Address Assembler::return_address_from_call_start(Address pc) {
 
 
 void Assembler::deserialization_set_special_target_at(
-    Address constant_pool_entry, Address target) {
+    Address constant_pool_entry, Code* code, Address target) {
   Memory::Address_at(constant_pool_entry) = target;
 }
 
 
-void Assembler::set_target_address_at(Address pc, Address target) {
+void Assembler::set_target_address_at(Address pc,
+                                      ConstantPoolArray* constant_pool,
+                                      Address target) {
   Memory::Address_at(target_pointer_address_at(pc)) = target;
   // Intuitively, we would think it is necessary to always flush the
   // instruction cache after patching a target address in the code as follows:
@@ -577,6 +643,14 @@ void Assembler::set_target_address_at(Address pc, Address target) {
 }
 
 
+void Assembler::set_target_address_at(Address pc,
+                                      Code* code,
+                                      Address target) {
+  ConstantPoolArray* constant_pool = code ? code->constant_pool() : NULL;
+  set_target_address_at(pc, constant_pool, target);
+}
+
+
 int RelocInfo::target_address_size() {
   return kPointerSize;
 }
@@ -584,7 +658,7 @@ int RelocInfo::target_address_size() {
 
 Address RelocInfo::target_address() {
   ASSERT(IsCodeTarget(rmode_) || IsRuntimeEntry(rmode_));
-  return Assembler::target_address_at(pc_);
+  return Assembler::target_address_at(pc_, host_);
 }
 
 
@@ -596,23 +670,30 @@ Address RelocInfo::target_address_address() {
 }
 
 
+Address RelocInfo::constant_pool_entry_address() {
+  ASSERT(IsInConstantPool());
+  return Assembler::target_pointer_address_at(pc_);
+}
+
+
 Object* RelocInfo::target_object() {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
-  return reinterpret_cast<Object*>(Assembler::target_address_at(pc_));
+  return reinterpret_cast<Object*>(Assembler::target_address_at(pc_, host_));
 }
 
 
 Handle<Object> RelocInfo::target_object_handle(Assembler* origin) {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
   return Handle<Object>(reinterpret_cast<Object**>(
-      Assembler::target_address_at(pc_)));
+      Assembler::target_address_at(pc_, host_)));
 }
 
 
 void RelocInfo::set_target_object(Object* target, WriteBarrierMode mode) {
   ASSERT(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
   ASSERT(!target->IsConsString());
-  Assembler::set_target_address_at(pc_, reinterpret_cast<Address>(target));
+  Assembler::set_target_address_at(pc_, host_,
+                                   reinterpret_cast<Address>(target));
   if (mode == UPDATE_WRITE_BARRIER &&
       host() != NULL &&
       target->IsHeapObject()) {
@@ -624,7 +705,7 @@ void RelocInfo::set_target_object(Object* target, WriteBarrierMode mode) {
 
 Address RelocInfo::target_reference() {
   ASSERT(rmode_ == EXTERNAL_REFERENCE);
-  return Assembler::target_address_at(pc_);
+  return Assembler::target_address_at(pc_, host_);
 }
 
 
@@ -693,14 +774,14 @@ Address RelocInfo::call_address() {
          (IsDebugBreakSlot(rmode()) && IsPatchedDebugBreakSlotSequence()));
   // For the above sequences the Relocinfo points to the load literal loading
   // the call address.
-  return Assembler::target_address_at(pc_);
+  return Assembler::target_address_at(pc_, host_);
 }
 
 
 void RelocInfo::set_call_address(Address target) {
   ASSERT((IsJSReturn(rmode()) && IsPatchedReturnSequence()) ||
          (IsDebugBreakSlot(rmode()) && IsPatchedDebugBreakSlotSequence()));
-  Assembler::set_target_address_at(pc_, target);
+  Assembler::set_target_address_at(pc_, host_, target);
   if (host() != NULL) {
     Object* target_code = Code::GetCodeFromTargetAddress(target);
     host()->GetHeap()->incremental_marking()->RecordWriteIntoCode(
@@ -714,7 +795,7 @@ void RelocInfo::WipeOut() {
          IsCodeTarget(rmode_) ||
          IsRuntimeEntry(rmode_) ||
          IsExternalReference(rmode_));
-  Assembler::set_target_address_at(pc_, NULL);
+  Assembler::set_target_address_at(pc_, host_, NULL);
 }
 
 
@@ -943,16 +1024,16 @@ Instr Assembler::ImmAddSub(int64_t imm) {
 
 
 Instr Assembler::ImmS(unsigned imms, unsigned reg_size) {
-  ASSERT(((reg_size == kXRegSize) && is_uint6(imms)) ||
-         ((reg_size == kWRegSize) && is_uint5(imms)));
+  ASSERT(((reg_size == kXRegSizeInBits) && is_uint6(imms)) ||
+         ((reg_size == kWRegSizeInBits) && is_uint5(imms)));
   USE(reg_size);
   return imms << ImmS_offset;
 }
 
 
 Instr Assembler::ImmR(unsigned immr, unsigned reg_size) {
-  ASSERT(((reg_size == kXRegSize) && is_uint6(immr)) ||
-         ((reg_size == kWRegSize) && is_uint5(immr)));
+  ASSERT(((reg_size == kXRegSizeInBits) && is_uint6(immr)) ||
+         ((reg_size == kWRegSizeInBits) && is_uint5(immr)));
   USE(reg_size);
   ASSERT(is_uint6(immr));
   return immr << ImmR_offset;
@@ -960,18 +1041,18 @@ Instr Assembler::ImmR(unsigned immr, unsigned reg_size) {
 
 
 Instr Assembler::ImmSetBits(unsigned imms, unsigned reg_size) {
-  ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
+  ASSERT((reg_size == kWRegSizeInBits) || (reg_size == kXRegSizeInBits));
   ASSERT(is_uint6(imms));
-  ASSERT((reg_size == kXRegSize) || is_uint6(imms + 3));
+  ASSERT((reg_size == kXRegSizeInBits) || is_uint6(imms + 3));
   USE(reg_size);
   return imms << ImmSetBits_offset;
 }
 
 
 Instr Assembler::ImmRotate(unsigned immr, unsigned reg_size) {
-  ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
-  ASSERT(((reg_size == kXRegSize) && is_uint6(immr)) ||
-         ((reg_size == kWRegSize) && is_uint5(immr)));
+  ASSERT((reg_size == kWRegSizeInBits) || (reg_size == kXRegSizeInBits));
+  ASSERT(((reg_size == kXRegSizeInBits) && is_uint6(immr)) ||
+         ((reg_size == kWRegSizeInBits) && is_uint5(immr)));
   USE(reg_size);
   return immr << ImmRotate_offset;
 }
@@ -984,8 +1065,8 @@ Instr Assembler::ImmLLiteral(int imm19) {
 
 
 Instr Assembler::BitN(unsigned bitn, unsigned reg_size) {
-  ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
-  ASSERT((reg_size == kXRegSize) || (bitn == 0));
+  ASSERT((reg_size == kWRegSizeInBits) || (reg_size == kXRegSizeInBits));
+  ASSERT((reg_size == kXRegSizeInBits) || (bitn == 0));
   USE(reg_size);
   return bitn << BitN_offset;
 }
@@ -1125,7 +1206,10 @@ inline void Assembler::CheckBuffer() {
   if (buffer_space() < kGap) {
     GrowBuffer();
   }
-  if (pc_offset() >= next_buffer_check_) {
+  if (pc_offset() >= next_veneer_pool_check_) {
+    CheckVeneerPool(true);
+  }
+  if (pc_offset() >= next_constant_pool_check_) {
     CheckConstPool(false, true);
   }
 }

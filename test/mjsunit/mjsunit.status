@@ -165,7 +165,7 @@
   # Long running tests.
   'regress/regress-2185': [PASS, ['mode == debug', PASS, TIMEOUT]],
   'regress/regress-2185-2': [PASS, TIMEOUT],
-  'whitespaces': [PASS, TIMEOUT],
+  'whitespaces': [PASS, TIMEOUT, SLOW],
 
   # Stack manipulations in LiveEdit is not implemented for this arch.
   'debug-liveedit-check-stack': [SKIP],
@@ -176,17 +176,41 @@
   # BUG(v8:3147). It works on other architectures by accident.
   'regress/regress-conditional-position': [FAIL],
 
-  # BUG(v8:3148): Invalid branch instruction emitted.
-  'debug-references': [PASS, ['mode == debug', SKIP]],
-  'mirror-array': [PASS, ['mode == debug', SKIP]],
-
   # BUG(v8:3156): Fails on gc stress bots.
   'compiler/concurrent-invalidate-transition-map': [PASS, ['gc_stress == True', FAIL]],
-  # BUG(v8:3157): Fails on gc stress bots.
-  'sparse-array-reverse': [PASS, ['gc_stress == True', FAIL]],
 
-  # BUG(v8:3158): Fails on no_snap debug bots.
-  'sparse-array-reverse': [PASS, ['mode == debug', FAIL]],
+  # Slow tests.
+  'array-concat': [PASS, SLOW],
+  'array-constructor': [PASS, SLOW],
+  'array-indexing': [PASS, SLOW],
+  'array-reduce': [PASS, SLOW],
+  'array-sort': [PASS, SLOW],
+  'array-splice': [PASS, SLOW],
+  'bit-not': [PASS, SLOW],
+  'compiler/alloc-number': [PASS, SLOW],
+  'compiler/osr-assert': [PASS, SLOW],
+  'compiler/osr-warm': [PASS, SLOW],
+  'compiler/osr-with-args': [PASS, SLOW],
+  'debug-scopes': [PASS, SLOW],
+  'generated-transition-stub': [PASS, SLOW],
+  'json2': [PASS, SLOW],
+  'math-floor-of-div-nosudiv': [PASS, SLOW],
+  'math-floor-of-div': [PASS, SLOW],
+  'mirror-object': [PASS, SLOW],
+  'packed-elements': [PASS, SLOW],
+  'regress/regress-1122': [PASS, SLOW],
+  'regress/regress-2185-2': [PASS, SLOW],
+  'regress/regress-2185': [PASS, SLOW],
+  'regress/regress-2790': [PASS, SLOW],
+  'regress/regress-331444': [PASS, SLOW],
+  'regress/regress-490': [PASS, SLOW],
+  'regress/regress-crbug-217858': [PASS, SLOW],
+  'regress/regress-create-exception': [PASS, SLOW],
+  'regress/regress-json-stringify-gc': [PASS, SLOW],
+  'string-indexof-2': [PASS, SLOW],
+  'unicodelctest-no-optimization': [PASS, SLOW],
+  'unicodelctest': [PASS, SLOW],
+  'unicode-test': [PASS, SLOW],
 }],  # 'arch == a64'
 
 ['arch == a64 and mode == debug and simulator_run == True', {

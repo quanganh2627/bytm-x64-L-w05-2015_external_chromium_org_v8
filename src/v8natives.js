@@ -1282,7 +1282,7 @@ function ObjectFreeze(obj) {
     throw MakeTypeError("called_on_non_object", ["Object.freeze"]);
   }
   var isProxy = %IsJSProxy(obj);
-  if (isProxy || %HasNonStrictArgumentsElements(obj) || %IsObserved(obj)) {
+  if (isProxy || %HasSloppyArgumentsElements(obj) || %IsObserved(obj)) {
     if (isProxy) {
       ProxyFix(obj);
     }
@@ -1384,15 +1384,19 @@ function ObjectIs(obj1, obj2) {
 }
 
 
-// Harmony __proto__ getter.
+// ECMA-262, Edition 6, section B.2.2.1.1
 function ObjectGetProto() {
-  return %GetPrototype(this);
+  return %GetPrototype(ToObject(this));
 }
 
 
-// Harmony __proto__ setter.
-function ObjectSetProto(obj) {
-  return %SetPrototype(this, obj);
+// ECMA-262, Edition 6, section B.2.2.1.2
+function ObjectSetProto(proto) {
+  CHECK_OBJECT_COERCIBLE(this, "Object.prototype.__proto__");
+
+  if ((IS_SPEC_OBJECT(proto) || IS_NULL(proto)) && IS_SPEC_OBJECT(this)) {
+    %SetPrototype(this, proto);
+  }
 }
 
 

@@ -346,19 +346,13 @@ void MacroAssembler::Asr(const Register& rd,
 
 void MacroAssembler::B(Label* label) {
   b(label);
+  CheckVeneerPool(false);
 }
 
 
 void MacroAssembler::B(Condition cond, Label* label) {
   ASSERT(allow_macro_instructions_);
   B(label, cond);
-}
-
-
-void MacroAssembler::B(Label* label, Condition cond) {
-  ASSERT(allow_macro_instructions_);
-  ASSERT((cond != al) && (cond != nv));
-  b(label, cond);
 }
 
 
@@ -411,18 +405,6 @@ void MacroAssembler::Br(const Register& xn) {
 void MacroAssembler::Brk(int code) {
   ASSERT(allow_macro_instructions_);
   brk(code);
-}
-
-
-void MacroAssembler::Cbnz(const Register& rt, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  cbnz(rt, label);
-}
-
-
-void MacroAssembler::Cbz(const Register& rt, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  cbz(rt, label);
 }
 
 
@@ -606,7 +588,8 @@ void MacroAssembler::Fcmp(const FPRegister& fn, const FPRegister& fm) {
 void MacroAssembler::Fcmp(const FPRegister& fn, double value) {
   ASSERT(allow_macro_instructions_);
   if (value != 0.0) {
-    FPRegister tmp = AppropriateTempFor(fn);
+    UseScratchRegisterScope temps(this);
+    FPRegister tmp = temps.AcquireSameSizeAs(fn);
     Fmov(tmp, value);
     fcmp(fn, tmp);
   } else {
@@ -754,23 +737,44 @@ void MacroAssembler::Fmov(FPRegister fd, Register rn) {
 
 void MacroAssembler::Fmov(FPRegister fd, double imm) {
   ASSERT(allow_macro_instructions_);
-  if ((fd.Is64Bits() && IsImmFP64(imm)) ||
-      (fd.Is32Bits() && IsImmFP32(imm)) ||
-      ((imm == 0.0) && (copysign(1.0, imm) == 1.0))) {
-    // These cases can be handled by the Assembler.
+  if (fd.Is32Bits()) {
+    Fmov(fd, static_cast<float>(imm));
+    return;
+  }
+
+  ASSERT(fd.Is64Bits());
+  if (IsImmFP64(imm)) {
     fmov(fd, imm);
+  } else if ((imm == 0.0) && (copysign(1.0, imm) == 1.0)) {
+    fmov(fd, xzr);
   } else {
-    // TODO(all): The Assembler would try to relocate the immediate with
-    // Assembler::ldr(const FPRegister& ft, double imm) but it is not
-    // implemented yet.
-    if (fd.SizeInBits() == kDRegSize) {
-      Mov(Tmp0(), double_to_rawbits(imm));
-      Fmov(fd, Tmp0());
-    } else {
-      ASSERT(fd.SizeInBits() == kSRegSize);
-      Mov(WTmp0(), float_to_rawbits(static_cast<float>(imm)));
-      Fmov(fd, WTmp0());
-    }
+    UseScratchRegisterScope temps(this);
+    Register tmp = temps.AcquireX();
+    // TODO(all): Use Assembler::ldr(const FPRegister& ft, double imm).
+    Mov(tmp, double_to_rawbits(imm));
+    Fmov(fd, tmp);
+  }
+}
+
+
+void MacroAssembler::Fmov(FPRegister fd, float imm) {
+  ASSERT(allow_macro_instructions_);
+  if (fd.Is64Bits()) {
+    Fmov(fd, static_cast<double>(imm));
+    return;
+  }
+
+  ASSERT(fd.Is32Bits());
+  if (IsImmFP32(imm)) {
+    fmov(fd, imm);
+  } else if ((imm == 0.0) && (copysign(1.0, imm) == 1.0)) {
+    fmov(fd, wzr);
+  } else {
+    UseScratchRegisterScope temps(this);
+    Register tmp = temps.AcquireW();
+    // TODO(all): Use Assembler::ldr(const FPRegister& ft, float imm).
+    Mov(tmp, float_to_rawbits(imm));
+    Fmov(fd, tmp);
   }
 }
 
@@ -1032,6 +1036,7 @@ void MacroAssembler::Ret(const Register& xn) {
   ASSERT(allow_macro_instructions_);
   ASSERT(!xn.IsZero());
   ret(xn);
+  CheckVeneerPool(false);
 }
 
 
@@ -1186,18 +1191,6 @@ void MacroAssembler::Sxtw(const Register& rd, const Register& rn) {
 }
 
 
-void MacroAssembler::Tbnz(const Register& rt, unsigned bit_pos, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  tbnz(rt, bit_pos, label);
-}
-
-
-void MacroAssembler::Tbz(const Register& rt, unsigned bit_pos, Label* label) {
-  ASSERT(allow_macro_instructions_);
-  tbz(rt, bit_pos, label);
-}
-
-
 void MacroAssembler::Ubfiz(const Register& rd,
                            const Register& rn,
                            unsigned lsb,
@@ -1255,12 +1248,6 @@ void MacroAssembler::Umsubl(const Register& rd,
 }
 
 
-void MacroAssembler::Unreachable() {
-  ASSERT(allow_macro_instructions_);
-  hlt(kImmExceptionIsUnreachable);
-}
-
-
 void MacroAssembler::Uxtb(const Register& rd, const Register& rn) {
   ASSERT(allow_macro_instructions_);
   ASSERT(!rd.IsZero());
@@ -1286,8 +1273,9 @@ void MacroAssembler::BumpSystemStackPointer(const Operand& space) {
   ASSERT(!csp.Is(sp_));
   // TODO(jbramley): Several callers rely on this not using scratch registers,
   // so we use the assembler directly here. However, this means that large
-  // immediate values of 'space' cannot be handled. Once we merge with V8, we
-  // should try to use the new scope that controls scratch register usage.
+  // immediate values of 'space' cannot be handled cleanly. Once we implement
+  // our flexible scratch register idea, we could greatly simplify this
+  // function.
   InstructionAccurateScope scope(this);
   if ((space.IsImmediate()) && !is_uint12(space.immediate())) {
     // The subtract instruction supports a 12-bit immediate, shifted left by
@@ -1385,9 +1373,11 @@ void MacroAssembler::JumpIfBothSmi(Register value1,
                                    Label* both_smi_label,
                                    Label* not_smi_label) {
   STATIC_ASSERT((kSmiTagSize == 1) && (kSmiTag == 0));
+  UseScratchRegisterScope temps(this);
+  Register tmp = temps.AcquireX();
   // Check if both tag bits are clear.
-  Orr(Tmp0(), value1, value2);
-  JumpIfSmi(Tmp0(), both_smi_label, not_smi_label);
+  Orr(tmp, value1, value2);
+  JumpIfSmi(tmp, both_smi_label, not_smi_label);
 }
 
 
@@ -1396,9 +1386,11 @@ void MacroAssembler::JumpIfEitherSmi(Register value1,
                                      Label* either_smi_label,
                                      Label* not_smi_label) {
   STATIC_ASSERT((kSmiTagSize == 1) && (kSmiTag == 0));
+  UseScratchRegisterScope temps(this);
+  Register tmp = temps.AcquireX();
   // Check if either tag bit is clear.
-  And(Tmp0(), value1, value2);
-  JumpIfSmi(Tmp0(), either_smi_label, not_smi_label);
+  And(tmp, value1, value2);
+  JumpIfSmi(tmp, either_smi_label, not_smi_label);
 }
 
 
@@ -1471,8 +1463,10 @@ void MacroAssembler::IsObjectJSStringType(Register object,
 
 
 void MacroAssembler::Push(Handle<Object> handle) {
-  Mov(Tmp0(), Operand(handle));
-  Push(Tmp0());
+  UseScratchRegisterScope temps(this);
+  Register tmp = temps.AcquireX();
+  Mov(tmp, Operand(handle));
+  Push(tmp);
 }
 
 
@@ -1500,7 +1494,7 @@ void MacroAssembler::Claim(const Register& count, uint64_t unit_size) {
     return;
   }
 
-  const int shift = CountTrailingZeros(unit_size, kXRegSize);
+  const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits);
   const Operand size(count, LSL, shift);
 
   if (size.IsZero()) {
@@ -1517,7 +1511,7 @@ void MacroAssembler::Claim(const Register& count, uint64_t unit_size) {
 
 void MacroAssembler::ClaimBySMI(const Register& count_smi, uint64_t unit_size) {
   ASSERT(IsPowerOf2(unit_size));
-  const int shift = CountTrailingZeros(unit_size, kXRegSize) - kSmiShift;
+  const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits) - kSmiShift;
   const Operand size(count_smi,
                      (shift >= 0) ? (LSL) : (LSR),
                      (shift >= 0) ? (shift) : (-shift));
@@ -1561,7 +1555,7 @@ void MacroAssembler::Drop(const Register& count, uint64_t unit_size) {
     return;
   }
 
-  const int shift = CountTrailingZeros(unit_size, kXRegSize);
+  const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits);
   const Operand size(count, LSL, shift);
 
   if (size.IsZero()) {
@@ -1581,7 +1575,7 @@ void MacroAssembler::Drop(const Register& count, uint64_t unit_size) {
 
 void MacroAssembler::DropBySMI(const Register& count_smi, uint64_t unit_size) {
   ASSERT(IsPowerOf2(unit_size));
-  const int shift = CountTrailingZeros(unit_size, kXRegSize) - kSmiShift;
+  const int shift = CountTrailingZeros(unit_size, kXRegSizeInBits) - kSmiShift;
   const Operand size(count_smi,
                      (shift >= 0) ? (LSL) : (LSR),
                      (shift >= 0) ? (shift) : (-shift));

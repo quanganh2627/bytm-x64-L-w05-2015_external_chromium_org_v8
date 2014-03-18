@@ -888,6 +888,16 @@ void MacroAssembler::VmovLow(DwVfpRegister dst, Register src) {
 }
 
 
+void MacroAssembler::LoadConstantPoolPointerRegister() {
+  if (FLAG_enable_ool_constant_pool) {
+    int constant_pool_offset = Code::kConstantPoolOffset - Code::kHeaderSize -
+        pc_offset() - Instruction::kPCReadOffset;
+    ASSERT(ImmediateFitsAddrMode2Instruction(constant_pool_offset));
+    ldr(pp, MemOperand(pc, constant_pool_offset));
+  }
+}
+
+
 void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
   if (frame_mode == BUILD_STUB_FRAME) {
     PushFixedFrame();
@@ -912,22 +922,20 @@ void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
       add(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
     }
   }
-}
-
-
-void MacroAssembler::LoadConstantPoolPointerRegister() {
   if (FLAG_enable_ool_constant_pool) {
-    int constant_pool_offset =
-        Code::kConstantPoolOffset - Code::kHeaderSize - pc_offset() - 8;
-    ASSERT(ImmediateFitsAddrMode2Instruction(constant_pool_offset));
-    ldr(pp, MemOperand(pc, constant_pool_offset));
+    LoadConstantPoolPointerRegister();
+    set_constant_pool_available(true);
   }
 }
 
 
-void MacroAssembler::EnterFrame(StackFrame::Type type) {
+void MacroAssembler::EnterFrame(StackFrame::Type type,
+                                bool load_constant_pool) {
   // r0-r3: preserved
   PushFixedFrame();
+  if (FLAG_enable_ool_constant_pool && load_constant_pool) {
+    LoadConstantPoolPointerRegister();
+  }
   mov(ip, Operand(Smi::FromInt(type)));
   push(ip);
   mov(ip, Operand(CodeObject()));
@@ -975,6 +983,7 @@ void MacroAssembler::EnterExitFrame(bool save_doubles, int stack_space) {
   }
   if (FLAG_enable_ool_constant_pool) {
     str(pp, MemOperand(fp, ExitFrameConstants::kConstantPoolOffset));
+    LoadConstantPoolPointerRegister();
   }
   mov(ip, Operand(CodeObject()));
   str(ip, MemOperand(fp, ExitFrameConstants::kCodeOffset));
@@ -2806,16 +2815,8 @@ void MacroAssembler::Check(Condition cond, BailoutReason reason) {
 void MacroAssembler::Abort(BailoutReason reason) {
   Label abort_start;
   bind(&abort_start);
-  // We want to pass the msg string like a smi to avoid GC
-  // problems, however msg is not guaranteed to be aligned
-  // properly. Instead, we pass an aligned pointer that is
-  // a proper v8 smi, but also pass the alignment difference
-  // from the real pointer as a smi.
-  const char* msg = GetBailoutReason(reason);
-  intptr_t p1 = reinterpret_cast<intptr_t>(msg);
-  intptr_t p0 = (p1 & ~kSmiTagMask) + kSmiTag;
-  ASSERT(reinterpret_cast<Object*>(p0)->IsSmi());
 #ifdef DEBUG
+  const char* msg = GetBailoutReason(reason);
   if (msg != NULL) {
     RecordComment("Abort message: ");
     RecordComment(msg);
@@ -2827,25 +2828,24 @@ void MacroAssembler::Abort(BailoutReason reason) {
   }
 #endif
 
-  mov(r0, Operand(p0));
+  mov(r0, Operand(Smi::FromInt(reason)));
   push(r0);
-  mov(r0, Operand(Smi::FromInt(p1 - p0)));
-  push(r0);
+
   // Disable stub call restrictions to always allow calls to abort.
   if (!has_frame_) {
     // We don't actually want to generate a pile of code for this, so just
     // claim there is a stack frame, without generating one.
     FrameScope scope(this, StackFrame::NONE);
-    CallRuntime(Runtime::kAbort, 2);
+    CallRuntime(Runtime::kAbort, 1);
   } else {
-    CallRuntime(Runtime::kAbort, 2);
+    CallRuntime(Runtime::kAbort, 1);
   }
   // will not return here
   if (is_const_pool_blocked()) {
     // If the calling code cares about the exact number of
     // instructions generated, we insert padding here to keep the size
     // of the Abort macro constant.
-    static const int kExpectedAbortInstructions = 10;
+    static const int kExpectedAbortInstructions = 7;
     int abort_instructions = InstructionsGeneratedSince(&abort_start);
     ASSERT(abort_instructions <= kExpectedAbortInstructions);
     while (abort_instructions++ < kExpectedAbortInstructions) {
@@ -2899,31 +2899,6 @@ void MacroAssembler::LoadTransitionedArrayMapConditional(
 }
 
 
-void MacroAssembler::LoadInitialArrayMap(
-    Register function_in, Register scratch,
-    Register map_out, bool can_have_holes) {
-  ASSERT(!function_in.is(map_out));
-  Label done;
-  ldr(map_out, FieldMemOperand(function_in,
-                               JSFunction::kPrototypeOrInitialMapOffset));
-  if (!FLAG_smi_only_arrays) {
-    ElementsKind kind = can_have_holes ? FAST_HOLEY_ELEMENTS : FAST_ELEMENTS;
-    LoadTransitionedArrayMapConditional(FAST_SMI_ELEMENTS,
-                                        kind,
-                                        map_out,
-                                        scratch,
-                                        &done);
-  } else if (can_have_holes) {
-    LoadTransitionedArrayMapConditional(FAST_SMI_ELEMENTS,
-                                        FAST_HOLEY_SMI_ELEMENTS,
-                                        map_out,
-                                        scratch,
-                                        &done);
-  }
-  bind(&done);
-}
-
-
 void MacroAssembler::LoadGlobalFunction(int index, Register function) {
   // Load the global or builtins object from the current context.
   ldr(function,
@@ -2933,19 +2908,6 @@ void MacroAssembler::LoadGlobalFunction(int index, Register function) {
                                 GlobalObject::kNativeContextOffset));
   // Load the function from the native context.
   ldr(function, MemOperand(function, Context::SlotOffset(index)));
-}
-
-
-void MacroAssembler::LoadArrayFunction(Register function) {
-  // Load the global or builtins object from the current context.
-  ldr(function,
-      MemOperand(cp, Context::SlotOffset(Context::GLOBAL_OBJECT_INDEX)));
-  // Load the global context from the global or builtins object.
-  ldr(function,
-      FieldMemOperand(function, GlobalObject::kGlobalContextOffset));
-  // Load the array function from the native context.
-  ldr(function,
-      MemOperand(function, Context::SlotOffset(Context::ARRAY_FUNCTION_INDEX)));
 }
 
 
@@ -4076,6 +4038,25 @@ void CodePatcher::EmitCondition(Condition cond) {
   Instr instr = Assembler::instr_at(masm_.pc_);
   instr = (instr & ~kCondMask) | cond;
   masm_.emit(instr);
+}
+
+
+void MacroAssembler::FlooringDiv(Register result,
+                                 Register dividend,
+                                 int32_t divisor) {
+  ASSERT(!dividend.is(result));
+  ASSERT(!dividend.is(ip));
+  ASSERT(!result.is(ip));
+  MultiplierAndShift ms(divisor);
+  mov(ip, Operand(ms.multiplier()));
+  smull(ip, result, dividend, ip);
+  if (divisor > 0 && ms.multiplier() < 0) {
+    add(result, result, Operand(dividend));
+  }
+  if (divisor < 0 && ms.multiplier() > 0) {
+    sub(result, result, Operand(dividend));
+  }
+  if (ms.shift() > 0) mov(result, Operand(result, ASR, ms.shift()));
 }
 
 

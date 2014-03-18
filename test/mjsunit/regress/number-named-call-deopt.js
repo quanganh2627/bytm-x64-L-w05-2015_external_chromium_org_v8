@@ -1,4 +1,4 @@
-// Copyright 2013 the V8 project authors. All rights reserved.
+// Copyright 2014 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,32 +25,17 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_HYDROGEN_MINUS_ZERO_H_
-#define V8_HYDROGEN_MINUS_ZERO_H_
+// Flags: --allow-natives-syntax
 
-#include "hydrogen.h"
+function f(x, deopt, osr) {
+  var res = "result";
+  void(x.toString(10, deopt + 0));
+  if (osr) for (var i = 0; i < 100000; i++) { }
+  return res;
+}
 
-namespace v8 {
-namespace internal {
-
-
-class HComputeMinusZeroChecksPhase : public HPhase {
- public:
-  explicit HComputeMinusZeroChecksPhase(HGraph* graph)
-      : HPhase("H_Compute minus zero checks", graph),
-        visited_(graph->GetMaximumValueID(), zone()) { }
-
-  void Run();
-
- private:
-  void PropagateMinusZeroChecks(HValue* value);
-
-  BitVector visited_;
-
-  DISALLOW_COPY_AND_ASSIGN(HComputeMinusZeroChecksPhase);
-};
-
-
-} }  // namespace v8::internal
-
-#endif  // V8_HYDROGEN_MINUS_ZERO_H_
+f(4, 0, false);
+f(4, 0, false);
+f(4, 0, false);
+%OptimizeFunctionOnNextCall(f);
+assertEquals("result", f(4, "deopt", true));

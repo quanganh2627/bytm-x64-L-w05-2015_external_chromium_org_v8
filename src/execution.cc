@@ -163,9 +163,10 @@ Handle<Object> Execution::Call(Isolate* isolate,
   }
   Handle<JSFunction> func = Handle<JSFunction>::cast(callable);
 
-  // In non-strict mode, convert receiver.
+  // In sloppy mode, convert receiver.
   if (convert_receiver && !receiver->IsJSReceiver() &&
-      !func->shared()->native() && func->shared()->is_classic_mode()) {
+      !func->shared()->native() &&
+      func->shared()->strict_mode() == SLOPPY) {
     if (receiver->IsUndefined() || receiver->IsNull()) {
       Object* global = func->context()->global_object()->global_receiver();
       // Under some circumstances, 'global' can be the JSBuiltinsObject
@@ -516,15 +517,15 @@ void StackGuard::FullDeopt() {
 }
 
 
-bool StackGuard::IsDeoptMarkedCode() {
+bool StackGuard::IsDeoptMarkedAllocationSites() {
   ExecutionAccess access(isolate_);
-  return (thread_local_.interrupt_flags_ & DEOPT_MARKED_CODE) != 0;
+  return (thread_local_.interrupt_flags_ & DEOPT_MARKED_ALLOCATION_SITES) != 0;
 }
 
 
-void StackGuard::DeoptMarkedCode() {
+void StackGuard::DeoptMarkedAllocationSites() {
   ExecutionAccess access(isolate_);
-  thread_local_.interrupt_flags_ |= DEOPT_MARKED_CODE;
+  thread_local_.interrupt_flags_ |= DEOPT_MARKED_ALLOCATION_SITES;
   set_interrupt_limits(access);
 }
 
@@ -1040,9 +1041,9 @@ MaybeObject* Execution::HandleStackGuardInterrupt(Isolate* isolate) {
     stack_guard->Continue(FULL_DEOPT);
     Deoptimizer::DeoptimizeAll(isolate);
   }
-  if (stack_guard->IsDeoptMarkedCode()) {
-    stack_guard->Continue(DEOPT_MARKED_CODE);
-    Deoptimizer::DeoptimizeMarkedCode(isolate);
+  if (stack_guard->IsDeoptMarkedAllocationSites()) {
+    stack_guard->Continue(DEOPT_MARKED_ALLOCATION_SITES);
+    isolate->heap()->DeoptMarkedAllocationSites();
   }
   if (stack_guard->IsInstallCodeRequest()) {
     ASSERT(isolate->concurrent_recompilation_enabled());

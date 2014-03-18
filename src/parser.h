@@ -39,7 +39,6 @@ namespace v8 {
 namespace internal {
 
 class CompilationInfo;
-class FuncNameInferrer;
 class ParserLog;
 class PositionStack;
 class Target;
@@ -54,7 +53,7 @@ class FunctionEntry BASE_EMBEDDED {
     kEndPositionIndex,
     kLiteralCountIndex,
     kPropertyCountIndex,
-    kLanguageModeIndex,
+    kStrictModeIndex,
     kSize
   };
 
@@ -67,11 +66,10 @@ class FunctionEntry BASE_EMBEDDED {
   int end_pos() { return backing_[kEndPositionIndex]; }
   int literal_count() { return backing_[kLiteralCountIndex]; }
   int property_count() { return backing_[kPropertyCountIndex]; }
-  LanguageMode language_mode() {
-    ASSERT(backing_[kLanguageModeIndex] == CLASSIC_MODE ||
-           backing_[kLanguageModeIndex] == STRICT_MODE ||
-           backing_[kLanguageModeIndex] == EXTENDED_MODE);
-    return static_cast<LanguageMode>(backing_[kLanguageModeIndex]);
+  StrictMode strict_mode() {
+    ASSERT(backing_[kStrictModeIndex] == SLOPPY ||
+           backing_[kStrictModeIndex] == STRICT);
+    return static_cast<StrictMode>(backing_[kStrictModeIndex]);
   }
 
   bool is_valid() { return !backing_.is_empty(); }
@@ -410,32 +408,42 @@ class SingletonLogger;
 class ParserTraits {
  public:
   struct Type {
+    // TODO(marja): To be removed. The Traits object should contain all the data
+    // it needs.
     typedef v8::internal::Parser* Parser;
 
-    // Types used by FunctionState and BlockState.
+    // Used by FunctionState and BlockState.
     typedef v8::internal::Scope Scope;
-    typedef AstNodeFactory<AstConstructionVisitor> Factory;
     typedef Variable GeneratorVariable;
     typedef v8::internal::Zone Zone;
 
     // Return types for traversing functions.
     typedef Handle<String> Identifier;
     typedef v8::internal::Expression* Expression;
+    typedef Yield* YieldExpression;
+    typedef v8::internal::FunctionLiteral* FunctionLiteral;
+    typedef v8::internal::Literal* Literal;
+    typedef ObjectLiteral::Property* ObjectLiteralProperty;
+    typedef ZoneList<v8::internal::Expression*>* ExpressionList;
+    typedef ZoneList<ObjectLiteral::Property*>* PropertyList;
+
+    // For constructing objects returned by the traversing functions.
+    typedef AstNodeFactory<AstConstructionVisitor> Factory;
   };
 
   explicit ParserTraits(Parser* parser) : parser_(parser) {}
 
   // Custom operations executed when FunctionStates are created and destructed.
-  template<typename FS>
-  static void SetUpFunctionState(FS* function_state, Zone* zone) {
+  template<typename FunctionState>
+  static void SetUpFunctionState(FunctionState* function_state, Zone* zone) {
     Isolate* isolate = zone->isolate();
     function_state->isolate_ = isolate;
     function_state->saved_ast_node_id_ = isolate->ast_node_id();
     isolate->set_ast_node_id(BailoutId::FirstUsable().ToInt());
   }
 
-  template<typename FS>
-  static void TearDownFunctionState(FS* function_state) {
+  template<typename FunctionState>
+  static void TearDownFunctionState(FunctionState* function_state) {
     if (function_state->outer_function_state_ != NULL) {
       function_state->isolate_->set_ast_node_id(
           function_state->saved_ast_node_id_);
@@ -444,6 +452,51 @@ class ParserTraits {
 
   // Helper functions for recursive descent.
   bool IsEvalOrArguments(Handle<String> identifier) const;
+
+  // Returns true if the expression is of type "this.foo".
+  static bool IsThisProperty(Expression* expression);
+
+  static bool IsBoilerplateProperty(ObjectLiteral::Property* property) {
+    return ObjectLiteral::IsBoilerplateProperty(property);
+  }
+
+  static bool IsArrayIndex(Handle<String> string, uint32_t* index) {
+    return !string.is_null() && string->AsArrayIndex(index);
+  }
+
+  // Functions for encapsulating the differences between parsing and preparsing;
+  // operations interleaved with the recursive descent.
+  static void PushLiteralName(FuncNameInferrer* fni, Handle<String> id) {
+    fni->PushLiteralName(id);
+  }
+
+  static void CheckFunctionLiteralInsideTopLevelObjectLiteral(
+      Scope* scope, Expression* value, bool* has_function) {
+    if (scope->DeclarationScope()->is_global_scope() &&
+        value->AsFunctionLiteral() != NULL) {
+      *has_function = true;
+      value->AsFunctionLiteral()->set_pretenure();
+    }
+  }
+
+  // If we assign a function literal to a property we pretenure the
+  // literal so it can be added as a constant function property.
+  static void CheckAssigningFunctionLiteralToProperty(Expression* left,
+                                                      Expression* right);
+
+  // Signal a reference error if the expression is an invalid left-hand side
+  // expression. We could report this as a syntax error but for compatibility
+  // with JSC we choose to report the error at runtime.
+  Expression* ValidateAssignmentLeftHandSide(Expression* expression) const;
+
+  // Determine if the expression is a variable proxy and mark it as being used
+  // in an assignment or with a increment/decrement operator. This is currently
+  // used on for the statically checking assignments to harmony const bindings.
+  static Expression* MarkExpressionAsLValue(Expression* expression);
+
+  // Checks LHS expression for assignment and prefix/postfix increment/decrement
+  // in strict mode.
+  void CheckStrictModeLValue(Expression*expression, bool* ok);
 
   // Reporting errors.
   void ReportMessageAt(Scanner::Location source_location,
@@ -461,10 +514,50 @@ class ParserTraits {
   static Expression* EmptyExpression() {
     return NULL;
   }
+  static Literal* EmptyLiteral() {
+    return NULL;
+  }
+  static ZoneList<Expression*>* NullExpressionList() {
+    return NULL;
+  }
+
+  // Odd-ball literal creators.
+  Literal* GetLiteralTheHole(int position,
+                             AstNodeFactory<AstConstructionVisitor>* factory);
 
   // Producing data during the recursive descent.
-  Handle<String> GetSymbol();
-  Handle<String> NextLiteralString(PretenureFlag tenured);
+  Handle<String> GetSymbol(Scanner* scanner = NULL);
+  Handle<String> NextLiteralString(Scanner* scanner,
+                                   PretenureFlag tenured);
+  Expression* ThisExpression(Scope* scope,
+                             AstNodeFactory<AstConstructionVisitor>* factory);
+  Literal* ExpressionFromLiteral(
+      Token::Value token, int pos, Scanner* scanner,
+      AstNodeFactory<AstConstructionVisitor>* factory);
+  Expression* ExpressionFromIdentifier(
+      Handle<String> name, int pos, Scope* scope,
+      AstNodeFactory<AstConstructionVisitor>* factory);
+  Expression* ExpressionFromString(
+      int pos, Scanner* scanner,
+      AstNodeFactory<AstConstructionVisitor>* factory);
+  ZoneList<v8::internal::Expression*>* NewExpressionList(int size, Zone* zone) {
+    return new(zone) ZoneList<v8::internal::Expression*>(size, zone);
+  }
+  ZoneList<ObjectLiteral::Property*>* NewPropertyList(int size, Zone* zone) {
+    return new(zone) ZoneList<ObjectLiteral::Property*>(size, zone);
+  }
+
+  // Temporary glue; these functions will move to ParserBase.
+  Expression* ParseV8Intrinsic(bool* ok);
+  FunctionLiteral* ParseFunctionLiteral(
+      Handle<String> name,
+      Scanner::Location function_name_location,
+      bool name_is_strict_reserved,
+      bool is_generator,
+      int function_token_position,
+      FunctionLiteral::FunctionType type,
+      bool* ok);
+  Expression* ParseConditionalExpression(bool accept_IN, bool* ok);
 
  private:
   Parser* parser_;
@@ -536,7 +629,6 @@ class Parser : public ParserBase<ParserTraits> {
   FunctionLiteral* ParseLazy(Utf16CharacterStream* source);
 
   Isolate* isolate() { return isolate_; }
-  Zone* zone() const { return zone_; }
   CompilationInfo* info() const { return info_; }
 
   // Called by ParseProgram after setting up the scanner.
@@ -552,13 +644,8 @@ class Parser : public ParserBase<ParserTraits> {
   }
 
   bool inside_with() const { return scope_->inside_with(); }
-  Scanner& scanner()  { return scanner_; }
   Mode mode() const { return mode_; }
   ScriptDataImpl* pre_parse_data() const { return pre_parse_data_; }
-  bool is_extended_mode() {
-    ASSERT(scope_ != NULL);
-    return scope_->is_extended_mode();
-  }
   Scope* DeclarationScope(VariableMode mode) {
     return IsLexicalVariableMode(mode)
         ? scope_ : scope_->DeclarationScope();
@@ -613,21 +700,15 @@ class Parser : public ParserBase<ParserTraits> {
   // Support for hamony block scoped bindings.
   Block* ParseScopedBlock(ZoneStringList* labels, bool* ok);
 
-  Expression* ParseExpression(bool accept_IN, bool* ok);
-  Expression* ParseAssignmentExpression(bool accept_IN, bool* ok);
-  Expression* ParseYieldExpression(bool* ok);
   Expression* ParseConditionalExpression(bool accept_IN, bool* ok);
   Expression* ParseBinaryExpression(int prec, bool accept_IN, bool* ok);
   Expression* ParseUnaryExpression(bool* ok);
   Expression* ParsePostfixExpression(bool* ok);
   Expression* ParseLeftHandSideExpression(bool* ok);
-  Expression* ParseNewExpression(bool* ok);
+  Expression* ParseMemberWithNewPrefixesExpression(bool* ok);
   Expression* ParseMemberExpression(bool* ok);
-  Expression* ParseNewPrefix(PositionStack* stack, bool* ok);
-  Expression* ParseMemberWithNewPrefixesExpression(PositionStack* stack,
-                                                   bool* ok);
-  Expression* ParsePrimaryExpression(bool* ok);
-  Expression* ParseArrayLiteral(bool* ok);
+  Expression* ParseMemberExpressionContinuation(Expression* expression,
+                                                bool* ok);
   Expression* ParseObjectLiteral(bool* ok);
 
   // Initialize the components of a for-in / for-of statement.
@@ -636,7 +717,6 @@ class Parser : public ParserBase<ParserTraits> {
                                   Expression* subject,
                                   Statement* body);
 
-  ZoneList<Expression*>* ParseArguments(bool* ok);
   FunctionLiteral* ParseFunctionLiteral(
       Handle<String> name,
       Scanner::Location function_name_location,
@@ -651,28 +731,8 @@ class Parser : public ParserBase<ParserTraits> {
 
   bool CheckInOrOf(bool accept_OF, ForEachStatement::VisitMode* visit_mode);
 
-  Handle<String> LiteralString(PretenureFlag tenured) {
-    if (scanner().is_literal_ascii()) {
-      return isolate_->factory()->NewStringFromAscii(
-          scanner().literal_ascii_string(), tenured);
-    } else {
-      return isolate_->factory()->NewStringFromTwoByte(
-            scanner().literal_utf16_string(), tenured);
-    }
-  }
-
   // Get odd-ball literals.
   Literal* GetLiteralUndefined(int position);
-  Literal* GetLiteralTheHole(int position);
-
-  // Determine if the expression is a variable proxy and mark it as being used
-  // in an assignment or with a increment/decrement operator. This is currently
-  // used on for the statically checking assignments to harmony const bindings.
-  void MarkAsLValue(Expression* expression);
-
-  // Strict mode validation of LValue expressions
-  void CheckStrictModeLValue(Expression* expression,
-                             bool* ok);
 
   // For harmony block scoping mode: Check if the scope has conflicting var/let
   // declarations from different scopes. It covers for example
@@ -735,13 +795,10 @@ class Parser : public ParserBase<ParserTraits> {
   PreParser* reusable_preparser_;
   Scope* original_scope_;  // for ES5 function declarations in sloppy eval
   Target* target_stack_;  // for break, continue statements
-  v8::Extension* extension_;
   ScriptDataImpl* pre_parse_data_;
-  FuncNameInferrer* fni_;
 
   Mode mode_;
 
-  Zone* zone_;
   CompilationInfo* info_;
 };
 

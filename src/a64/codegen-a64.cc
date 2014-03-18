@@ -42,9 +42,11 @@ namespace internal {
 byte* fast_exp_a64_machine_code = NULL;
 double fast_exp_simulator(double x) {
   Simulator * simulator = Simulator::current(Isolate::Current());
-  return simulator->CallDouble(fast_exp_a64_machine_code,
-                               Simulator::CallArgument(x),
-                               Simulator::CallArgument::End());
+  Simulator::CallArgument args[] = {
+      Simulator::CallArgument(x),
+      Simulator::CallArgument::End()
+  };
+  return simulator->CallDouble(fast_exp_a64_machine_code, args);
 }
 #endif
 
@@ -408,6 +410,7 @@ void StringCharLoadGenerator::Generate(MacroAssembler* masm,
                                        Register index,
                                        Register result,
                                        Label* call_runtime) {
+  ASSERT(string.Is64Bits() && index.Is32Bits() && result.Is64Bits());
   // Fetch the instance type of the receiver into result register.
   __ Ldr(result, FieldMemOperand(string, HeapObject::kMapOffset));
   __ Ldrb(result, FieldMemOperand(result, Map::kInstanceTypeOffset));
@@ -422,10 +425,10 @@ void StringCharLoadGenerator::Generate(MacroAssembler* masm,
 
   // Handle slices.
   Label indirect_string_loaded;
-  __ Ldrsw(result,
-           UntagSmiFieldMemOperand(string, SlicedString::kOffsetOffset));
+  __ Ldr(result.W(),
+         UntagSmiFieldMemOperand(string, SlicedString::kOffsetOffset));
   __ Ldr(string, FieldMemOperand(string, SlicedString::kParentOffset));
-  __ Add(index, index, result);
+  __ Add(index, index, result.W());
   __ B(&indirect_string_loaded);
 
   // Handle cons strings.
@@ -477,11 +480,11 @@ void StringCharLoadGenerator::Generate(MacroAssembler* masm,
   STATIC_ASSERT(kTwoByteStringTag == 0);
   __ TestAndBranchIfAnySet(result, kStringEncodingMask, &ascii);
   // Two-byte string.
-  __ Ldrh(result, MemOperand(string, index, LSL, 1));
+  __ Ldrh(result, MemOperand(string, index, SXTW, 1));
   __ B(&done);
   __ Bind(&ascii);
   // Ascii string.
-  __ Ldrb(result, MemOperand(string, index));
+  __ Ldrb(result, MemOperand(string, index, SXTW));
   __ Bind(&done);
 }
 
@@ -526,7 +529,7 @@ void MathExpGenerator::EmitMathExp(MacroAssembler* masm,
   Label result_is_finite_non_zero;
   // Assert that we can load offset 0 (the small input threshold) and offset 1
   // (the large input threshold) with a single ldp.
-  ASSERT(kDRegSizeInBytes == (ExpConstant(constants, 1).offset() -
+  ASSERT(kDRegSize == (ExpConstant(constants, 1).offset() -
                               ExpConstant(constants, 0).offset()));
   __ Ldp(double_temp1, double_temp2, ExpConstant(constants, 0));
 
@@ -543,13 +546,11 @@ void MathExpGenerator::EmitMathExp(MacroAssembler* masm,
   // Continue the common case first. 'mi' tests N == 1.
   __ B(&result_is_finite_non_zero, mi);
 
-  // TODO(jbramley): Add (and use) a zero D register for A64.
   // TODO(jbramley): Consider adding a +infinity register for A64.
   __ Ldr(double_temp2, ExpConstant(constants, 2));    // Synthesize +infinity.
-  __ Fsub(double_temp1, double_temp1, double_temp1);  // Synthesize +0.0.
 
   // Select between +0.0 and +infinity. 'lo' tests C == 0.
-  __ Fcsel(result, double_temp1, double_temp2, lo);
+  __ Fcsel(result, fp_zero, double_temp2, lo);
   // Select between {+0.0 or +infinity} and input. 'vc' tests V == 0.
   __ Fcsel(result, result, input, vc);
   __ B(&done);
@@ -558,7 +559,7 @@ void MathExpGenerator::EmitMathExp(MacroAssembler* masm,
   __ Bind(&result_is_finite_non_zero);
 
   // Assert that we can load offset 3 and offset 4 with a single ldp.
-  ASSERT(kDRegSizeInBytes == (ExpConstant(constants, 4).offset() -
+  ASSERT(kDRegSize == (ExpConstant(constants, 4).offset() -
                               ExpConstant(constants, 3).offset()));
   __ Ldp(double_temp1, double_temp3, ExpConstant(constants, 3));
   __ Fmadd(double_temp1, double_temp1, input, double_temp3);
@@ -566,7 +567,7 @@ void MathExpGenerator::EmitMathExp(MacroAssembler* masm,
   __ Fsub(double_temp1, double_temp1, double_temp3);
 
   // Assert that we can load offset 5 and offset 6 with a single ldp.
-  ASSERT(kDRegSizeInBytes == (ExpConstant(constants, 6).offset() -
+  ASSERT(kDRegSize == (ExpConstant(constants, 6).offset() -
                               ExpConstant(constants, 5).offset()));
   __ Ldp(double_temp2, double_temp3, ExpConstant(constants, 5));
   // TODO(jbramley): Consider using Fnmsub here.
@@ -596,7 +597,7 @@ void MathExpGenerator::EmitMathExp(MacroAssembler* masm,
   // Do the final table lookup.
   __ Mov(temp3, Operand(ExternalReference::math_exp_log_table()));
 
-  __ Add(temp3, temp3, Operand(temp2, LSL, kDRegSizeInBytesLog2));
+  __ Add(temp3, temp3, Operand(temp2, LSL, kDRegSizeLog2));
   __ Ldp(temp2.W(), temp3.W(), MemOperand(temp3));
   __ Orr(temp1.W(), temp3.W(), Operand(temp1.W(), LSL, 20));
   __ Bfi(temp2, temp1, 32, 32);

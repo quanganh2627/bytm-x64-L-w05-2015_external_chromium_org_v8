@@ -82,6 +82,8 @@ bool V8::Initialize(Deserializer* des) {
 #ifdef V8_USE_DEFAULT_PLATFORM
   DefaultPlatform* platform = static_cast<DefaultPlatform*>(platform_);
   platform->SetThreadPoolSize(isolate->max_available_threads());
+  // We currently only start the threads early, if we know that we'll use them.
+  if (FLAG_job_based_sweeping) platform->EnsureInitialized();
 #endif
 
   return isolate->Init(des);
@@ -185,12 +187,9 @@ void V8::RunMicrotasks(Isolate* isolate) {
 void V8::InitializeOncePerProcessImpl() {
   FlagList::EnforceFlagImplications();
 
-  if (FLAG_predictable) {
-    if (FLAG_random_seed == 0) {
-      // Avoid random seeds in predictable mode.
-      FLAG_random_seed = 12347;
-    }
-    FLAG_hash_seed = 0;
+  if (FLAG_predictable && FLAG_random_seed == 0) {
+    // Avoid random seeds in predictable mode.
+    FLAG_random_seed = 12347;
   }
 
   if (FLAG_stress_compaction) {

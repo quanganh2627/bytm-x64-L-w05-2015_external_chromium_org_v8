@@ -53,6 +53,7 @@
         'test-alloc.cc',
         'test-api.cc',
         'test-ast.cc',
+        'test-atomicops.cc',
         'test-bignum.cc',
         'test-bignum-dtoa.cc',
         'test-circular-queue.cc',
@@ -139,6 +140,7 @@
             'test-code-stubs.cc',
             'test-code-stubs-x64.cc',
             'test-cpu-x64.cc',
+            'test-disasm-x64.cc',
             'test-macro-assembler-x64.cc',
             'test-log-stack-tracer.cc'
           ],
@@ -156,6 +158,8 @@
           'sources': [
             'test-utils-a64.cc',
             'test-assembler-a64.cc',
+            'test-code-stubs.cc',
+            'test-code-stubs-a64.cc',
             'test-disasm-a64.cc',
             'test-fuzz-a64.cc',
             'test-javascript-a64.cc',
