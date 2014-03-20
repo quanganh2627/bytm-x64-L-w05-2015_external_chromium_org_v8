@@ -3207,18 +3207,20 @@ static void GenerateRecordCallTarget(MacroAssembler* masm,
   __ Cmp(scratch1, function);
   __ B(eq, &done);
 
-  // If we came here, we need to see if we are the array function.
-  // If we didn't have a matching function, and we didn't find the megamorph
-  // sentinel, then we have in the slot either some other function or an
-  // AllocationSite. Do a map check on the object in scratch1 register.
-  __ Ldr(scratch2, FieldMemOperand(scratch1, AllocationSite::kMapOffset));
-  __ JumpIfNotRoot(scratch2, Heap::kAllocationSiteMapRootIndex, &miss);
+  if (!FLAG_pretenuring_call_new) {
+    // If we came here, we need to see if we are the array function.
+    // If we didn't have a matching function, and we didn't find the megamorph
+    // sentinel, then we have in the slot either some other function or an
+    // AllocationSite. Do a map check on the object in scratch1 register.
+    __ Ldr(scratch2, FieldMemOperand(scratch1, AllocationSite::kMapOffset));
+    __ JumpIfNotRoot(scratch2, Heap::kAllocationSiteMapRootIndex, &miss);
 
-  // Make sure the function is the Array() function
-  __ LoadGlobalFunction(Context::ARRAY_FUNCTION_INDEX, scratch1);
-  __ Cmp(function, scratch1);
-  __ B(ne, &megamorphic);
-  __ B(&done);
+    // Make sure the function is the Array() function
+    __ LoadGlobalFunction(Context::ARRAY_FUNCTION_INDEX, scratch1);
+    __ Cmp(function, scratch1);
+    __ B(ne, &megamorphic);
+    __ B(&done);
+  }
 
   __ Bind(&miss);
 
@@ -3237,32 +3239,37 @@ static void GenerateRecordCallTarget(MacroAssembler* masm,
   // An uninitialized cache is patched with the function or sentinel to
   // indicate the ElementsKind if function is the Array constructor.
   __ Bind(&initialize);
-  // Make sure the function is the Array() function
-  __ LoadGlobalFunction(Context::ARRAY_FUNCTION_INDEX, scratch1);
-  __ Cmp(function, scratch1);
-  __ B(ne, &not_array_function);
 
-  // The target function is the Array constructor,
-  // Create an AllocationSite if we don't already have it, store it in the slot.
-  {
-    FrameScope scope(masm, StackFrame::INTERNAL);
-    CreateAllocationSiteStub create_stub;
+  if (!FLAG_pretenuring_call_new) {
+    // Make sure the function is the Array() function
+    __ LoadGlobalFunction(Context::ARRAY_FUNCTION_INDEX, scratch1);
+    __ Cmp(function, scratch1);
+    __ B(ne, &not_array_function);
 
-    // Arguments register must be smi-tagged to call out.
-    __ SmiTag(argc);
-    __ Push(argc, function, feedback_vector, index);
+    // The target function is the Array constructor,
+    // Create an AllocationSite if we don't already have it, store it in the
+    // slot.
+    {
+      FrameScope scope(masm, StackFrame::INTERNAL);
+      CreateAllocationSiteStub create_stub;
 
-    // CreateAllocationSiteStub expect the feedback vector in x2 and the slot
-    // index in x3.
-    ASSERT(feedback_vector.Is(x2) && index.Is(x3));
-    __ CallStub(&create_stub);
+      // Arguments register must be smi-tagged to call out.
+      __ SmiTag(argc);
+      __ Push(argc, function, feedback_vector, index);
 
-    __ Pop(index, feedback_vector, function, argc);
-    __ SmiUntag(argc);
+      // CreateAllocationSiteStub expect the feedback vector in x2 and the slot
+      // index in x3.
+      ASSERT(feedback_vector.Is(x2) && index.Is(x3));
+      __ CallStub(&create_stub);
+
+      __ Pop(index, feedback_vector, function, argc);
+      __ SmiUntag(argc);
+    }
+    __ B(&done);
+
+    __ Bind(&not_array_function);
   }
-  __ B(&done);
 
-  __ Bind(&not_array_function);
   // An uninitialized cache is patched with the function.
 
   __ Add(scratch1, feedback_vector,
@@ -3302,6 +3309,10 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
 
     if (RecordCallTarget()) {
       GenerateRecordCallTarget(masm, x0, function, cache_cell, slot, x4, x5);
+      // Type information was updated. Because we may call Array, which
+      // expects either undefined or an AllocationSite in ebx we need
+      // to set ebx to undefined.
+      __ LoadRoot(cache_cell, Heap::kUndefinedValueRootIndex);
     }
   }
 
@@ -3407,6 +3418,25 @@ void CallConstructStub::Generate(MacroAssembler* masm) {
 
   if (RecordCallTarget()) {
     GenerateRecordCallTarget(masm, x0, function, x2, x3, x4, x5);
+
+    __ Add(x5, x2, Operand::UntagSmiAndScale(x3, kPointerSizeLog2));
+    if (FLAG_pretenuring_call_new) {
+      // Put the AllocationSite from the feedback vector into x2.
+      // By adding kPointerSize we encode that we know the AllocationSite
+      // entry is at the feedback vector slot given by x3 + 1.
+      __ Ldr(x2, FieldMemOperand(x5, FixedArray::kHeaderSize + kPointerSize));
+    } else {
+    Label feedback_register_initialized;
+      // Put the AllocationSite from the feedback vector into x2, or undefined.
+      __ Ldr(x2, FieldMemOperand(x5, FixedArray::kHeaderSize));
+      __ Ldr(x5, FieldMemOperand(x2, AllocationSite::kMapOffset));
+      __ JumpIfRoot(x5, Heap::kAllocationSiteMapRootIndex,
+                    &feedback_register_initialized);
+      __ LoadRoot(x2, Heap::kUndefinedValueRootIndex);
+      __ bind(&feedback_register_initialized);
+    }
+
+    __ AssertUndefinedOrAllocationSite(x2, x5);
   }
 
   // Jump to the function-specific construct stub.
@@ -5408,17 +5438,12 @@ void ArrayConstructorStub::Generate(MacroAssembler* masm) {
   // ----------- S t a t e -------------
   //  -- x0 : argc (only if argument_count_ == ANY)
   //  -- x1 : constructor
-  //  -- x2 : feedback vector (fixed array or the megamorphic symbol)
-  //  -- x3 : slot index (if x2 is fixed array)
+  //  -- x2 : AllocationSite or undefined
   //  -- sp[0] : return address
   //  -- sp[4] : last argument
   // -----------------------------------
   Register constructor = x1;
-  Register feedback_vector = x2;
-  Register slot_index = x3;
-
-  ASSERT_EQ(*TypeFeedbackInfo::MegamorphicSentinel(masm->isolate()),
-            masm->isolate()->heap()->megamorphic_symbol());
+  Register allocation_site = x2;
 
   if (FLAG_debug_code) {
     // The array construct code is only set for the global and natives
@@ -5435,37 +5460,15 @@ void ArrayConstructorStub::Generate(MacroAssembler* masm) {
     __ Abort(kUnexpectedInitialMapForArrayFunction);
     __ Bind(&map_ok);
 
-    // In feedback_vector, we expect either the megamorphic symbol or a valid
-    // fixed array.
-    Label okay_here;
-    Handle<Map> fixed_array_map = masm->isolate()->factory()->fixed_array_map();
-    __ JumpIfRoot(feedback_vector, Heap::kMegamorphicSymbolRootIndex,
-                  &okay_here);
-    __ Ldr(x10, FieldMemOperand(feedback_vector, FixedArray::kMapOffset));
-    __ Cmp(x10, Operand(fixed_array_map));
-    __ Assert(eq, kExpectedFixedArrayInFeedbackVector);
-
-    // slot_index should be a smi if we don't have undefined in feedback_vector.
-    __ AssertSmi(slot_index);
-
-    __ Bind(&okay_here);
+    // We should either have undefined in the allocation_site register or a
+    // valid AllocationSite.
+    __ AssertUndefinedOrAllocationSite(allocation_site, x10);
   }
 
-  Register allocation_site = x2;  // Overwrites feedback_vector.
   Register kind = x3;
   Label no_info;
   // Get the elements kind and case on that.
-  __ JumpIfRoot(feedback_vector, Heap::kMegamorphicSymbolRootIndex, &no_info);
-  __ Add(feedback_vector, feedback_vector,
-         Operand::UntagSmiAndScale(slot_index, kPointerSizeLog2));
-  __ Ldr(allocation_site, FieldMemOperand(feedback_vector,
-                                          FixedArray::kHeaderSize));
-
-  // If the feedback vector is the megamorphic symbol, or contains anything
-  // other than an AllocationSite, call an array constructor that doesn't
-  // use AllocationSites.
-  __ Ldr(x10, FieldMemOperand(allocation_site, AllocationSite::kMapOffset));
-  __ JumpIfNotRoot(x10, Heap::kAllocationSiteMapRootIndex, &no_info);
+  __ JumpIfRoot(allocation_site, Heap::kUndefinedValueRootIndex, &no_info);
 
   __ Ldrsw(kind,
            UntagSmiFieldMemOperand(allocation_site,
