@@ -30,12 +30,15 @@
 
 #include "allocation.h"
 #include "ast.h"
+#include "compiler.h"  // For CachedDataMode
 #include "preparse-data-format.h"
 #include "preparse-data.h"
 #include "scopes.h"
 #include "preparser.h"
 
 namespace v8 {
+class ScriptCompiler;
+
 namespace internal {
 
 class CompilationInfo;
@@ -117,6 +120,7 @@ class ScriptDataImpl : public ScriptData {
   unsigned version() { return store_[PreparseDataConstants::kVersionOffset]; }
 
  private:
+  friend class v8::ScriptCompiler;
   Vector<unsigned> store_;
   unsigned char* symbol_data_;
   unsigned char* symbol_data_end_;
@@ -456,6 +460,8 @@ class ParserTraits {
   // Returns true if the expression is of type "this.foo".
   static bool IsThisProperty(Expression* expression);
 
+  static bool IsIdentifier(Expression* expression);
+
   static bool IsBoilerplateProperty(ObjectLiteral::Property* property) {
     return ObjectLiteral::IsBoilerplateProperty(property);
   }
@@ -484,10 +490,10 @@ class ParserTraits {
   static void CheckAssigningFunctionLiteralToProperty(Expression* left,
                                                       Expression* right);
 
-  // Signal a reference error if the expression is an invalid left-hand side
-  // expression. We could report this as a syntax error but for compatibility
-  // with JSC we choose to report the error at runtime.
-  Expression* ValidateAssignmentLeftHandSide(Expression* expression) const;
+  // Determine whether the expression is a valid assignment left-hand side.
+  static bool IsValidLeftHandSide(Expression* expression) {
+    return expression->IsValidLeftHandSide();
+  }
 
   // Determine if the expression is a variable proxy and mark it as being used
   // in an assignment or with a increment/decrement operator. This is currently
@@ -498,14 +504,40 @@ class ParserTraits {
   // in strict mode.
   void CheckStrictModeLValue(Expression*expression, bool* ok);
 
+  // Returns true if we have a binary expression between two numeric
+  // literals. In that case, *x will be changed to an expression which is the
+  // computed value.
+  bool ShortcutNumericLiteralBinaryExpression(
+      Expression** x, Expression* y, Token::Value op, int pos,
+      AstNodeFactory<AstConstructionVisitor>* factory);
+
+  // Rewrites the following types of unary expressions:
+  // not <literal> -> true / false
+  // + <numeric literal> -> <numeric literal>
+  // - <numeric literal> -> <numeric literal with value negated>
+  // ! <literal> -> true / false
+  // The following rewriting rules enable the collection of type feedback
+  // without any special stub and the multiplication is removed later in
+  // Crankshaft's canonicalization pass.
+  // + foo -> foo * 1
+  // - foo -> foo * (-1)
+  // ~ foo -> foo ^(~0)
+  Expression* BuildUnaryExpression(
+      Expression* expression, Token::Value op, int pos,
+      AstNodeFactory<AstConstructionVisitor>* factory);
+
   // Reporting errors.
   void ReportMessageAt(Scanner::Location source_location,
                        const char* message,
-                       Vector<const char*> args);
-  void ReportMessage(const char* message, Vector<Handle<String> > args);
+                       Vector<const char*> args,
+                       bool is_reference_error = false);
+  void ReportMessage(const char* message,
+                     Vector<Handle<String> > args,
+                     bool is_reference_error = false);
   void ReportMessageAt(Scanner::Location source_location,
                        const char* message,
-                       Vector<Handle<String> > args);
+                       Vector<Handle<String> > args,
+                       bool is_reference_error = false);
 
   // "null" return type creators.
   static Handle<String> EmptyIdentifier() {
@@ -557,7 +589,7 @@ class ParserTraits {
       int function_token_position,
       FunctionLiteral::FunctionType type,
       bool* ok);
-  Expression* ParseConditionalExpression(bool accept_IN, bool* ok);
+  Expression* ParsePostfixExpression(bool* ok);
 
  private:
   Parser* parser_;
@@ -638,14 +670,22 @@ class Parser : public ParserBase<ParserTraits> {
   // Report syntax error
   void ReportInvalidPreparseData(Handle<String> name, bool* ok);
 
-  void set_pre_parse_data(ScriptDataImpl *data) {
-    pre_parse_data_ = data;
-    symbol_cache_.Initialize(data ? data->symbol_count() : 0, zone());
+  void SetCachedData(ScriptDataImpl** data,
+                     CachedDataMode cached_data_mode) {
+    cached_data_mode_ = cached_data_mode;
+    if (cached_data_mode == NO_CACHED_DATA) {
+      cached_data_ = NULL;
+    } else {
+      ASSERT(data != NULL);
+      cached_data_ = data;
+      symbol_cache_.Initialize(*data ? (*data)->symbol_count() : 0, zone());
+    }
   }
 
   bool inside_with() const { return scope_->inside_with(); }
   Mode mode() const { return mode_; }
-  ScriptDataImpl* pre_parse_data() const { return pre_parse_data_; }
+  ScriptDataImpl** cached_data() const { return cached_data_; }
+  CachedDataMode cached_data_mode() const { return cached_data_mode_; }
   Scope* DeclarationScope(VariableMode mode) {
     return IsLexicalVariableMode(mode)
         ? scope_ : scope_->DeclarationScope();
@@ -700,8 +740,6 @@ class Parser : public ParserBase<ParserTraits> {
   // Support for hamony block scoped bindings.
   Block* ParseScopedBlock(ZoneStringList* labels, bool* ok);
 
-  Expression* ParseConditionalExpression(bool accept_IN, bool* ok);
-  Expression* ParseBinaryExpression(int prec, bool accept_IN, bool* ok);
   Expression* ParseUnaryExpression(bool* ok);
   Expression* ParsePostfixExpression(bool* ok);
   Expression* ParseLeftHandSideExpression(bool* ok);
@@ -761,8 +799,6 @@ class Parser : public ParserBase<ParserTraits> {
 
   Scope* NewScope(Scope* parent, ScopeType type);
 
-  Handle<String> LookupSymbol(int symbol_id);
-
   Handle<String> LookupCachedSymbol(int symbol_id);
 
   // Generate AST node that throw a ReferenceError with the given type.
@@ -795,7 +831,8 @@ class Parser : public ParserBase<ParserTraits> {
   PreParser* reusable_preparser_;
   Scope* original_scope_;  // for ES5 function declarations in sloppy eval
   Target* target_stack_;  // for break, continue statements
-  ScriptDataImpl* pre_parse_data_;
+  ScriptDataImpl** cached_data_;
+  CachedDataMode cached_data_mode_;
 
   Mode mode_;
 

@@ -3445,47 +3445,15 @@ THREADED_TEST(UniquePersistent) {
 }
 
 
-template<typename K, typename V, bool is_weak>
-class StdPersistentValueMapTraits {
+template<typename K, typename V>
+class WeakStdMapTraits : public v8::StdMapTraits<K, V> {
  public:
-  static const bool kIsWeak = is_weak;
-  typedef v8::PersistentContainerValue VInt;
-  typedef std::map<K, VInt> Impl;
+  typedef typename v8::DefaultPersistentValueMapTraits<K, V>::Impl Impl;
+  static const bool kIsWeak = true;
   struct WeakCallbackDataType {
     Impl* impl;
     K key;
   };
-  typedef typename Impl::iterator Iterator;
-  static bool Empty(Impl* impl) { return impl->empty(); }
-  static size_t Size(Impl* impl) { return impl->size(); }
-  static void Swap(Impl& a, Impl& b) { std::swap(a, b); }  // NOLINT
-  static Iterator Begin(Impl* impl) { return impl->begin(); }
-  static Iterator End(Impl* impl) { return impl->end(); }
-  static K Key(Iterator it) { return it->first; }
-  static VInt Value(Iterator it) { return it->second; }
-  static VInt Set(Impl* impl, K key, VInt value) {
-    std::pair<Iterator, bool> res = impl->insert(std::make_pair(key, value));
-    VInt old_value = v8::kPersistentContainerNotFound;
-    if (!res.second) {
-      old_value = res.first->second;
-      res.first->second = value;
-    }
-    return old_value;
-  }
-  static VInt Get(Impl* impl, K key) {
-    Iterator it = impl->find(key);
-    if (it == impl->end()) return v8::kPersistentContainerNotFound;
-    return it->second;
-  }
-  static VInt Remove(Impl* impl, K key) {
-    Iterator it = impl->find(key);
-    if (it == impl->end()) return v8::kPersistentContainerNotFound;
-    VInt value = it->second;
-    impl->erase(it);
-    return value;
-  }
-  static void Dispose(v8::Isolate* isolate, v8::UniquePersistent<V> value,
-      Impl* impl, K key) {}
   static WeakCallbackDataType* WeakCallbackParameter(
       Impl* impl, const K& key, Local<V> value) {
     WeakCallbackDataType* data = new WeakCallbackDataType;
@@ -3504,15 +3472,15 @@ class StdPersistentValueMapTraits {
   static void DisposeCallbackData(WeakCallbackDataType* data) {
     delete data;
   }
+  static void Dispose(v8::Isolate* isolate, v8::UniquePersistent<V> value,
+      Impl* impl, K key) { }
 };
 
 
-template<bool is_weak>
+template<typename Map>
 static void TestPersistentValueMap() {
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
-  typedef v8::PersistentValueMap<int, v8::Object,
-      StdPersistentValueMapTraits<int, v8::Object, is_weak> > Map;
   Map map(isolate);
   v8::internal::GlobalHandles* global_handles =
       reinterpret_cast<v8::internal::Isolate*>(isolate)->global_handles();
@@ -3538,7 +3506,7 @@ static void TestPersistentValueMap() {
     CHECK_EQ(1, static_cast<int>(map.Size()));
   }
   CHECK_EQ(initial_handle_count + 1, global_handles->global_handles_count());
-  if (is_weak) {
+  if (map.IsWeak()) {
     reinterpret_cast<v8::internal::Isolate*>(isolate)->heap()->
         CollectAllGarbage(i::Heap::kAbortIncrementalMarkingMask);
   } else {
@@ -3550,8 +3518,13 @@ static void TestPersistentValueMap() {
 
 
 TEST(PersistentValueMap) {
-  TestPersistentValueMap<false>();
-  TestPersistentValueMap<true>();
+  // Default case, w/o weak callbacks:
+  TestPersistentValueMap<v8::StdPersistentValueMap<int, v8::Object> >();
+
+  // Custom traits with weak callbacks:
+  typedef v8::StdPersistentValueMap<int, v8::Object,
+      WeakStdMapTraits<int, v8::Object> > WeakPersistentValueMap;
+  TestPersistentValueMap<WeakPersistentValueMap>();
 }
 
 
@@ -14218,7 +14191,8 @@ UNINITIALIZED_TEST(SetJitCodeEventHandler) {
   // have remnants of state from other code.
   v8::Isolate* isolate = v8::Isolate::New();
   isolate->Enter();
-  i::Heap* heap = reinterpret_cast<i::Isolate*>(isolate)->heap();
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  i::Heap* heap = i_isolate->heap();
 
   {
     v8::HandleScope scope(isolate);
@@ -14238,7 +14212,7 @@ UNINITIALIZED_TEST(SetJitCodeEventHandler) {
     const int kIterations = 10;
     for (int i = 0; i < kIterations; ++i) {
       LocalContext env(isolate);
-      i::AlwaysAllocateScope always_allocate;
+      i::AlwaysAllocateScope always_allocate(i_isolate);
       SimulateFullSpace(heap->code_space());
       CompileRun(script);
 
@@ -14955,10 +14929,10 @@ TEST(PreCompileInvalidPreparseDataError) {
 
   v8::ScriptCompiler::Source script_source(
       String::NewFromUtf8(isolate, script),
-      v8::ScriptCompiler::CachedData(
+      new v8::ScriptCompiler::CachedData(
           reinterpret_cast<const uint8_t*>(sd->Data()), sd->Length()));
   Local<v8::UnboundScript> compiled_script =
-      v8::ScriptCompiler::CompileUnbound(isolate, script_source);
+      v8::ScriptCompiler::CompileUnbound(isolate, &script_source);
 
   CHECK(try_catch.HasCaught());
   String::Utf8Value exception_value(try_catch.Message()->Get());
@@ -14978,10 +14952,10 @@ TEST(PreCompileInvalidPreparseDataError) {
       200;
   v8::ScriptCompiler::Source script_source2(
       String::NewFromUtf8(isolate, script),
-      v8::ScriptCompiler::CachedData(
+      new v8::ScriptCompiler::CachedData(
           reinterpret_cast<const uint8_t*>(sd->Data()), sd->Length()));
   compiled_script =
-      v8::ScriptCompiler::CompileUnbound(isolate, script_source2);
+      v8::ScriptCompiler::CompileUnbound(isolate, &script_source2);
   CHECK(!try_catch.HasCaught());
 
   delete sd;
@@ -15687,7 +15661,7 @@ static void CheckElementValue(i::Isolate* isolate,
                               int expected,
                               i::Handle<i::Object> obj,
                               int offset) {
-  i::Object* element = obj->GetElement(isolate, offset)->ToObjectChecked();
+  i::Object* element = *i::Object::GetElement(isolate, obj, offset);
   CHECK_EQ(expected, i::Smi::cast(element)->value());
 }
 
@@ -16321,7 +16295,7 @@ static void ObjectWithExternalArrayTestHelper(
       array_type == v8::kExternalFloat32Array) {
     CHECK_EQ(static_cast<int>(i::OS::nan_value()),
              static_cast<int>(
-                 jsobj->GetElement(isolate, 7)->ToObjectChecked()->Number()));
+                 i::Object::GetElement(isolate, jsobj, 7)->Number()));
   } else {
     CheckElementValue(isolate, 0, jsobj, 7);
   }
@@ -16333,7 +16307,7 @@ static void ObjectWithExternalArrayTestHelper(
   CHECK_EQ(2, result->Int32Value());
   CHECK_EQ(2,
            static_cast<int>(
-               jsobj->GetElement(isolate, 6)->ToObjectChecked()->Number()));
+               i::Object::GetElement(isolate, jsobj, 6)->Number()));
 
   if (array_type != v8::kExternalFloat32Array &&
       array_type != v8::kExternalFloat64Array) {
@@ -16613,7 +16587,7 @@ static void ExternalArrayTestHelper(v8::ExternalArrayType array_type,
                                                kElementCount);
   CHECK_EQ(1,
            static_cast<int>(
-               jsobj->GetElement(isolate, 1)->ToObjectChecked()->Number()));
+               i::Object::GetElement(isolate, jsobj, 1)->Number()));
 
   ObjectWithExternalArrayTestHelper<ExternalArrayClass, ElementType>(
       context.local(), obj, kElementCount, array_type, low, high);
@@ -17090,12 +17064,11 @@ THREADED_TEST(ScriptContextDependence) {
   LocalContext c1;
   v8::HandleScope scope(c1->GetIsolate());
   const char *source = "foo";
-  v8::Handle<v8::Script> dep =
-      v8_compile(source);
+  v8::Handle<v8::Script> dep = v8_compile(source);
+  v8::ScriptCompiler::Source script_source(v8::String::NewFromUtf8(
+      c1->GetIsolate(), source));
   v8::Handle<v8::UnboundScript> indep =
-      v8::ScriptCompiler::CompileUnbound(
-          c1->GetIsolate(), v8::ScriptCompiler::Source(v8::String::NewFromUtf8(
-                                c1->GetIsolate(), source)));
+      v8::ScriptCompiler::CompileUnbound(c1->GetIsolate(), &script_source);
   c1->Global()->Set(v8::String::NewFromUtf8(c1->GetIsolate(), "foo"),
                     v8::Integer::New(c1->GetIsolate(), 100));
   CHECK_EQ(dep->Run()->Int32Value(), 100);
@@ -17117,9 +17090,8 @@ THREADED_TEST(StackTrace) {
       v8::String::NewFromUtf8(context->GetIsolate(), source);
   v8::Handle<v8::String> origin =
       v8::String::NewFromUtf8(context->GetIsolate(), "stack-trace-test");
-  v8::ScriptCompiler::CompileUnbound(
-      context->GetIsolate(),
-      v8::ScriptCompiler::Source(src, v8::ScriptOrigin(origin)))
+  v8::ScriptCompiler::Source script_source(src, v8::ScriptOrigin(origin));
+  v8::ScriptCompiler::CompileUnbound(context->GetIsolate(), &script_source)
       ->BindToCurrentContext()
       ->Run();
   CHECK(try_catch.HasCaught());
@@ -17227,10 +17199,10 @@ TEST(CaptureStackTrace) {
     "var x;eval('new foo();');";
   v8::Handle<v8::String> overview_src =
       v8::String::NewFromUtf8(isolate, overview_source);
+  v8::ScriptCompiler::Source script_source(overview_src,
+                                           v8::ScriptOrigin(origin));
   v8::Handle<Value> overview_result(
-      v8::ScriptCompiler::CompileUnbound(
-          isolate,
-          v8::ScriptCompiler::Source(overview_src, v8::ScriptOrigin(origin)))
+      v8::ScriptCompiler::CompileUnbound(isolate, &script_source)
           ->BindToCurrentContext()
           ->Run());
   CHECK(!overview_result.IsEmpty());
@@ -17251,9 +17223,9 @@ TEST(CaptureStackTrace) {
   v8::Handle<v8::Integer> line_offset = v8::Integer::New(isolate, 3);
   v8::Handle<v8::Integer> column_offset = v8::Integer::New(isolate, 5);
   v8::ScriptOrigin detailed_origin(origin, line_offset, column_offset);
+  v8::ScriptCompiler::Source script_source2(detailed_src, detailed_origin);
   v8::Handle<v8::UnboundScript> detailed_script(
-      v8::ScriptCompiler::CompileUnbound(
-          isolate, v8::ScriptCompiler::Source(detailed_src, detailed_origin)));
+      v8::ScriptCompiler::CompileUnbound(isolate, &script_source2));
   v8::Handle<Value> detailed_result(
       detailed_script->BindToCurrentContext()->Run());
   CHECK(!detailed_result.IsEmpty());
@@ -17649,7 +17621,7 @@ TEST(DynamicWithSourceURLInStackTraceString) {
 static void CreateGarbageInOldSpace() {
   i::Factory* factory = CcTest::i_isolate()->factory();
   v8::HandleScope scope(CcTest::isolate());
-  i::AlwaysAllocateScope always_allocate;
+  i::AlwaysAllocateScope always_allocate(CcTest::i_isolate());
   for (int i = 0; i < 1000; i++) {
     factory->NewFixedArray(1000, i::TENURED);
   }
@@ -18666,6 +18638,8 @@ int prologue_call_count = 0;
 int epilogue_call_count = 0;
 int prologue_call_count_second = 0;
 int epilogue_call_count_second = 0;
+int prologue_call_count_alloc = 0;
+int epilogue_call_count_alloc = 0;
 
 void PrologueCallback(v8::GCType, v8::GCCallbackFlags flags) {
   CHECK_EQ(flags, v8::kNoGCCallbackFlags);
@@ -18724,6 +18698,46 @@ void EpilogueCallbackSecond(v8::Isolate* isolate,
   CHECK_EQ(flags, v8::kNoGCCallbackFlags);
   CHECK_EQ(gc_callbacks_isolate, isolate);
   ++epilogue_call_count_second;
+}
+
+
+void PrologueCallbackAlloc(v8::Isolate* isolate,
+                           v8::GCType,
+                           v8::GCCallbackFlags flags) {
+  v8::HandleScope scope(isolate);
+
+  CHECK_EQ(flags, v8::kNoGCCallbackFlags);
+  CHECK_EQ(gc_callbacks_isolate, isolate);
+  ++prologue_call_count_alloc;
+
+  // Simulate full heap to see if we will reenter this callback
+  SimulateFullSpace(CcTest::heap()->new_space());
+
+  Local<Object> obj = Object::New(isolate);
+  CHECK(!obj.IsEmpty());
+
+  CcTest::heap()->CollectAllGarbage(
+      i::Heap::kAbortIncrementalMarkingMask);
+}
+
+
+void EpilogueCallbackAlloc(v8::Isolate* isolate,
+                           v8::GCType,
+                           v8::GCCallbackFlags flags) {
+  v8::HandleScope scope(isolate);
+
+  CHECK_EQ(flags, v8::kNoGCCallbackFlags);
+  CHECK_EQ(gc_callbacks_isolate, isolate);
+  ++epilogue_call_count_alloc;
+
+  // Simulate full heap to see if we will reenter this callback
+  SimulateFullSpace(CcTest::heap()->new_space());
+
+  Local<Object> obj = Object::New(isolate);
+  CHECK(!obj.IsEmpty());
+
+  CcTest::heap()->CollectAllGarbage(
+      i::Heap::kAbortIncrementalMarkingMask);
 }
 
 
@@ -18793,6 +18807,17 @@ TEST(GCCallbacks) {
   CHECK_EQ(2, epilogue_call_count);
   CHECK_EQ(2, prologue_call_count_second);
   CHECK_EQ(2, epilogue_call_count_second);
+
+  CHECK_EQ(0, prologue_call_count_alloc);
+  CHECK_EQ(0, epilogue_call_count_alloc);
+  isolate->AddGCPrologueCallback(PrologueCallbackAlloc);
+  isolate->AddGCEpilogueCallback(EpilogueCallbackAlloc);
+  CcTest::heap()->CollectAllGarbage(
+      i::Heap::kAbortIncrementalMarkingMask);
+  CHECK_EQ(1, prologue_call_count_alloc);
+  CHECK_EQ(1, epilogue_call_count_alloc);
+  isolate->RemoveGCPrologueCallback(PrologueCallbackAlloc);
+  isolate->RemoveGCEpilogueCallback(EpilogueCallbackAlloc);
 }
 
 
@@ -22254,8 +22279,10 @@ TEST(Promises) {
   Handle<Object> global = context->Global();
 
   // Creation.
-  Handle<v8::Promise> p = v8::Promise::New(isolate);
-  Handle<v8::Promise> r = v8::Promise::New(isolate);
+  Handle<v8::Promise::Resolver> pr = v8::Promise::Resolver::New(isolate);
+  Handle<v8::Promise::Resolver> rr = v8::Promise::Resolver::New(isolate);
+  Handle<v8::Promise> p = pr->GetPromise();
+  Handle<v8::Promise> r = rr->GetPromise();
 
   // IsPromise predicate.
   CHECK(p->IsPromise());
@@ -22264,9 +22291,9 @@ TEST(Promises) {
   CHECK(!o->IsPromise());
 
   // Resolution and rejection.
-  p->Resolve(v8::Integer::New(isolate, 1));
+  pr->Resolve(v8::Integer::New(isolate, 1));
   CHECK(p->IsPromise());
-  r->Reject(v8::Integer::New(isolate, 2));
+  rr->Reject(v8::Integer::New(isolate, 2));
   CHECK(r->IsPromise());
 
   // Chaining non-pending promises.
@@ -22298,17 +22325,17 @@ TEST(Promises) {
 
   // Chaining pending promises.
   CompileRun("x1 = x2 = 0;");
-  p = v8::Promise::New(isolate);
-  r = v8::Promise::New(isolate);
+  pr = v8::Promise::Resolver::New(isolate);
+  rr = v8::Promise::Resolver::New(isolate);
 
-  p->Chain(f1);
-  r->Catch(f2);
+  pr->GetPromise()->Chain(f1);
+  rr->GetPromise()->Catch(f2);
   V8::RunMicrotasks(isolate);
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
 
-  p->Resolve(v8::Integer::New(isolate, 1));
-  r->Reject(v8::Integer::New(isolate, 2));
+  pr->Resolve(v8::Integer::New(isolate, 1));
+  rr->Reject(v8::Integer::New(isolate, 2));
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
 
@@ -22318,9 +22345,9 @@ TEST(Promises) {
 
   // Multi-chaining.
   CompileRun("x1 = x2 = 0;");
-  p = v8::Promise::New(isolate);
-  p->Chain(f1)->Chain(f2);
-  p->Resolve(v8::Integer::New(isolate, 3));
+  pr = v8::Promise::Resolver::New(isolate);
+  pr->GetPromise()->Chain(f1)->Chain(f2);
+  pr->Resolve(v8::Integer::New(isolate, 3));
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
   V8::RunMicrotasks(isolate);
@@ -22328,12 +22355,48 @@ TEST(Promises) {
   CHECK_EQ(4, global->Get(v8_str("x2"))->Int32Value());
 
   CompileRun("x1 = x2 = 0;");
-  r = v8::Promise::New(isolate);
-  r->Catch(f1)->Chain(f2);
-  r->Reject(v8::Integer::New(isolate, 3));
+  rr = v8::Promise::Resolver::New(isolate);
+  rr->GetPromise()->Catch(f1)->Chain(f2);
+  rr->Reject(v8::Integer::New(isolate, 3));
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
   V8::RunMicrotasks(isolate);
   CHECK_EQ(3, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(4, global->Get(v8_str("x2"))->Int32Value());
+}
+
+
+TEST(DisallowJavascriptExecutionScope) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Isolate::DisallowJavascriptExecutionScope no_js(
+      isolate, v8::Isolate::DisallowJavascriptExecutionScope::CRASH_ON_FAILURE);
+  CompileRun("2+2");
+}
+
+
+TEST(AllowJavascriptExecutionScope) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Isolate::DisallowJavascriptExecutionScope no_js(
+      isolate, v8::Isolate::DisallowJavascriptExecutionScope::CRASH_ON_FAILURE);
+  v8::Isolate::DisallowJavascriptExecutionScope throw_js(
+      isolate, v8::Isolate::DisallowJavascriptExecutionScope::THROW_ON_FAILURE);
+  { v8::Isolate::AllowJavascriptExecutionScope yes_js(isolate);
+    CompileRun("1+1");
+  }
+}
+
+
+TEST(ThrowOnJavascriptExecution) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::TryCatch try_catch;
+  v8::Isolate::DisallowJavascriptExecutionScope throw_js(
+      isolate, v8::Isolate::DisallowJavascriptExecutionScope::THROW_ON_FAILURE);
+  CompileRun("1+1");
+  CHECK(try_catch.HasCaught());
 }

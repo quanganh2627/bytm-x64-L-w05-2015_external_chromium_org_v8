@@ -549,6 +549,10 @@ class MacroAssembler: public Assembler {
   // Abort execution if argument is not a name, enabled via --debug-code.
   void AssertName(Register object);
 
+  // Abort execution if argument is not undefined or an AllocationSite, enabled
+  // via --debug-code.
+  void AssertUndefinedOrAllocationSite(Register object);
+
   // ---------------------------------------------------------------------------
   // Exception handling
 
@@ -858,9 +862,9 @@ class MacroAssembler: public Assembler {
   // Insert code to verify that the x87 stack has the specified depth (0-7)
   void VerifyX87StackDepth(uint32_t depth);
 
-  // Emit code for a flooring division by a constant. The dividend register is
+  // Emit code for a truncating division by a constant. The dividend register is
   // unchanged, the result is in edx, and eax gets clobbered.
-  void FlooringDiv(Register dividend, int32_t divisor);
+  void TruncatingDiv(Register dividend, int32_t divisor);
 
   // ---------------------------------------------------------------------------
   // StatsCounter support

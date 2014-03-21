@@ -538,6 +538,10 @@ class MacroAssembler : public Assembler {
   // the system stack pointer, these methods do not modify any other registers.
   void Push(const CPURegister& src0, const CPURegister& src1 = NoReg,
             const CPURegister& src2 = NoReg, const CPURegister& src3 = NoReg);
+  void Push(const CPURegister& src0, const CPURegister& src1,
+            const CPURegister& src2, const CPURegister& src3,
+            const CPURegister& src4, const CPURegister& src5 = NoReg,
+            const CPURegister& src6 = NoReg, const CPURegister& src7 = NoReg);
   void Pop(const CPURegister& dst0, const CPURegister& dst1 = NoReg,
            const CPURegister& dst2 = NoReg, const CPURegister& dst3 = NoReg);
 
@@ -791,10 +795,6 @@ class MacroAssembler : public Assembler {
   //
   // This method asserts that StackPointer() is not csp, since the call does
   // not make sense in that context.
-  //
-  // TODO(jbramley): Currently, this method can only accept values of 'space'
-  // that can be encoded in one instruction. Refer to the implementation for
-  // details.
   inline void BumpSystemStackPointer(const Operand& space);
 
   // Helpers ------------------------------------------------------------------
@@ -886,6 +886,10 @@ class MacroAssembler : public Assembler {
   // Abort execution if argument is not a name, enabled via --debug-code.
   void AssertName(Register object);
 
+  // Abort execution if argument is not undefined or an AllocationSite, enabled
+  // via --debug-code.
+  void AssertUndefinedOrAllocationSite(Register object, Register scratch);
+
   // Abort execution if argument is not a string, enabled via --debug-code.
   void AssertString(Register object);
 
@@ -899,6 +903,9 @@ class MacroAssembler : public Assembler {
   void JumpIfNotHeapNumber(Register object,
                            Label* on_not_heap_number,
                            Register heap_number_map = NoReg);
+
+  // Sets the vs flag if the input is -0.0.
+  void TestForMinusZero(DoubleRegister input);
 
   // Jump to label if the input double register contains -0.0.
   void JumpIfMinusZero(DoubleRegister input, Label* on_negative_zero);
@@ -928,10 +935,12 @@ class MacroAssembler : public Assembler {
   // Try to convert a double to a signed 32-bit int.
   // This succeeds if the result compares equal to the input, so inputs of -0.0
   // are converted to 0 and handled as a success.
+  //
+  // On output the Z flag is set if the conversion was successful.
   void TryConvertDoubleToInt32(Register as_int,
                                FPRegister value,
                                FPRegister scratch_d,
-                               Label* on_successful_conversion,
+                               Label* on_successful_conversion = NULL,
                                Label* on_failed_conversion = NULL) {
     ASSERT(as_int.Is32Bits());
     TryConvertDoubleToInt(as_int, value, scratch_d, on_successful_conversion,
@@ -941,10 +950,12 @@ class MacroAssembler : public Assembler {
   // Try to convert a double to a signed 64-bit int.
   // This succeeds if the result compares equal to the input, so inputs of -0.0
   // are converted to 0 and handled as a success.
+  //
+  // On output the Z flag is set if the conversion was successful.
   void TryConvertDoubleToInt64(Register as_int,
                                FPRegister value,
                                FPRegister scratch_d,
-                               Label* on_successful_conversion,
+                               Label* on_successful_conversion = NULL,
                                Label* on_failed_conversion = NULL) {
     ASSERT(as_int.Is64Bits());
     TryConvertDoubleToInt(as_int, value, scratch_d, on_successful_conversion,
@@ -1458,9 +1469,9 @@ class MacroAssembler : public Assembler {
   // flags. The object register is preserved.
   void TestMapBitfield(Register object, uint64_t mask);
 
-  // Load the elements kind field of an object, and return it in the result
+  // Load the elements kind field from a map, and return it in the result
   // register.
-  void LoadElementsKind(Register result, Register object);
+  void LoadElementsKindFromMap(Register result, Register map);
 
   // Compare the object in a register to a value from the root list.
   void CompareRoot(const Register& obj, Heap::RootListIndex index);
@@ -1524,19 +1535,11 @@ class MacroAssembler : public Assembler {
 
   // Check if a map for a JSObject indicates that the object has fast elements.
   // Jump to the specified label if it does not.
-  void CheckFastElements(Register map,
-                         Register scratch,
-                         Label* fail);
+  void CheckFastElements(Register map, Register scratch, Label* fail);
 
   // Check if a map for a JSObject indicates that the object can have both smi
   // and HeapObject elements.  Jump to the specified label if it does not.
-  void CheckFastObjectElements(Register map,
-                               Register scratch,
-                               Label* fail);
-
-  // Check if a map for a JSObject indicates that the object has fast smi only
-  // elements. Jump to the specified label if it does not.
-  void CheckFastSmiElements(Register map, Register scratch, Label* fail);
+  void CheckFastObjectElements(Register map, Register scratch, Label* fail);
 
   // Check to see if number can be stored as a double in FastDoubleElements.
   // If it can, store it at the index specified by key_reg in the array,
@@ -1689,9 +1692,9 @@ class MacroAssembler : public Assembler {
 
   void LoadContext(Register dst, int context_chain_length);
 
-  // Emit code for a flooring division by a constant. The dividend register is
+  // Emit code for a truncating division by a constant. The dividend register is
   // unchanged. Dividend and result must be different.
-  void FlooringDiv(Register result, Register dividend, int32_t divisor);
+  void TruncatingDiv(Register result, Register dividend, int32_t divisor);
 
   // ---------------------------------------------------------------------------
   // StatsCounter support
@@ -2071,10 +2074,12 @@ class MacroAssembler : public Assembler {
   //
   // This does not distinguish between +0 and -0, so if this distinction is
   // important it must be checked separately.
+  //
+  // On output the Z flag is set if the conversion was successful.
   void TryConvertDoubleToInt(Register as_int,
                              FPRegister value,
                              FPRegister scratch_d,
-                             Label* on_successful_conversion,
+                             Label* on_successful_conversion = NULL,
                              Label* on_failed_conversion = NULL);
 
   bool generating_stub_;

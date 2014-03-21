@@ -365,6 +365,7 @@ namespace internal {
   F(ArrayBufferGetByteLength, 1, 1)\
   F(ArrayBufferSliceImpl, 3, 1) \
   F(ArrayBufferIsView, 1, 1) \
+  F(ArrayBufferNeuter, 1, 1) \
   \
   F(TypedArrayInitialize, 5, 1) \
   F(TypedArrayInitializeFromArrayLike, 4, 1) \
@@ -400,6 +401,7 @@ namespace internal {
   F(NewClosure, 3, 1) \
   F(NewClosureFromStubFailure, 1, 1) \
   F(NewObject, 1, 1) \
+  F(NewObjectWithAllocationSite, 2, 1) \
   F(NewObjectFromBound, 1, 1) \
   F(FinalizeInstanceSize, 1, 1) \
   F(Throw, 1, 1) \
@@ -827,6 +829,8 @@ class Runtime : public AllStatic {
       Handle<JSArrayBuffer> array_buffer,
       size_t allocated_length,
       bool initialize = true);
+
+  static void NeuterArrayBuffer(Handle<JSArrayBuffer> array_buffer);
 
   static void FreeArrayBuffer(
       Isolate* isolate,

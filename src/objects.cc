@@ -493,16 +493,8 @@ Handle<Object> Object::GetProperty(Handle<Object> object,
   // method (or somewhere else entirely). Needs more global clean-up.
   uint32_t index;
   Isolate* isolate = name->GetIsolate();
-  if (name->AsArrayIndex(&index))
-    return GetElement(isolate, object, index);
+  if (name->AsArrayIndex(&index)) return GetElement(isolate, object, index);
   CALL_HEAP_FUNCTION(isolate, object->GetProperty(*name), Object);
-}
-
-
-Handle<Object> Object::GetElement(Isolate* isolate,
-                                  Handle<Object> object,
-                                  uint32_t index) {
-  CALL_HEAP_FUNCTION(isolate, object->GetElement(isolate, index), Object);
 }
 
 
@@ -1309,10 +1301,7 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   // Fill the remainder of the string with dead wood.
   int new_size = this->Size();  // Byte size of the external String object.
   heap->CreateFillerObjectAt(this->address() + new_size, size - new_size);
-  if (Marking::IsBlack(Marking::MarkBitFrom(this))) {
-    MemoryChunk::IncrementLiveBytesFromMutator(this->address(),
-                                               new_size - size);
-  }
+  heap->AdjustLiveBytes(this->address(), new_size - size, Heap::FROM_MUTATOR);
   return true;
 }
 
@@ -1368,10 +1357,7 @@ bool String::MakeExternal(v8::String::ExternalAsciiStringResource* resource) {
   // Fill the remainder of the string with dead wood.
   int new_size = this->Size();  // Byte size of the external String object.
   heap->CreateFillerObjectAt(this->address() + new_size, size - new_size);
-  if (Marking::IsBlack(Marking::MarkBitFrom(this))) {
-    MemoryChunk::IncrementLiveBytesFromMutator(this->address(),
-                                               new_size - size);
-  }
+  heap->AdjustLiveBytes(this->address(), new_size - size, Heap::FROM_MUTATOR);
   return true;
 }
 
@@ -2270,9 +2256,6 @@ const char* Representation::Mnemonic() const {
 }
 
 
-enum RightTrimMode { FROM_GC, FROM_MUTATOR };
-
-
 static void ZapEndOfFixedArray(Address new_end, int to_trim) {
   // If we are doing a big trim in old space then we zap the space.
   Object** zap = reinterpret_cast<Object**>(new_end);
@@ -2283,7 +2266,7 @@ static void ZapEndOfFixedArray(Address new_end, int to_trim) {
 }
 
 
-template<RightTrimMode trim_mode>
+template<Heap::InvocationMode mode>
 static void RightTrimFixedArray(Heap* heap, FixedArray* elms, int to_trim) {
   ASSERT(elms->map() != heap->fixed_cow_array_map());
   // For now this trick is only applied to fixed arrays in new and paged space.
@@ -2295,7 +2278,7 @@ static void RightTrimFixedArray(Heap* heap, FixedArray* elms, int to_trim) {
 
   Address new_end = elms->address() + FixedArray::SizeFor(len - to_trim);
 
-  if (trim_mode != FROM_GC || Heap::ShouldZapGarbage()) {
+  if (mode != Heap::FROM_GC || Heap::ShouldZapGarbage()) {
     ZapEndOfFixedArray(new_end, to_trim);
   }
 
@@ -2308,14 +2291,7 @@ static void RightTrimFixedArray(Heap* heap, FixedArray* elms, int to_trim) {
 
   elms->set_length(len - to_trim);
 
-  // Maintain marking consistency for IncrementalMarking.
-  if (Marking::IsBlack(Marking::MarkBitFrom(elms))) {
-    if (trim_mode == FROM_GC) {
-      MemoryChunk::IncrementLiveBytesFromGC(elms->address(), -size_delta);
-    } else {
-      MemoryChunk::IncrementLiveBytesFromMutator(elms->address(), -size_delta);
-    }
-  }
+  heap->AdjustLiveBytes(elms->address(), -size_delta, mode);
 
   // The array may not be moved during GC,
   // and size has to be adjusted nevertheless.
@@ -2463,7 +2439,7 @@ void JSObject::MigrateToMap(Handle<JSObject> object, Handle<Map> new_map) {
   // If there are properties in the new backing store, trim it to the correct
   // size and install the backing store into the object.
   if (external > 0) {
-    RightTrimFixedArray<FROM_MUTATOR>(isolate->heap(), *array, inobject);
+    RightTrimFixedArray<Heap::FROM_MUTATOR>(isolate->heap(), *array, inobject);
     object->set_properties(*array);
   }
 
@@ -3362,6 +3338,15 @@ MaybeObject* JSObject::GetElementsTransitionMapSlow(ElementsKind to_kind) {
 }
 
 
+// TODO(ishell): Temporary wrapper until handlified.
+// static
+Handle<Map> Map::AsElementsKind(Handle<Map> map, ElementsKind kind) {
+  CALL_HEAP_FUNCTION(map->GetIsolate(),
+                     map->AsElementsKind(kind),
+                     Map);
+}
+
+
 MaybeObject* Map::AsElementsKind(ElementsKind kind) {
   Map* closest_map = FindClosestElementsTransition(this, kind);
 
@@ -4076,6 +4061,7 @@ Handle<Object> JSObject::SetPropertyForResult(Handle<JSObject> object,
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup->IsDataProperty()) {
     old_value = Object::GetProperty(object, name);
+    CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
   }
 
   // This is a real property that is not read-only, or it is a
@@ -4121,6 +4107,7 @@ Handle<Object> JSObject::SetPropertyForResult(Handle<JSObject> object,
       object->LocalLookup(*name, &new_lookup, true);
       if (new_lookup.IsDataProperty()) {
         Handle<Object> new_value = Object::GetProperty(object, name);
+        CHECK_NOT_EMPTY_HANDLE(isolate, new_value);
         if (!new_value->SameValue(*old_value)) {
           EnqueueChangeRecord(object, "update", name, old_value);
         }
@@ -4197,8 +4184,10 @@ Handle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
   bool is_observed = object->map()->is_observed() &&
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup.IsProperty()) {
-    if (lookup.IsDataProperty()) old_value =
-        Object::GetProperty(object, name);
+    if (lookup.IsDataProperty()) {
+      old_value = Object::GetProperty(object, name);
+      CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
+    }
     old_attributes = lookup.GetAttributes();
   }
 
@@ -4243,6 +4232,7 @@ Handle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
       bool value_changed = false;
       if (new_lookup.IsDataProperty()) {
         Handle<Object> new_value = Object::GetProperty(object, name);
+        CHECK_NOT_EMPTY_HANDLE(isolate, new_value);
         value_changed = !old_value->SameValue(*new_value);
       }
       if (new_lookup.GetAttributes() != old_attributes) {
@@ -4637,12 +4627,12 @@ void JSObject::NormalizeProperties(Handle<JSObject> object,
   int new_instance_size = new_map->instance_size();
   int instance_size_delta = map->instance_size() - new_instance_size;
   ASSERT(instance_size_delta >= 0);
-  isolate->heap()->CreateFillerObjectAt(object->address() + new_instance_size,
-                                        instance_size_delta);
-  if (Marking::IsBlack(Marking::MarkBitFrom(*object))) {
-    MemoryChunk::IncrementLiveBytesFromMutator(object->address(),
-                                               -instance_size_delta);
-  }
+  Heap* heap = isolate->heap();
+  heap->CreateFillerObjectAt(object->address() + new_instance_size,
+                             instance_size_delta);
+  heap->AdjustLiveBytes(object->address(),
+                        -instance_size_delta,
+                        Heap::FROM_MUTATOR);
 
   object->set_map(*new_map);
   map->NotifyLeafMapLayoutChange();
@@ -5197,9 +5187,12 @@ Handle<Object> JSObject::DeleteElement(Handle<JSObject> object,
   if (object->map()->is_observed()) {
     should_enqueue_change_record = HasLocalElement(object, index);
     if (should_enqueue_change_record) {
-      old_value = object->GetLocalElementAccessorPair(index) != NULL
-          ? Handle<Object>::cast(factory->the_hole_value())
-          : Object::GetElement(isolate, object, index);
+      if (object->GetLocalElementAccessorPair(index) != NULL) {
+        old_value = Handle<Object>::cast(factory->the_hole_value());
+      } else {
+        old_value = Object::GetElement(isolate, object, index);
+        CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
+      }
     }
   }
 
@@ -5269,6 +5262,7 @@ Handle<Object> JSObject::DeleteProperty(Handle<JSObject> object,
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup.IsDataProperty()) {
     old_value = Object::GetProperty(object, name);
+    CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
   }
   Handle<Object> result;
 
@@ -6367,6 +6361,7 @@ void JSObject::DefineAccessor(Handle<JSObject> object,
       preexists = HasLocalElement(object, index);
       if (preexists && object->GetLocalElementAccessorPair(index) == NULL) {
         old_value = Object::GetElement(isolate, object, index);
+        CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
       }
     } else {
       LookupResult lookup(isolate);
@@ -6374,6 +6369,7 @@ void JSObject::DefineAccessor(Handle<JSObject> object,
       preexists = lookup.IsProperty();
       if (preexists && lookup.IsDataProperty()) {
         old_value = Object::GetProperty(object, name);
+        CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
       }
     }
   }
@@ -7867,7 +7863,8 @@ MaybeObject* PolymorphicCodeCacheHashTable::Put(MapHandleList* maps,
 void FixedArray::Shrink(int new_length) {
   ASSERT(0 <= new_length && new_length <= length());
   if (new_length < length()) {
-    RightTrimFixedArray<FROM_MUTATOR>(GetHeap(), this, length() - new_length);
+    RightTrimFixedArray<Heap::FROM_MUTATOR>(
+        GetHeap(), this, length() - new_length);
   }
 }
 
@@ -9205,10 +9202,7 @@ Handle<String> SeqString::Truncate(Handle<SeqString> string, int new_length) {
     // that are a multiple of pointer size.
     heap->CreateFillerObjectAt(start_of_string + new_size, delta);
   }
-  if (Marking::IsBlack(Marking::MarkBitFrom(start_of_string))) {
-    MemoryChunk::IncrementLiveBytesFromMutator(start_of_string, -delta);
-  }
-
+  heap->AdjustLiveBytes(start_of_string, -delta, Heap::FROM_MUTATOR);
 
   if (new_length == 0) return heap->isolate()->factory()->empty_string();
   return string;
@@ -9314,11 +9308,12 @@ static void TrimEnumCache(Heap* heap, Map* map, DescriptorArray* descriptors) {
 
   int to_trim = enum_cache->length() - live_enum;
   if (to_trim <= 0) return;
-  RightTrimFixedArray<FROM_GC>(heap, descriptors->GetEnumCache(), to_trim);
+  RightTrimFixedArray<Heap::FROM_GC>(
+      heap, descriptors->GetEnumCache(), to_trim);
 
   if (!descriptors->HasEnumIndicesCache()) return;
   FixedArray* enum_indices_cache = descriptors->GetEnumIndicesCache();
-  RightTrimFixedArray<FROM_GC>(heap, enum_indices_cache, to_trim);
+  RightTrimFixedArray<Heap::FROM_GC>(heap, enum_indices_cache, to_trim);
 }
 
 
@@ -9330,7 +9325,7 @@ static void TrimDescriptorArray(Heap* heap,
   int to_trim = number_of_descriptors - number_of_own_descriptors;
   if (to_trim == 0) return;
 
-  RightTrimFixedArray<FROM_GC>(
+  RightTrimFixedArray<Heap::FROM_GC>(
       heap, descriptors, to_trim * DescriptorArray::kDescriptorSize);
   descriptors->SetNumberOfDescriptors(number_of_own_descriptors);
 
@@ -9404,7 +9399,7 @@ void Map::ClearNonLiveTransitions(Heap* heap) {
 
   int trim = t->number_of_transitions() - transition_index;
   if (trim > 0) {
-    RightTrimFixedArray<FROM_GC>(heap, t, t->IsSimpleTransition()
+    RightTrimFixedArray<Heap::FROM_GC>(heap, t, t->IsSimpleTransition()
         ? trim : trim * TransitionArray::kTransitionSize);
   }
 }
@@ -9662,7 +9657,7 @@ void SharedFunctionInfo::EvictFromOptimizedCodeMap(Code* optimized_code,
   }
   if (dst != length) {
     // Always trim even when array is cleared because of heap verifier.
-    RightTrimFixedArray<FROM_MUTATOR>(GetHeap(), code_map, length - dst);
+    RightTrimFixedArray<Heap::FROM_MUTATOR>(GetHeap(), code_map, length - dst);
     if (code_map->length() == kEntriesStart) ClearOptimizedCodeMap();
   }
 }
@@ -9673,7 +9668,7 @@ void SharedFunctionInfo::TrimOptimizedCodeMap(int shrink_by) {
   ASSERT(shrink_by % kEntryLength == 0);
   ASSERT(shrink_by <= code_map->length() - kEntriesStart);
   // Always trim even when array is cleared because of heap verifier.
-  RightTrimFixedArray<FROM_GC>(GetHeap(), code_map, shrink_by);
+  RightTrimFixedArray<Heap::FROM_GC>(GetHeap(), code_map, shrink_by);
   if (code_map->length() == kEntriesStart) {
     ClearOptimizedCodeMap();
   }
@@ -10501,21 +10496,20 @@ Map* Code::FindFirstMap() {
 }
 
 
-void Code::ReplaceNthObject(int n,
-                            Map* match_map,
-                            Object* replace_with) {
+void Code::FindAndReplace(const FindAndReplacePattern& pattern) {
   ASSERT(is_inline_cache_stub() || is_handler());
   DisallowHeapAllocation no_allocation;
   int mask = RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT);
+  STATIC_ASSERT(FindAndReplacePattern::kMaxCount < 32);
+  int current_pattern = 0;
   for (RelocIterator it(this, mask); !it.done(); it.next()) {
     RelocInfo* info = it.rinfo();
     Object* object = info->target_object();
     if (object->IsHeapObject()) {
-      if (HeapObject::cast(object)->map() == match_map) {
-        if (--n == 0) {
-          info->set_target_object(replace_with);
-          return;
-        }
+      Map* map = HeapObject::cast(object)->map();
+      if (map == *pattern.find_[current_pattern]) {
+        info->set_target_object(*pattern.replace_[current_pattern]);
+        if (++current_pattern == pattern.count_) return;
       }
     }
   }
@@ -10547,11 +10541,6 @@ void Code::FindAllTypes(TypeHandleList* types) {
       types->Add(IC::MapToType<HeapType>(map, map->GetIsolate()));
     }
   }
-}
-
-
-void Code::ReplaceFirstMap(Map* replace_with) {
-  ReplaceNthObject(1, GetHeap()->meta_map(), replace_with);
 }
 
 
@@ -10600,21 +10589,6 @@ Name* Code::FindFirstName() {
 }
 
 
-void Code::ReplaceNthCell(int n, Cell* replace_with) {
-  ASSERT(is_inline_cache_stub());
-  DisallowHeapAllocation no_allocation;
-  int mask = RelocInfo::ModeMask(RelocInfo::CELL);
-  for (RelocIterator it(this, mask); !it.done(); it.next()) {
-    RelocInfo* info = it.rinfo();
-    if (--n == 0) {
-      info->set_target_cell(replace_with);
-      return;
-    }
-  }
-  UNREACHABLE();
-}
-
-
 void Code::ClearInlineCaches() {
   ClearInlineCaches(NULL);
 }
@@ -10642,16 +10616,19 @@ void Code::ClearInlineCaches(Code::Kind* kind) {
 }
 
 
-void SharedFunctionInfo::ClearTypeFeedbackInfo(Heap* heap) {
-  FixedArray* vector = feedback_vector();
-  for (int i = 0; i < vector->length(); i++) {
-    Object* obj = vector->get(i);
-    if (!obj->IsAllocationSite()) {
-      // The assert verifies we can skip the write barrier.
-      ASSERT(heap->uninitialized_symbol() ==
-             TypeFeedbackInfo::RawUninitializedSentinel(heap));
-      vector->set(i, TypeFeedbackInfo::RawUninitializedSentinel(heap),
-                  SKIP_WRITE_BARRIER);
+void Code::ClearTypeFeedbackInfo(Heap* heap) {
+  if (kind() != FUNCTION) return;
+  Object* raw_info = type_feedback_info();
+  if (raw_info->IsTypeFeedbackInfo()) {
+    FixedArray* feedback_vector =
+        TypeFeedbackInfo::cast(raw_info)->feedback_vector();
+    for (int i = 0; i < feedback_vector->length(); i++) {
+      Object* obj = feedback_vector->get(i);
+      if (!obj->IsAllocationSite()) {
+        // TODO(mvstanton): Can't I avoid a write barrier for this sentinel?
+        feedback_vector->set(i,
+                             TypeFeedbackInfo::RawUninitializedSentinel(heap));
+      }
     }
   }
 }
@@ -11336,10 +11313,11 @@ MaybeObject* JSObject::SetFastDoubleElementsCapacityAndLength(
 }
 
 
-MaybeObject* JSArray::Initialize(int capacity, int length) {
+// static
+void JSArray::Initialize(Handle<JSArray> array, int capacity, int length) {
   ASSERT(capacity >= 0);
-  return GetHeap()->AllocateJSArrayStorage(this, length, capacity,
-                                           INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE);
+  array->GetIsolate()->factory()->NewJSArrayStorage(
+      array, length, capacity, INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE);
 }
 
 
@@ -11361,9 +11339,14 @@ static bool GetOldValue(Isolate* isolate,
       JSReceiver::GetLocalElementAttribute(object, index);
   ASSERT(attributes != ABSENT);
   if (attributes == DONT_DELETE) return false;
-  old_values->Add(object->GetLocalElementAccessorPair(index) == NULL
-      ? Object::GetElement(isolate, object, index)
-      : Handle<Object>::cast(isolate->factory()->the_hole_value()));
+  Handle<Object> value;
+  if (object->GetLocalElementAccessorPair(index) != NULL) {
+    value = Handle<Object>::cast(isolate->factory()->the_hole_value());
+  } else {
+    value = Object::GetElement(isolate, object, index);
+    CHECK_NOT_EMPTY_HANDLE(isolate, value);
+  }
+  old_values->Add(value);
   indices->Add(index);
   return true;
 }
@@ -11418,67 +11401,64 @@ static void EndPerformSplice(Handle<JSArray> object) {
 }
 
 
-MaybeObject* JSArray::SetElementsLength(Object* len) {
+Handle<Object> JSArray::SetElementsLength(Handle<JSArray> array,
+                                          Handle<Object> new_length_handle) {
   // We should never end in here with a pixel or external array.
-  ASSERT(AllowsSetElementsLength());
-  if (!map()->is_observed())
-    return GetElementsAccessor()->SetLength(this, len);
+  ASSERT(array->AllowsSetElementsLength());
+  if (!array->map()->is_observed()) {
+    return array->GetElementsAccessor()->SetLength(array, new_length_handle);
+  }
 
-  Isolate* isolate = GetIsolate();
-  HandleScope scope(isolate);
-  Handle<JSArray> self(this);
+  Isolate* isolate = array->GetIsolate();
   List<uint32_t> indices;
   List<Handle<Object> > old_values;
-  Handle<Object> old_length_handle(self->length(), isolate);
-  Handle<Object> new_length_handle(len, isolate);
+  Handle<Object> old_length_handle(array->length(), isolate);
   uint32_t old_length = 0;
   CHECK(old_length_handle->ToArrayIndex(&old_length));
   uint32_t new_length = 0;
-  if (!new_length_handle->ToArrayIndex(&new_length))
-    return Failure::InternalError();
+  CHECK(new_length_handle->ToArrayIndex(&new_length));
 
   static const PropertyAttributes kNoAttrFilter = NONE;
-  int num_elements = self->NumberOfLocalElements(kNoAttrFilter);
+  int num_elements = array->NumberOfLocalElements(kNoAttrFilter);
   if (num_elements > 0) {
     if (old_length == static_cast<uint32_t>(num_elements)) {
       // Simple case for arrays without holes.
       for (uint32_t i = old_length - 1; i + 1 > new_length; --i) {
-        if (!GetOldValue(isolate, self, i, &old_values, &indices)) break;
+        if (!GetOldValue(isolate, array, i, &old_values, &indices)) break;
       }
     } else {
       // For sparse arrays, only iterate over existing elements.
       // TODO(rafaelw): For fast, sparse arrays, we can avoid iterating over
       // the to-be-removed indices twice.
       Handle<FixedArray> keys = isolate->factory()->NewFixedArray(num_elements);
-      self->GetLocalElementKeys(*keys, kNoAttrFilter);
+      array->GetLocalElementKeys(*keys, kNoAttrFilter);
       while (num_elements-- > 0) {
         uint32_t index = NumberToUint32(keys->get(num_elements));
         if (index < new_length) break;
-        if (!GetOldValue(isolate, self, index, &old_values, &indices)) break;
+        if (!GetOldValue(isolate, array, index, &old_values, &indices)) break;
       }
     }
   }
 
-  MaybeObject* result =
-      self->GetElementsAccessor()->SetLength(*self, *new_length_handle);
-  Handle<Object> hresult;
-  if (!result->ToHandle(&hresult, isolate)) return result;
+  Handle<Object> hresult =
+      array->GetElementsAccessor()->SetLength(array, new_length_handle);
+  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, hresult, hresult);
 
-  CHECK(self->length()->ToArrayIndex(&new_length));
-  if (old_length == new_length) return *hresult;
+  CHECK(array->length()->ToArrayIndex(&new_length));
+  if (old_length == new_length) return hresult;
 
-  BeginPerformSplice(self);
+  BeginPerformSplice(array);
 
   for (int i = 0; i < indices.length(); ++i) {
     JSObject::EnqueueChangeRecord(
-        self, "delete", isolate->factory()->Uint32ToString(indices[i]),
+        array, "delete", isolate->factory()->Uint32ToString(indices[i]),
         old_values[i]);
   }
   JSObject::EnqueueChangeRecord(
-      self, "update", isolate->factory()->length_string(),
+      array, "update", isolate->factory()->length_string(),
       old_length_handle);
 
-  EndPerformSplice(self);
+  EndPerformSplice(array);
 
   uint32_t index = Min(old_length, new_length);
   uint32_t add_count = new_length > old_length ? new_length - old_length : 0;
@@ -11495,9 +11475,9 @@ MaybeObject* JSArray::SetElementsLength(Object* len) {
                 NONE, SLOPPY);
   }
 
-  EnqueueSpliceRecord(self, index, deleted, add_count);
+  EnqueueSpliceRecord(array, index, deleted, add_count);
 
-  return *hresult;
+  return hresult;
 }
 
 
@@ -11878,6 +11858,21 @@ Handle<Object> JSObject::SetPrototype(Handle<JSObject> object,
   heap->ClearInstanceofCache();
   ASSERT(size == object->Size());
   return value;
+}
+
+
+// TODO(ishell): temporary wrapper until handilfied.
+// static
+void JSObject::EnsureCanContainElements(Handle<JSObject> object,
+                                        Arguments* args,
+                                        uint32_t first_arg,
+                                        uint32_t arg_count,
+                                        EnsureElementsMode mode) {
+  CALL_HEAP_FUNCTION_VOID(object->GetIsolate(),
+                          object->EnsureCanContainElements(args,
+                                                           first_arg,
+                                                           arg_count,
+                                                           mode));
 }
 
 
@@ -12568,8 +12563,10 @@ Handle<Object> JSObject::SetElement(Handle<JSObject> object,
   Handle<Object> new_length_handle;
 
   if (old_attributes != ABSENT) {
-    if (object->GetLocalElementAccessorPair(index) == NULL)
+    if (object->GetLocalElementAccessorPair(index) == NULL) {
       old_value = Object::GetElement(isolate, object, index);
+      CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
+    }
   } else if (object->IsJSArray()) {
     // Store old array length in case adding an element grows the array.
     old_length_handle = handle(Handle<JSArray>::cast(object)->length(),
@@ -12615,6 +12612,7 @@ Handle<Object> JSObject::SetElement(Handle<JSObject> object,
     EnqueueChangeRecord(object, "reconfigure", name, old_value);
   } else {
     Handle<Object> new_value = Object::GetElement(isolate, object, index);
+    CHECK_NOT_EMPTY_HANDLE(isolate, new_value);
     bool value_changed = !old_value->SameValue(*new_value);
     if (old_attributes != new_attributes) {
       if (!value_changed) old_value = isolate->factory()->the_hole_value();
@@ -12727,7 +12725,7 @@ void JSObject::TransitionElementsKind(Handle<JSObject> object,
 }
 
 
-const double AllocationSite::kPretenureRatio = 0.60;
+const double AllocationSite::kPretenureRatio = 0.85;
 
 
 void AllocationSite::ResetPretenureDecision() {

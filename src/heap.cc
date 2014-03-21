@@ -105,7 +105,6 @@ Heap::Heap()
       unflattened_strings_length_(0),
 #ifdef DEBUG
       allocation_timeout_(0),
-      disallow_allocation_failure_(false),
 #endif  // DEBUG
       new_space_high_promotion_mode_active_(false),
       old_generation_allocation_limit_(kMinimumOldGenerationAllocationLimit),
@@ -155,7 +154,8 @@ Heap::Heap()
       configured_(false),
       external_string_table_(this),
       chunks_queued_for_free_(NULL),
-      relocation_mutex_(NULL) {
+      relocation_mutex_(NULL),
+      gc_callbacks_depth_(0) {
   // Allow build-time customization of the max semispace size. Building
   // V8 with snapshots and a non-default max semispace size is much
   // easier if you can define it as part of the build environment.
@@ -1087,11 +1087,14 @@ bool Heap::PerformGarbageCollection(
   GCType gc_type =
       collector == MARK_COMPACTOR ? kGCTypeMarkSweepCompact : kGCTypeScavenge;
 
-  {
-    GCTracer::Scope scope(tracer, GCTracer::Scope::EXTERNAL);
-    VMState<EXTERNAL> state(isolate_);
-    HandleScope handle_scope(isolate_);
-    CallGCPrologueCallbacks(gc_type, kNoGCCallbackFlags);
+  { GCCallbacksScope scope(this);
+    if (scope.CheckReenter()) {
+      AllowHeapAllocation allow_allocation;
+      GCTracer::Scope scope(tracer, GCTracer::Scope::EXTERNAL);
+      VMState<EXTERNAL> state(isolate_);
+      HandleScope handle_scope(isolate_);
+      CallGCPrologueCallbacks(gc_type, kNoGCCallbackFlags);
+    }
   }
 
   EnsureFromSpaceIsCommitted();
@@ -1196,11 +1199,14 @@ bool Heap::PerformGarbageCollection(
         amount_of_external_allocated_memory_;
   }
 
-  {
-    GCTracer::Scope scope(tracer, GCTracer::Scope::EXTERNAL);
-    VMState<EXTERNAL> state(isolate_);
-    HandleScope handle_scope(isolate_);
-    CallGCEpilogueCallbacks(gc_type, gc_callback_flags);
+  { GCCallbacksScope scope(this);
+    if (scope.CheckReenter()) {
+      AllowHeapAllocation allow_allocation;
+      GCTracer::Scope scope(tracer, GCTracer::Scope::EXTERNAL);
+      VMState<EXTERNAL> state(isolate_);
+      HandleScope handle_scope(isolate_);
+      CallGCEpilogueCallbacks(gc_type, gc_callback_flags);
+    }
   }
 
 #ifdef VERIFY_HEAP
@@ -2687,6 +2693,7 @@ MaybeObject* Heap::AllocateTypeFeedbackInfo() {
     if (!maybe_info->To(&info)) return maybe_info;
   }
   info->initialize_storage();
+  info->set_feedback_vector(empty_fixed_array(), SKIP_WRITE_BARRIER);
   return info;
 }
 
@@ -3808,7 +3815,6 @@ MaybeObject* Heap::AllocateSharedFunctionInfo(Object* name) {
   share->set_script(undefined_value(), SKIP_WRITE_BARRIER);
   share->set_debug_info(undefined_value(), SKIP_WRITE_BARRIER);
   share->set_inferred_name(empty_string(), SKIP_WRITE_BARRIER);
-  share->set_feedback_vector(empty_fixed_array(), SKIP_WRITE_BARRIER);
   share->set_initial_map(undefined_value(), SKIP_WRITE_BARRIER);
   share->set_ast_node_count(0);
   share->set_counters(0);
@@ -3962,6 +3968,18 @@ void Heap::CreateFillerObjectAt(Address addr, int size) {
 }
 
 
+void Heap::AdjustLiveBytes(Address address, int by, InvocationMode mode) {
+  if (incremental_marking()->IsMarking() &&
+      Marking::IsBlack(Marking::MarkBitFrom(address))) {
+    if (mode == FROM_GC) {
+      MemoryChunk::IncrementLiveBytesFromGC(address, by);
+    } else {
+      MemoryChunk::IncrementLiveBytesFromMutator(address, by);
+    }
+  }
+}
+
+
 MaybeObject* Heap::AllocateExternalArray(int length,
                                          ExternalArrayType array_type,
                                          void* external_pointer,
@@ -4040,11 +4058,19 @@ MaybeObject* Heap::CreateCode(const CodeDesc& desc,
                               bool immovable,
                               bool crankshafted,
                               int prologue_offset) {
-  // Allocate ByteArray before the Code object, so that we do not risk
-  // leaving uninitialized Code object (and breaking the heap).
+  // Allocate ByteArray and ConstantPoolArray before the Code object, so that we
+  // do not risk leaving uninitialized Code object (and breaking the heap).
   ByteArray* reloc_info;
   MaybeObject* maybe_reloc_info = AllocateByteArray(desc.reloc_size, TENURED);
   if (!maybe_reloc_info->To(&reloc_info)) return maybe_reloc_info;
+
+  ConstantPoolArray* constant_pool;
+  if (FLAG_enable_ool_constant_pool) {
+    MaybeObject* maybe_constant_pool = desc.origin->AllocateConstantPool(this);
+    if (!maybe_constant_pool->To(&constant_pool)) return maybe_constant_pool;
+  } else {
+    constant_pool = empty_constant_pool_array();
+  }
 
   // Compute size.
   int body_size = RoundUp(desc.instr_size, kObjectAlignment);
@@ -4092,7 +4118,11 @@ MaybeObject* Heap::CreateCode(const CodeDesc& desc,
   if (code->kind() == Code::OPTIMIZED_FUNCTION) {
     code->set_marked_for_deoptimization(false);
   }
-  code->set_constant_pool(empty_constant_pool_array());
+
+  if (FLAG_enable_ool_constant_pool) {
+    desc.origin->PopulateConstantPool(constant_pool);
+  }
+  code->set_constant_pool(constant_pool);
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
   if (code->kind() == Code::FUNCTION) {
@@ -4123,9 +4153,20 @@ MaybeObject* Heap::CreateCode(const CodeDesc& desc,
 
 
 MaybeObject* Heap::CopyCode(Code* code) {
+  MaybeObject* maybe_result;
+  Object* new_constant_pool;
+  if (FLAG_enable_ool_constant_pool &&
+      code->constant_pool() != empty_constant_pool_array()) {
+    // Copy the constant pool, since edits to the copied code may modify
+    // the constant pool.
+    maybe_result = CopyConstantPoolArray(code->constant_pool());
+    if (!maybe_result->ToObject(&new_constant_pool)) return maybe_result;
+  } else {
+    new_constant_pool = empty_constant_pool_array();
+  }
+
   // Allocate an object the same size as the code object.
   int obj_size = code->Size();
-  MaybeObject* maybe_result;
   if (obj_size > code_space()->AreaSize()) {
     maybe_result = lo_space_->AllocateRaw(obj_size, EXECUTABLE);
   } else {
@@ -4139,8 +4180,12 @@ MaybeObject* Heap::CopyCode(Code* code) {
   Address old_addr = code->address();
   Address new_addr = reinterpret_cast<HeapObject*>(result)->address();
   CopyBlock(new_addr, old_addr, obj_size);
-  // Relocate the copy.
   Code* new_code = Code::cast(result);
+
+  // Update the constant pool.
+  new_code->set_constant_pool(new_constant_pool);
+
+  // Relocate the copy.
   ASSERT(!isolate_->code_range()->exists() ||
       isolate_->code_range()->contains(code->address()));
   new_code->Relocate(new_addr - old_addr);
@@ -4149,14 +4194,26 @@ MaybeObject* Heap::CopyCode(Code* code) {
 
 
 MaybeObject* Heap::CopyCode(Code* code, Vector<byte> reloc_info) {
-  // Allocate ByteArray before the Code object, so that we do not risk
-  // leaving uninitialized Code object (and breaking the heap).
+  // Allocate ByteArray and ConstantPoolArray before the Code object, so that we
+  // do not risk leaving uninitialized Code object (and breaking the heap).
   Object* reloc_info_array;
   { MaybeObject* maybe_reloc_info_array =
         AllocateByteArray(reloc_info.length(), TENURED);
     if (!maybe_reloc_info_array->ToObject(&reloc_info_array)) {
       return maybe_reloc_info_array;
     }
+  }
+  Object* new_constant_pool;
+  if (FLAG_enable_ool_constant_pool &&
+      code->constant_pool() != empty_constant_pool_array()) {
+    // Copy the constant pool, since edits to the copied code may modify
+    // the constant pool.
+    MaybeObject* maybe_constant_pool =
+        CopyConstantPoolArray(code->constant_pool());
+    if (!maybe_constant_pool->ToObject(&new_constant_pool))
+      return maybe_constant_pool;
+  } else {
+    new_constant_pool = empty_constant_pool_array();
   }
 
   int new_body_size = RoundUp(code->instruction_size(), kObjectAlignment);
@@ -4186,6 +4243,9 @@ MaybeObject* Heap::CopyCode(Code* code, Vector<byte> reloc_info) {
 
   Code* new_code = Code::cast(result);
   new_code->set_relocation_info(ByteArray::cast(reloc_info_array));
+
+  // Update constant pool.
+  new_code->set_constant_pool(new_constant_pool);
 
   // Copy patched rinfo.
   CopyBytes(new_code->relocation_start(),
@@ -5040,6 +5100,33 @@ MaybeObject* Heap::AllocateEmptyExternalArray(ExternalArrayType array_type) {
 }
 
 
+MaybeObject* Heap::CopyAndTenureFixedCOWArray(FixedArray* src) {
+  if (!InNewSpace(src)) {
+    return src;
+  }
+
+  int len = src->length();
+  Object* obj;
+  { MaybeObject* maybe_obj = AllocateRawFixedArray(len, TENURED);
+    if (!maybe_obj->ToObject(&obj)) return maybe_obj;
+  }
+  HeapObject::cast(obj)->set_map_no_write_barrier(fixed_array_map());
+  FixedArray* result = FixedArray::cast(obj);
+  result->set_length(len);
+
+  // Copy the content
+  DisallowHeapAllocation no_gc;
+  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
+  for (int i = 0; i < len; i++) result->set(i, src->get(i), mode);
+
+  // TODO(mvstanton): The map is set twice because of protection against calling
+  // set() on a COW FixedArray. Issue v8:3221 created to track this, and
+  // we might then be able to remove this whole method.
+  HeapObject::cast(obj)->set_map_no_write_barrier(fixed_cow_array_map());
+  return result;
+}
+
+
 MaybeObject* Heap::CopyFixedArrayWithMap(FixedArray* src, Map* map) {
   int len = src->length();
   Object* obj;
@@ -5276,7 +5363,7 @@ MaybeObject* Heap::AllocateConstantPoolArray(int number_of_int64_entries,
   }
   if (number_of_heap_ptr_entries > 0) {
     int offset =
-        constant_pool->OffsetOfElementAt(constant_pool->first_code_ptr_index());
+        constant_pool->OffsetOfElementAt(constant_pool->first_heap_ptr_index());
     MemsetPointer(
         HeapObject::RawField(constant_pool, offset),
         undefined_value(),
@@ -6127,6 +6214,8 @@ void Heap::IterateWeakRoots(ObjectVisitor* v, VisitMode mode) {
 
 
 void Heap::IterateSmiRoots(ObjectVisitor* v) {
+  // Acquire execution access since we are going to read stack limit values.
+  ExecutionAccess access(isolate());
   v->VisitPointers(&roots_[kSmiRootsStart], &roots_[kRootListLength]);
   v->Synchronize(VisitorSynchronization::kSmiRootList);
 }
@@ -7395,8 +7484,9 @@ GCTracer::~GCTracer() {
 
     PrintF("external=%.1f ", scopes_[Scope::EXTERNAL]);
     PrintF("mark=%.1f ", scopes_[Scope::MC_MARK]);
-    PrintF("sweep=%.1f ", scopes_[Scope::MC_SWEEP]);
-    PrintF("sweepns=%.1f ", scopes_[Scope::MC_SWEEP_NEWSPACE]);
+    PrintF("sweep=%.2f ", scopes_[Scope::MC_SWEEP]);
+    PrintF("sweepns=%.2f ", scopes_[Scope::MC_SWEEP_NEWSPACE]);
+    PrintF("sweepos=%.2f ", scopes_[Scope::MC_SWEEP_OLDSPACE]);
     PrintF("evacuate=%.1f ", scopes_[Scope::MC_EVACUATE_PAGES]);
     PrintF("new_new=%.1f ", scopes_[Scope::MC_UPDATE_NEW_TO_NEW_POINTERS]);
     PrintF("root_new=%.1f ", scopes_[Scope::MC_UPDATE_ROOT_TO_NEW_POINTERS]);
@@ -7527,7 +7617,7 @@ void DescriptorLookupCache::Clear() {
 void Heap::GarbageCollectionGreedyCheck() {
   ASSERT(FLAG_gc_greedy);
   if (isolate_->bootstrapper()->IsActive()) return;
-  if (disallow_allocation_failure()) return;
+  if (!AllowAllocationFailure::IsAllowed(isolate_)) return;
   CollectGarbage(NEW_SPACE);
 }
 #endif

@@ -4817,6 +4817,23 @@ void MacroAssembler::AssertName(Register object) {
 }
 
 
+void MacroAssembler::AssertUndefinedOrAllocationSite(Register object,
+                                                     Register scratch) {
+  if (emit_debug_code()) {
+    Label done_checking;
+    AssertNotSmi(object);
+    LoadRoot(scratch, Heap::kUndefinedValueRootIndex);
+    Branch(&done_checking, eq, object, Operand(scratch));
+    push(object);
+    lw(object, FieldMemOperand(object, HeapObject::kMapOffset));
+    LoadRoot(scratch, Heap::kAllocationSiteMapRootIndex);
+    Assert(eq, kExpectedUndefinedOrCell, object, Operand(scratch));
+    pop(object);
+    bind(&done_checking);
+  }
+}
+
+
 void MacroAssembler::AssertIsRoot(Register reg, Heap::RootListIndex index) {
   if (emit_debug_code()) {
     ASSERT(!reg.is(at));
@@ -5706,9 +5723,9 @@ void CodePatcher::ChangeBranchCondition(Condition cond) {
 }
 
 
-void MacroAssembler::FlooringDiv(Register result,
-                                 Register dividend,
-                                 int32_t divisor) {
+void MacroAssembler::TruncatingDiv(Register result,
+                                   Register dividend,
+                                   int32_t divisor) {
   ASSERT(!dividend.is(result));
   ASSERT(!dividend.is(at));
   ASSERT(!result.is(at));
@@ -5722,9 +5739,9 @@ void MacroAssembler::FlooringDiv(Register result,
   if (divisor < 0 && ms.multiplier() > 0) {
     Subu(result, result, Operand(dividend));
   }
-  if (ms.shift() > 0) {
-    sra(result, result, ms.shift());
-  }
+  if (ms.shift() > 0) sra(result, result, ms.shift());
+  srl(at, dividend, 31);
+  Addu(result, result, Operand(at));
 }
 
 

@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2014 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,15 +25,52 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --allow-natives-syntax --harmony-collections
+var global = this.global || {};
+var setTimeout;
+var clearTimeout;
 
-var key1 = {};
-var key2 = {};
-var map = new WeakMap;
+(function() {
+var timers = {};
+var currentId = 0;
 
-// Adding hidden properties preserves map sharing. Putting the key into
-// a WeakMap will cause the first hidden property to be added.
-assertTrue(%HaveSameMap(key1, key2));
-map.set(key1, 1);
-map.set(key2, 2);
-assertTrue(%HaveSameMap(key1, key2));
+function PostMicrotask(fn) {
+  var o = {};
+  Object.observe(o, function() {
+    fn();
+  });
+  // Change something to enqueue a microtask.
+  o.x = 'hello';
+}
+
+setInterval = function(fn, delay) {
+  var i = 0;
+  var id = currentId++;
+  function loop() {
+    if (!timers[id]) {
+      return;
+    }
+    if (i++ >= delay) {
+      fn();
+    }
+    PostMicrotask(loop);
+  }
+  PostMicrotask(loop);
+  timers[id] = true;
+  return id;
+}
+
+clearTimeout = function(id) {
+  delete timers[id];
+}
+
+clearInterval = clearTimeout;
+
+setTimeout = function(fn, delay) {
+  var id = setInterval(function() {
+    fn();
+    clearInterval(id);
+  }, delay);
+  return id;
+}
+
+}());

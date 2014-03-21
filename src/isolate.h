@@ -146,7 +146,6 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
   do {                                            \
     ASSERT(!(isolate)->has_pending_exception());  \
     CHECK(!(call).is_null());                     \
-    CHECK(!(isolate)->has_pending_exception());   \
   } while (false)
 
 #define RETURN_IF_EMPTY_HANDLE(isolate, call)                       \
@@ -381,6 +380,7 @@ typedef List<HeapObject*> DebugObjectCache;
   V(CodeTracer*, code_tracer, NULL)                                            \
   V(bool, fp_stubs_generated, false)                                           \
   V(int, max_available_threads, 0)                                             \
+  V(uint32_t, per_isolate_assert_data, 0xFFFFFFFFu)                            \
   ISOLATE_INIT_SIMULATOR_LIST(V)                                               \
   ISOLATE_DEBUGGER_INIT_LIST(V)
 

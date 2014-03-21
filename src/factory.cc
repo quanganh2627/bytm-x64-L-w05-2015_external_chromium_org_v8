@@ -889,6 +889,15 @@ Handle<FixedArray> Factory::CopyFixedArray(Handle<FixedArray> array) {
 }
 
 
+Handle<FixedArray> Factory::CopyAndTenureFixedCOWArray(
+    Handle<FixedArray> array) {
+  ASSERT(isolate()->heap()->InNewSpace(*array));
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->CopyAndTenureFixedCOWArray(*array),
+                     FixedArray);
+}
+
+
 Handle<FixedArray> Factory::CopySizeFixedArray(Handle<FixedArray> array,
                                                int new_length,
                                                PretenureFlag pretenure) {
@@ -1067,6 +1076,12 @@ Handle<Object> Factory::NewReferenceError(const char* message,
 }
 
 
+Handle<Object> Factory::NewReferenceError(const char* message,
+                                          Handle<JSArray> args) {
+  return NewError("MakeReferenceError", message, args);
+}
+
+
 Handle<Object> Factory::NewReferenceError(Handle<String> message) {
   return NewError("$ReferenceError", message);
 }
@@ -1116,8 +1131,9 @@ Handle<String> Factory::EmergencyNewError(const char* message,
       *p++ = ' ';
       space--;
       if (space > 0) {
-        MaybeObject* maybe_arg = args->GetElement(isolate(), i);
-        Handle<String> arg_str(reinterpret_cast<String*>(maybe_arg));
+        Handle<String> arg_str = Handle<String>::cast(
+            Object::GetElement(isolate(), args, i));
+        CHECK_NOT_EMPTY_HANDLE(isolate(), arg_str);
         SmartArrayPointer<char> arg = arg_str->ToCString();
         Vector<char> v2(p, static_cast<int>(space));
         OS::StrNCpy(v2, arg.get(), space);
@@ -1311,6 +1327,17 @@ Handle<JSObject> Factory::NewJSObject(Handle<JSFunction> constructor,
 }
 
 
+Handle<JSObject> Factory::NewJSObjectWithMemento(
+    Handle<JSFunction> constructor,
+    Handle<AllocationSite> site) {
+  JSFunction::EnsureHasInitialMap(constructor);
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateJSObject(*constructor, NOT_TENURED, *site),
+      JSObject);
+}
+
+
 Handle<JSModule> Factory::NewJSModule(Handle<Context> context,
                                       Handle<ScopeInfo> scope_info) {
   CALL_HEAP_FUNCTION(
@@ -1393,12 +1420,18 @@ Handle<GlobalObject> Factory::NewGlobalObject(Handle<JSFunction> constructor) {
 }
 
 
-Handle<JSObject> Factory::NewJSObjectFromMap(Handle<Map> map,
-                                             PretenureFlag pretenure,
-                                             bool alloc_props) {
+Handle<JSObject> Factory::NewJSObjectFromMap(
+    Handle<Map> map,
+    PretenureFlag pretenure,
+    bool alloc_props,
+    Handle<AllocationSite> allocation_site) {
   CALL_HEAP_FUNCTION(
       isolate(),
-      isolate()->heap()->AllocateJSObjectFromMap(*map, pretenure, alloc_props),
+      isolate()->heap()->AllocateJSObjectFromMap(
+          *map,
+          pretenure,
+          alloc_props,
+          allocation_site.is_null() ? NULL : *allocation_site),
       JSObject);
 }
 
@@ -1430,6 +1463,18 @@ Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArrayBase> elements,
                                                      elements->length(),
                                                      pretenure),
       JSArray);
+}
+
+
+void Factory::NewJSArrayStorage(Handle<JSArray> array,
+                                     int length,
+                                     int capacity,
+                                     ArrayStorageAllocationMode mode) {
+  CALL_HEAP_FUNCTION_VOID(isolate(),
+                          isolate()->heap()->AllocateJSArrayStorage(*array,
+                                                                    length,
+                                                                    capacity,
+                                                                    mode));
 }
 
 
@@ -1542,12 +1587,10 @@ Handle<SharedFunctionInfo> Factory::NewSharedFunctionInfo(
     int number_of_literals,
     bool is_generator,
     Handle<Code> code,
-    Handle<ScopeInfo> scope_info,
-    Handle<FixedArray> feedback_vector) {
+    Handle<ScopeInfo> scope_info) {
   Handle<SharedFunctionInfo> shared = NewSharedFunctionInfo(name);
   shared->set_code(*code);
   shared->set_scope_info(*scope_info);
-  shared->set_feedback_vector(*feedback_vector);
   int literals_array_size = number_of_literals;
   // If the function contains object, regexp or array literals,
   // allocate extra space for a literals array prefix containing the

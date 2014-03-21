@@ -304,12 +304,14 @@ void Simulator::CorruptAllCallerSavedCPURegisters() {
 
 
 // Extending the stack by 2 * 64 bits is required for stack alignment purposes.
-// TODO(all): Insert a marker in the extra space allocated on the stack.
 uintptr_t Simulator::PushAddress(uintptr_t address) {
   ASSERT(sizeof(uintptr_t) < 2 * kXRegSize);
   intptr_t new_sp = sp() - 2 * kXRegSize;
+  uintptr_t* alignment_slot =
+    reinterpret_cast<uintptr_t*>(new_sp + kXRegSize);
+  memcpy(alignment_slot, &kSlotsZapValue, kPointerSize);
   uintptr_t* stack_slot = reinterpret_cast<uintptr_t*>(new_sp);
-  *stack_slot = address;
+  memcpy(stack_slot, &address, kPointerSize);
   set_sp(new_sp);
   return new_sp;
 }
@@ -439,12 +441,6 @@ void Simulator::Run() {
 void Simulator::RunFrom(Instruction* start) {
   set_pc(start);
   Run();
-}
-
-
-void Simulator::CheckStackAlignment() {
-  // TODO(aleram): The sp alignment check to perform depends on the processor
-  // state. Check the specifications for more details.
 }
 
 
@@ -620,7 +616,7 @@ int64_t Simulator::AddWithCarry(unsigned reg_size,
   int64_t result;
   int64_t signed_sum = src1 + src2 + carry_in;
 
-  uint32_t N, Z, C, V;
+  bool N, Z, C, V;
 
   if (reg_size == kWRegSizeInBits) {
     u1 = static_cast<uint64_t>(src1) & kWRegMask;
@@ -807,7 +803,7 @@ void Simulator::CheckBreakpoints() {
 void Simulator::CheckBreakNext() {
   // If the current instruction is a BL, insert a breakpoint just after it.
   if (break_on_next_ && pc_->IsBranchAndLinkToRegister()) {
-    SetBreakpoint(pc_->NextInstruction());
+    SetBreakpoint(pc_->following());
     break_on_next_ = false;
   }
 }
@@ -815,7 +811,7 @@ void Simulator::CheckBreakNext() {
 
 void Simulator::PrintInstructionsAt(Instruction* start, uint64_t count) {
   Instruction* end = start->InstructionAtOffset(count * kInstructionSize);
-  for (Instruction* pc = start; pc < end; pc = pc->NextInstruction()) {
+  for (Instruction* pc = start; pc < end; pc = pc->following()) {
     disassembler_decoder_->Decode(pc);
   }
 }
@@ -835,7 +831,7 @@ void Simulator::PrintSystemRegisters(bool print_all) {
     fprintf(stream_, "# %sFLAGS: %sN:%d Z:%d C:%d V:%d%s\n",
             clr_flag_name,
             clr_flag_value,
-            N(), Z(), C(), V(),
+            nzcv().N(), nzcv().Z(), nzcv().C(), nzcv().V(),
             clr_normal);
   }
   last_nzcv = nzcv();
@@ -996,7 +992,7 @@ void Simulator::VisitPCRelAddressing(Instruction* instr) {
 void Simulator::VisitUnconditionalBranch(Instruction* instr) {
   switch (instr->Mask(UnconditionalBranchMask)) {
     case BL:
-      set_lr(instr->NextInstruction());
+      set_lr(instr->following());
       // Fall through.
     case B:
       set_pc(instr->ImmPCOffsetTarget());
@@ -1019,7 +1015,7 @@ void Simulator::VisitUnconditionalBranchToRegister(Instruction* instr) {
   Instruction* target = reg<Instruction*>(instr->Rn());
   switch (instr->Mask(UnconditionalBranchToRegisterMask)) {
     case BLR: {
-      set_lr(instr->NextInstruction());
+      set_lr(instr->following());
       if (instr->Rn() == 31) {
         // BLR XZR is used as a guard for the constant pool. We should never hit
         // this, but if we do trap to allow debugging.
@@ -1139,7 +1135,7 @@ void Simulator::VisitAddSubWithCarry(Instruction* instr) {
                          instr->FlagsUpdate(),
                          reg(reg_size, instr->Rn()),
                          op2,
-                         C());
+                         nzcv().C());
 
   set_reg(reg_size, instr->Rd(), new_val);
 }
@@ -1721,11 +1717,6 @@ uint64_t Simulator::ReverseBytes(uint64_t value, ReverseByteMode mode) {
 
 
 void Simulator::VisitDataProcessing2Source(Instruction* instr) {
-  // TODO(mcapewel) move these to a higher level file, as they are global
-  //                assumptions.
-  ASSERT((static_cast<int32_t>(-1) >> 1) == -1);
-  ASSERT((static_cast<uint32_t>(-1) >> 1) == 0x7FFFFFFF);
-
   Shift shift_op = NO_SHIFT;
   int64_t result = 0;
   switch (instr->Mask(DataProcessing2SourceMask)) {
@@ -1940,7 +1931,7 @@ void Simulator::VisitFPIntegerConvert(Instruction* instr) {
   unsigned dst = instr->Rd();
   unsigned src = instr->Rn();
 
-  FPRounding round = RMode();
+  FPRounding round = fpcr().RMode();
 
   switch (instr->Mask(FPIntegerConvertMask)) {
     case FCVTAS_ws: set_wreg(dst, FPToInt32(sreg(src), FPTieAway)); break;
@@ -2025,7 +2016,7 @@ void Simulator::VisitFPFixedPointConvert(Instruction* instr) {
   unsigned src = instr->Rn();
   int fbits = 64 - instr->FPScale();
 
-  FPRounding round = RMode();
+  FPRounding round = fpcr().RMode();
 
   switch (instr->Mask(FPFixedPointConvertMask)) {
     // A 32-bit input can be handled in the same way as a 64-bit input, since
@@ -2485,7 +2476,7 @@ double Simulator::FPRoundInt(double value, FPRounding round_mode) {
 double Simulator::FPToDouble(float value) {
   switch (std::fpclassify(value)) {
     case FP_NAN: {
-      if (DN()) return kFP64DefaultNaN;
+      if (fpcr().DN()) return kFP64DefaultNaN;
 
       // Convert NaNs as the processor would:
       //  - The sign is propagated.
@@ -2526,7 +2517,7 @@ float Simulator::FPToFloat(double value, FPRounding round_mode) {
 
   switch (std::fpclassify(value)) {
     case FP_NAN: {
-      if (DN()) return kFP32DefaultNaN;
+      if (fpcr().DN()) return kFP32DefaultNaN;
 
       // Convert NaNs as the processor would:
       //  - The sign is propagated.
@@ -2823,7 +2814,7 @@ T Simulator::FPSub(T op1, T op2) {
 template <typename T>
 T Simulator::FPProcessNaN(T op) {
   ASSERT(std::isnan(op));
-  return DN() ? FPDefaultNaN<T>() : ToQuietNaN(op);
+  return fpcr().DN() ? FPDefaultNaN<T>() : ToQuietNaN(op);
 }
 
 
@@ -3128,7 +3119,6 @@ void Simulator::Debug() {
       } else if ((strcmp(cmd, "print") == 0) || (strcmp(cmd, "p") == 0)) {
         if (argc == 2) {
           if (strcmp(arg1, "all") == 0) {
-            // TODO(all): better support for printing in the debugger.
             PrintRegisters(true);
             PrintFPRegisters(true);
           } else {
@@ -3362,12 +3352,16 @@ void Simulator::VisitException(Instruction* instr) {
         // Read the arguments encoded inline in the instruction stream.
         uint32_t code;
         uint32_t parameters;
-        char const * message;
 
-        ASSERT(sizeof(*pc_) == 1);
-        memcpy(&code, pc_ + kDebugCodeOffset, sizeof(code));
-        memcpy(&parameters, pc_ + kDebugParamsOffset, sizeof(parameters));
-        message = reinterpret_cast<char const *>(pc_ + kDebugMessageOffset);
+        memcpy(&code,
+               pc_->InstructionAtOffset(kDebugCodeOffset),
+               sizeof(code));
+        memcpy(&parameters,
+               pc_->InstructionAtOffset(kDebugParamsOffset),
+               sizeof(parameters));
+        char const *message =
+            reinterpret_cast<char const*>(
+                pc_->InstructionAtOffset(kDebugMessageOffset));
 
         // Always print something when we hit a debug point that breaks.
         // We are going to break, so printing something is not an issue in
@@ -3415,14 +3409,13 @@ void Simulator::VisitException(Instruction* instr) {
 
         // The stop parameters are inlined in the code. Skip them:
         //  - Skip to the end of the message string.
-        pc_ += kDebugMessageOffset + strlen(message) + 1;
-        //  - Advance to the next aligned location.
-        pc_ = AlignUp(pc_, kInstructionSize);
+        size_t size = kDebugMessageOffset + strlen(message) + 1;
+        pc_ = pc_->InstructionAtOffset(RoundUp(size, kInstructionSize));
         //  - Verify that the unreachable marker is present.
         ASSERT(pc_->Mask(ExceptionMask) == HLT);
         ASSERT(pc_->ImmException() ==  kImmExceptionIsUnreachable);
         //  - Skip past the unreachable marker.
-        set_pc(pc_->NextInstruction());
+        set_pc(pc_->following());
 
         // Check if the debugger should break.
         if (parameters & BREAK) Debug();
@@ -3615,8 +3608,9 @@ void Simulator::VisitException(Instruction* instr) {
       } else if (instr->ImmException() == kImmExceptionIsPrintf) {
         // Read the argument encoded inline in the instruction stream.
         uint32_t type;
-        ASSERT(sizeof(*pc_) == 1);
-        memcpy(&type, pc_ + kPrintfTypeOffset, sizeof(type));
+        memcpy(&type,
+               pc_->InstructionAtOffset(kPrintfTypeOffset),
+               sizeof(type));
 
         const char* format = reg<const char*>(0);
 

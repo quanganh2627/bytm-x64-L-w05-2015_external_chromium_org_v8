@@ -791,6 +791,24 @@ bool Runtime::SetupArrayBufferAllocatingData(
 }
 
 
+void Runtime::NeuterArrayBuffer(Handle<JSArrayBuffer> array_buffer) {
+  Isolate* isolate = array_buffer->GetIsolate();
+  for (Handle<Object> view_obj(array_buffer->weak_first_view(), isolate);
+       !view_obj->IsUndefined();) {
+    Handle<JSArrayBufferView> view(JSArrayBufferView::cast(*view_obj));
+    if (view->IsJSTypedArray()) {
+      JSTypedArray::cast(*view)->Neuter();
+    } else if (view->IsJSDataView()) {
+      JSDataView::cast(*view)->Neuter();
+    } else {
+      UNREACHABLE();
+    }
+    view_obj = handle(view->weak_next(), isolate);
+  }
+  array_buffer->Neuter();
+}
+
+
 RUNTIME_FUNCTION(MaybeObject*, Runtime_ArrayBufferInitialize) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 2);
@@ -844,7 +862,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ArrayBufferSliceImpl) {
 
   if (target_length == 0) return isolate->heap()->undefined_value();
 
-  ASSERT(NumberToSize(isolate, source->byte_length()) - target_length >= start);
+  size_t source_byte_length = NumberToSize(isolate, source->byte_length());
+  CHECK(start <= source_byte_length);
+  CHECK(source_byte_length - start >= target_length);
   uint8_t* source_data = reinterpret_cast<uint8_t*>(source->backing_store());
   uint8_t* target_data = reinterpret_cast<uint8_t*>(target->backing_store());
   CopyBytes(target_data, source_data + start, target_length);
@@ -859,6 +879,19 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ArrayBufferIsView) {
   return object->IsJSArrayBufferView()
     ? isolate->heap()->true_value()
     : isolate->heap()->false_value();
+}
+
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_ArrayBufferNeuter) {
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(JSArrayBuffer, array_buffer, 0);
+  ASSERT(!array_buffer->is_external());
+  void* backing_store = array_buffer->backing_store();
+  size_t byte_length = NumberToSize(isolate, array_buffer->byte_length());
+  array_buffer->set_is_external(true);
+  Runtime::NeuterArrayBuffer(array_buffer);
+  V8::ArrayBufferAllocator()->Free(backing_store, byte_length);
+  return isolate->heap()->undefined_value();
 }
 
 
@@ -905,7 +938,12 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayInitialize) {
 
   size_t byte_offset = NumberToSize(isolate, *byte_offset_object);
   size_t byte_length = NumberToSize(isolate, *byte_length_object);
-  ASSERT(byte_length % element_size == 0);
+  size_t array_buffer_byte_length =
+      NumberToSize(isolate, buffer->byte_length());
+  CHECK(byte_offset <= array_buffer_byte_length);
+  CHECK(array_buffer_byte_length - byte_offset >= byte_length);
+
+  CHECK_EQ(0, static_cast<int>(byte_length % element_size));
   size_t length = byte_length / element_size;
 
   if (length > static_cast<unsigned>(Smi::kMaxValue)) {
@@ -2929,7 +2967,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetCode) {
   // Set the code, scope info, formal parameter count, and the length
   // of the target shared function info.
   target_shared->ReplaceCode(source_shared->code());
-  target_shared->set_feedback_vector(source_shared->feedback_vector());
   target_shared->set_scope_info(source_shared->scope_info());
   target_shared->set_length(source_shared->length());
   target_shared->set_formal_parameter_count(
@@ -3090,6 +3127,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ResumeJSGeneratorObject) {
   int offset = generator_object->continuation();
   ASSERT(offset > 0);
   frame->set_pc(pc + offset);
+  if (FLAG_enable_ool_constant_pool) {
+    frame->set_constant_pool(
+        generator_object->function()->code()->constant_pool());
+  }
   generator_object->set_continuation(JSGeneratorObject::kGeneratorExecuting);
 
   FixedArray* operand_stack = generator_object->operand_stack();
@@ -4084,11 +4125,9 @@ MUST_USE_RESULT static MaybeObject* StringReplaceGlobalRegExpWithEmptyString(
   if (delta == 0) return *answer;
 
   Address end_of_string = answer->address() + string_size;
-  isolate->heap()->CreateFillerObjectAt(end_of_string, delta);
-  if (Marking::IsBlack(Marking::MarkBitFrom(*answer))) {
-    MemoryChunk::IncrementLiveBytesFromMutator(answer->address(), -delta);
-  }
-
+  Heap* heap = isolate->heap();
+  heap->CreateFillerObjectAt(end_of_string, delta);
+  heap->AdjustLiveBytes(answer->address(), -delta, Heap::FROM_MUTATOR);
   return *answer;
 }
 
@@ -4800,11 +4839,15 @@ MaybeObject* Runtime::GetElementOrCharAt(Isolate* isolate,
     if (!result->IsUndefined()) return *result;
   }
 
+  Handle<Object> result;
   if (object->IsString() || object->IsNumber() || object->IsBoolean()) {
-    return object->GetPrototype(isolate)->GetElement(isolate, index);
+    Handle<Object> proto(object->GetPrototype(isolate), isolate);
+    result = Object::GetElement(isolate, proto, index);
+  } else {
+    result = Object::GetElement(isolate, object, index);
   }
-
-  return object->GetElement(isolate, index);
+  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  return *result;
 }
 
 
@@ -5982,7 +6025,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetArgumentsProperty) {
     if (index < n) {
       return frame->GetParameter(index);
     } else {
-      return isolate->initial_object_prototype()->GetElement(isolate, index);
+      Handle<Object> initial_prototype(isolate->initial_object_prototype());
+      Handle<Object> result =
+          Object::GetElement(isolate, initial_prototype, index);
+      RETURN_IF_EMPTY_HANDLE(isolate, result);
+      return *result;
     }
   }
 
@@ -8217,12 +8264,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_NewObjectFromBound) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_NewObject) {
-  HandleScope scope(isolate);
-  ASSERT(args.length() == 1);
-
-  Handle<Object> constructor = args.at<Object>(0);
-
+static MaybeObject* Runtime_NewObjectHelper(Isolate* isolate,
+                                            Handle<Object> constructor,
+                                            Handle<AllocationSite> site) {
   // If the constructor isn't a proper function we throw a type error.
   if (!constructor->IsJSFunction()) {
     Vector< Handle<Object> > arguments = HandleVector(&constructor, 1);
@@ -8280,13 +8324,46 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_NewObject) {
     shared->CompleteInobjectSlackTracking();
   }
 
-  Handle<JSObject> result = isolate->factory()->NewJSObject(function);
+  Handle<JSObject> result;
+  if (site.is_null()) {
+    result = isolate->factory()->NewJSObject(function);
+  } else {
+    result = isolate->factory()->NewJSObjectWithMemento(function, site);
+  }
   RETURN_IF_EMPTY_HANDLE(isolate, result);
 
   isolate->counters()->constructed_objects()->Increment();
   isolate->counters()->constructed_objects_runtime()->Increment();
 
   return *result;
+}
+
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_NewObject) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 1);
+
+  Handle<Object> constructor = args.at<Object>(0);
+  return Runtime_NewObjectHelper(isolate,
+                                 constructor,
+                                 Handle<AllocationSite>::null());
+}
+
+
+RUNTIME_FUNCTION(MaybeObject*, Runtime_NewObjectWithAllocationSite) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 2);
+
+  Handle<Object> constructor = args.at<Object>(1);
+  Handle<Object> feedback = args.at<Object>(0);
+  Handle<AllocationSite> site;
+  if (feedback->IsAllocationSite()) {
+    // The feedback can be an AllocationSite or undefined.
+    site = Handle<AllocationSite>::cast(feedback);
+  }
+  return Runtime_NewObjectHelper(isolate,
+                                 constructor,
+                                 site);
 }
 
 
@@ -8478,10 +8555,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ClearFunctionTypeFeedback) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 1);
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
-  function->shared()->ClearTypeFeedbackInfo(isolate->heap());
   Code* unoptimized = function->shared()->code();
   if (unoptimized->kind() == Code::FUNCTION) {
     unoptimized->ClearInlineCaches();
+    unoptimized->ClearTypeFeedbackInfo(isolate->heap());
   }
   return isolate->heap()->undefined_value();
 }
@@ -8826,6 +8903,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_Apply) {
 
   for (int i = 0; i < argc; ++i) {
     argv[i] = Object::GetElement(isolate, arguments, offset + i);
+    RETURN_IF_EMPTY_HANDLE(isolate, argv[i]);
   }
 
   bool threw;
@@ -13689,14 +13767,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetLanguageTagVariants) {
   Handle<Name> base =
       isolate->factory()->NewStringFromAscii(CStrVector("base"));
   for (unsigned int i = 0; i < length; ++i) {
-    MaybeObject* maybe_string = input->GetElement(isolate, i);
-    Object* locale_id;
-    if (!maybe_string->ToObject(&locale_id) || !locale_id->IsString()) {
+    Handle<Object> locale_id = Object::GetElement(isolate, input, i);
+    RETURN_IF_EMPTY_HANDLE(isolate, locale_id);
+    if (!locale_id->IsString()) {
       return isolate->Throw(isolate->heap()->illegal_argument_string());
     }
 
     v8::String::Utf8Value utf8_locale_id(
-        v8::Utils::ToLocal(Handle<String>(String::cast(locale_id))));
+        v8::Utils::ToLocal(Handle<String>::cast(locale_id)));
 
     UErrorCode error = U_ZERO_ERROR;
 
@@ -14553,15 +14631,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ListNatives) {
 
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_Log) {
-  SealHandleScope shs(isolate);
+  HandleScope handle_scope(isolate);
   ASSERT(args.length() == 2);
-  CONVERT_ARG_CHECKED(String, format, 0);
-  CONVERT_ARG_CHECKED(JSArray, elms, 1);
-  DisallowHeapAllocation no_gc;
-  String::FlatContent format_content = format->GetFlatContent();
-  RUNTIME_ASSERT(format_content.IsAscii());
-  Vector<const uint8_t> chars = format_content.ToOneByteVector();
-  isolate->logger()->LogRuntime(Vector<const char>::cast(chars), elms);
+  CONVERT_ARG_HANDLE_CHECKED(String, format, 0);
+  CONVERT_ARG_HANDLE_CHECKED(JSArray, elms, 1);
+
+  SmartArrayPointer<char> format_chars = format->ToCString();
+  isolate->logger()->LogRuntime(
+      Vector<const char>(format_chars.get(), format->length()), elms);
   return isolate->heap()->undefined_value();
 }
 
@@ -14750,12 +14827,14 @@ static MaybeObject* ArrayConstructorCommon(Isolate* isolate,
                                            Handle<JSFunction> constructor,
                                            Handle<AllocationSite> site,
                                            Arguments* caller_args) {
+  Factory* factory = isolate->factory();
+
   bool holey = false;
   bool can_use_type_feedback = true;
   if (caller_args->length() == 1) {
-    Object* argument_one = (*caller_args)[0];
+    Handle<Object> argument_one = caller_args->at<Object>(0);
     if (argument_one->IsSmi()) {
-      int value = Smi::cast(argument_one)->value();
+      int value = Handle<Smi>::cast(argument_one)->value();
       if (value < 0 || value >= JSObject::kInitialMaxFastElementArray) {
         // the array is a dictionary in this case.
         can_use_type_feedback = false;
@@ -14768,8 +14847,7 @@ static MaybeObject* ArrayConstructorCommon(Isolate* isolate,
     }
   }
 
-  JSArray* array;
-  MaybeObject* maybe_array;
+  Handle<JSArray> array;
   if (!site.is_null() && can_use_type_feedback) {
     ElementsKind to_kind = site->GetElementsKind();
     if (holey && !IsFastHoleyElementsKind(to_kind)) {
@@ -14781,42 +14859,37 @@ static MaybeObject* ArrayConstructorCommon(Isolate* isolate,
     // We should allocate with an initial map that reflects the allocation site
     // advice. Therefore we use AllocateJSObjectFromMap instead of passing
     // the constructor.
-    Map* initial_map = constructor->initial_map();
+    Handle<Map> initial_map(constructor->initial_map(), isolate);
     if (to_kind != initial_map->elements_kind()) {
-      MaybeObject* maybe_new_map = initial_map->AsElementsKind(to_kind);
-      if (!maybe_new_map->To(&initial_map)) return maybe_new_map;
+      initial_map = Map::AsElementsKind(initial_map, to_kind);
+      RETURN_IF_EMPTY_HANDLE(isolate, initial_map);
     }
 
     // If we don't care to track arrays of to_kind ElementsKind, then
     // don't emit a memento for them.
-    AllocationSite* allocation_site =
-        (AllocationSite::GetMode(to_kind) == TRACK_ALLOCATION_SITE)
-        ? *site
-        : NULL;
+    Handle<AllocationSite> allocation_site;
+    if (AllocationSite::GetMode(to_kind) == TRACK_ALLOCATION_SITE) {
+      allocation_site = site;
+    }
 
-    maybe_array = isolate->heap()->AllocateJSObjectFromMap(initial_map,
-                                                           NOT_TENURED,
-                                                           true,
-                                                           allocation_site);
-    if (!maybe_array->To(&array)) return maybe_array;
+    array = Handle<JSArray>::cast(factory->NewJSObjectFromMap(
+        initial_map, NOT_TENURED, true, allocation_site));
   } else {
-    maybe_array = isolate->heap()->AllocateJSObject(*constructor);
-    if (!maybe_array->To(&array)) return maybe_array;
+    array = Handle<JSArray>::cast(factory->NewJSObject(constructor));
+
     // We might need to transition to holey
     ElementsKind kind = constructor->initial_map()->elements_kind();
     if (holey && !IsFastHoleyElementsKind(kind)) {
       kind = GetHoleyElementsKind(kind);
-      maybe_array = array->TransitionElementsKind(kind);
-      if (maybe_array->IsFailure()) return maybe_array;
+      JSObject::TransitionElementsKind(array, kind);
     }
   }
 
-  maybe_array = isolate->heap()->AllocateJSArrayStorage(array, 0, 0,
-      DONT_INITIALIZE_ARRAY_ELEMENTS);
-  if (maybe_array->IsFailure()) return maybe_array;
+  factory->NewJSArrayStorage(array, 0, 0, DONT_INITIALIZE_ARRAY_ELEMENTS);
+
   ElementsKind old_kind = array->GetElementsKind();
-  maybe_array = ArrayConstructInitializeElements(array, caller_args);
-  if (maybe_array->IsFailure()) return maybe_array;
+  RETURN_IF_EMPTY_HANDLE(isolate,
+                         ArrayConstructInitializeElements(array, caller_args));
   if (!site.is_null() &&
       (old_kind != array->GetElementsKind() ||
        !can_use_type_feedback)) {
@@ -14825,7 +14898,7 @@ static MaybeObject* ArrayConstructorCommon(Isolate* isolate,
     // We must mark the allocationsite as un-inlinable.
     site->SetDoNotInlineCall();
   }
-  return array;
+  return *array;
 }
 
 
@@ -14854,8 +14927,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ArrayConstructor) {
 
   Handle<AllocationSite> site;
   if (!type_info.is_null() &&
-      !type_info.is_identical_to(
-          TypeFeedbackInfo::MegamorphicSentinel(isolate))) {
+      *type_info != isolate->heap()->undefined_value()) {
     site = Handle<AllocationSite>::cast(type_info);
     ASSERT(!site->SitePointsToLiteral());
   }

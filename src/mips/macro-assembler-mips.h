@@ -1304,9 +1304,9 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
     return code_object_;
   }
 
-  // Emit code for a flooring division by a constant. The dividend register is
+  // Emit code for a truncating division by a constant. The dividend register is
   // unchanged and at gets clobbered. Dividend and result must be different.
-  void FlooringDiv(Register result, Register dividend, int32_t divisor);
+  void TruncatingDiv(Register result, Register dividend, int32_t divisor);
 
   // -------------------------------------------------------------------------
   // StatsCounter support.
@@ -1431,6 +1431,10 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
 
   // Abort execution if argument is not a name, enabled via --debug-code.
   void AssertName(Register object);
+
+  // Abort execution if argument is not undefined or an AllocationSite, enabled
+  // via --debug-code.
+  void AssertUndefinedOrAllocationSite(Register object, Register scratch);
 
   // Abort execution if reg is not the root value with the given index,
   // enabled via --debug-code.

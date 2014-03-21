@@ -131,6 +131,8 @@ void FullCodeGenerator::Generate() {
   handler_table_ =
       isolate()->factory()->NewFixedArray(function()->handler_count(), TENURED);
 
+  InitializeFeedbackVector();
+
   profiling_counter_ = isolate()->factory()->NewCell(
       Handle<Smi>(Smi::FromInt(FLAG_interrupt_budget), isolate()));
   SetFunctionPosition(function());
@@ -1164,8 +1166,12 @@ void FullCodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   Label non_proxy;
   __ bind(&fixed_array);
 
+  Handle<Object> feedback = Handle<Object>(
+      Smi::FromInt(TypeFeedbackInfo::kForInFastCaseMarker),
+      isolate());
+  StoreFeedbackVectorSlot(slot, feedback);
   __ Move(r1, FeedbackVector());
-  __ mov(r2, Operand(TypeFeedbackInfo::MegamorphicSentinel(isolate())));
+  __ mov(r2, Operand(Smi::FromInt(TypeFeedbackInfo::kForInSlowCaseMarker)));
   __ str(r2, FieldMemOperand(r1, FixedArray::OffsetOfElementAt(slot)));
 
   __ mov(r1, Operand(Smi::FromInt(1)));  // Smi indicates slow check
@@ -1859,13 +1865,9 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
 
 
 void FullCodeGenerator::VisitAssignment(Assignment* expr) {
+  ASSERT(expr->target()->IsValidLeftHandSide());
+
   Comment cmnt(masm_, "[ Assignment");
-  // Invalid left-hand sides are rewritten to have a 'throw ReferenceError'
-  // on the left-hand side.
-  if (!expr->target()->IsValidLeftHandSide()) {
-    VisitForEffect(expr->target());
-    return;
-  }
 
   // Left-hand side can only be a property, a global or a (parameter or local)
   // slot.
@@ -2186,12 +2188,21 @@ void FullCodeGenerator::EmitGeneratorResume(Expression *generator,
     __ cmp(r3, Operand(0));
     __ b(ne, &slow_resume);
     __ ldr(r3, FieldMemOperand(r4, JSFunction::kCodeEntryOffset));
-    __ ldr(r2, FieldMemOperand(r1, JSGeneratorObject::kContinuationOffset));
-    __ SmiUntag(r2);
-    __ add(r3, r3, r2);
-    __ mov(r2, Operand(Smi::FromInt(JSGeneratorObject::kGeneratorExecuting)));
-    __ str(r2, FieldMemOperand(r1, JSGeneratorObject::kContinuationOffset));
-    __ Jump(r3);
+
+    { ConstantPoolUnavailableScope constant_pool_unavailable(masm_);
+      if (FLAG_enable_ool_constant_pool) {
+        // Load the new code object's constant pool pointer.
+        __ ldr(pp,
+               MemOperand(r3, Code::kConstantPoolOffset - Code::kHeaderSize));
+      }
+
+      __ ldr(r2, FieldMemOperand(r1, JSGeneratorObject::kContinuationOffset));
+      __ SmiUntag(r2);
+      __ add(r3, r3, r2);
+      __ mov(r2, Operand(Smi::FromInt(JSGeneratorObject::kGeneratorExecuting)));
+      __ str(r2, FieldMemOperand(r1, JSGeneratorObject::kContinuationOffset));
+      __ Jump(r3);
+    }
     __ bind(&slow_resume);
   }
 
@@ -2396,12 +2407,7 @@ void FullCodeGenerator::EmitBinaryOp(BinaryOperation* expr,
 
 
 void FullCodeGenerator::EmitAssignment(Expression* expr) {
-  // Invalid left-hand sides are rewritten by the parser to have a 'throw
-  // ReferenceError' on the left-hand side.
-  if (!expr->IsValidLeftHandSide()) {
-    VisitForEffect(expr);
-    return;
-  }
+  ASSERT(expr->IsValidLeftHandSide());
 
   // Left-hand side can only be a property, a global or a (parameter or local)
   // slot.
@@ -2705,6 +2711,9 @@ void FullCodeGenerator::EmitCallWithStub(Call* expr) {
   // Record source position for debugger.
   SetSourcePosition(expr->position());
 
+  Handle<Object> uninitialized =
+      TypeFeedbackInfo::UninitializedSentinel(isolate());
+  StoreFeedbackVectorSlot(expr->CallFeedbackSlot(), uninitialized);
   __ Move(r2, FeedbackVector());
   __ mov(r3, Operand(Smi::FromInt(expr->CallFeedbackSlot())));
 
@@ -2891,6 +2900,16 @@ void FullCodeGenerator::VisitCallNew(CallNew* expr) {
   __ ldr(r1, MemOperand(sp, arg_count * kPointerSize));
 
   // Record call targets in unoptimized code.
+  Handle<Object> uninitialized =
+      TypeFeedbackInfo::UninitializedSentinel(isolate());
+  StoreFeedbackVectorSlot(expr->CallNewFeedbackSlot(), uninitialized);
+  if (FLAG_pretenuring_call_new) {
+    StoreFeedbackVectorSlot(expr->AllocationSiteFeedbackSlot(),
+                            isolate()->factory()->NewAllocationSite());
+    ASSERT(expr->AllocationSiteFeedbackSlot() ==
+           expr->CallNewFeedbackSlot() + 1);
+  }
+
   __ Move(r2, FeedbackVector());
   __ mov(r3, Operand(Smi::FromInt(expr->CallNewFeedbackSlot())));
 
@@ -4270,15 +4289,10 @@ void FullCodeGenerator::VisitUnaryOperation(UnaryOperation* expr) {
 
 
 void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
+  ASSERT(expr->expression()->IsValidLeftHandSide());
+
   Comment cmnt(masm_, "[ CountOperation");
   SetSourcePosition(expr->position());
-
-  // Invalid left-hand sides are rewritten to have a 'throw ReferenceError'
-  // as the left-hand side.
-  if (!expr->expression()->IsValidLeftHandSide()) {
-    VisitForEffect(expr->expression());
-    return;
-  }
 
   // Expression can only be a property, a global or a (parameter or local)
   // slot.
@@ -4820,7 +4834,18 @@ FullCodeGenerator::NestedStatement* FullCodeGenerator::TryFinally::Exit(
 #undef __
 
 
-static const int32_t kBranchBeforeInterrupt =  0x5a000004;
+static Address GetInterruptImmediateLoadAddress(Address pc) {
+  Address load_address = pc - 2 * Assembler::kInstrSize;
+  if (!FLAG_enable_ool_constant_pool) {
+    ASSERT(Assembler::IsLdrPcImmediateOffset(Memory::int32_at(load_address)));
+  } else if (Assembler::IsMovT(Memory::int32_at(load_address))) {
+    load_address -= Assembler::kInstrSize;
+    ASSERT(Assembler::IsMovW(Memory::int32_at(load_address)));
+  } else {
+    ASSERT(Assembler::IsLdrPpImmediateOffset(Memory::int32_at(load_address)));
+  }
+  return load_address;
+}
 
 
 void BackEdgeTable::PatchAt(Code* unoptimized_code,
@@ -4828,37 +4853,42 @@ void BackEdgeTable::PatchAt(Code* unoptimized_code,
                             BackEdgeState target_state,
                             Code* replacement_code) {
   static const int kInstrSize = Assembler::kInstrSize;
-  Address branch_address = pc - 3 * kInstrSize;
+  Address pc_immediate_load_address = GetInterruptImmediateLoadAddress(pc);
+  Address branch_address = pc_immediate_load_address - kInstrSize;
   CodePatcher patcher(branch_address, 1);
-
   switch (target_state) {
     case INTERRUPT:
+    {
       //  <decrement profiling counter>
-      //  2a 00 00 01       bpl ok
-      //  e5 9f c? ??       ldr ip, [pc, <interrupt stub address>]
-      //  e1 2f ff 3c       blx ip
+      //   bpl ok
+      //   ; load interrupt stub address into ip - either of:
+      //   ldr ip, [pc/pp, <constant pool offset>]  |   movw ip, <immed low>
+      //                                            |   movt ip, <immed high>
+      //   blx ip
       //  ok-label
-      patcher.masm()->b(4 * kInstrSize, pl);  // Jump offset is 4 instructions.
-      ASSERT_EQ(kBranchBeforeInterrupt, Memory::int32_at(branch_address));
+
+      // Calculate branch offet to the ok-label - this is the difference between
+      // the branch address and |pc| (which points at <blx ip>) plus one instr.
+      int branch_offset = pc + kInstrSize - branch_address;
+      patcher.masm()->b(branch_offset, pl);
       break;
+    }
     case ON_STACK_REPLACEMENT:
     case OSR_AFTER_STACK_CHECK:
       //  <decrement profiling counter>
-      //  e1 a0 00 00       mov r0, r0 (NOP)
-      //  e5 9f c? ??       ldr ip, [pc, <on-stack replacement address>]
-      //  e1 2f ff 3c       blx ip
+      //   mov r0, r0 (NOP)
+      //   ; load on-stack replacement address into ip - either of:
+      //   ldr ip, [pc/pp, <constant pool offset>]  |   movw ip, <immed low>
+      //                                            |   movt ip, <immed high>
+      //   blx ip
       //  ok-label
       patcher.masm()->nop();
       break;
   }
 
-  Address pc_immediate_load_address = pc - 2 * kInstrSize;
   // Replace the call address.
-  uint32_t interrupt_address_offset =
-      Memory::uint16_at(pc_immediate_load_address) & 0xfff;
-  Address interrupt_address_pointer = pc + interrupt_address_offset;
-  Memory::uint32_at(interrupt_address_pointer) =
-      reinterpret_cast<uint32_t>(replacement_code->entry());
+  Assembler::set_target_address_at(pc_immediate_load_address, unoptimized_code,
+      replacement_code->entry());
 
   unoptimized_code->GetHeap()->incremental_marking()->RecordCodeTargetPatch(
       unoptimized_code, pc_immediate_load_address, replacement_code);
@@ -4872,34 +4902,26 @@ BackEdgeTable::BackEdgeState BackEdgeTable::GetBackEdgeState(
   static const int kInstrSize = Assembler::kInstrSize;
   ASSERT(Memory::int32_at(pc - kInstrSize) == kBlxIp);
 
-  Address branch_address = pc - 3 * kInstrSize;
-  Address pc_immediate_load_address = pc - 2 * kInstrSize;
-  uint32_t interrupt_address_offset =
-      Memory::uint16_at(pc_immediate_load_address) & 0xfff;
-  Address interrupt_address_pointer = pc + interrupt_address_offset;
+  Address pc_immediate_load_address = GetInterruptImmediateLoadAddress(pc);
+  Address branch_address = pc_immediate_load_address - kInstrSize;
+  Address interrupt_address = Assembler::target_address_at(
+      pc_immediate_load_address, unoptimized_code);
 
-  if (Memory::int32_at(branch_address) == kBranchBeforeInterrupt) {
-    ASSERT(Memory::uint32_at(interrupt_address_pointer) ==
-           reinterpret_cast<uint32_t>(
-               isolate->builtins()->InterruptCheck()->entry()));
-    ASSERT(Assembler::IsLdrPcImmediateOffset(
-               Assembler::instr_at(pc_immediate_load_address)));
+  if (Assembler::IsBranch(Assembler::instr_at(branch_address))) {
+    ASSERT(interrupt_address ==
+           isolate->builtins()->InterruptCheck()->entry());
     return INTERRUPT;
   }
 
   ASSERT(Assembler::IsNop(Assembler::instr_at(branch_address)));
-  ASSERT(Assembler::IsLdrPcImmediateOffset(
-             Assembler::instr_at(pc_immediate_load_address)));
 
-  if (Memory::uint32_at(interrupt_address_pointer) ==
-      reinterpret_cast<uint32_t>(
-          isolate->builtins()->OnStackReplacement()->entry())) {
+  if (interrupt_address ==
+      isolate->builtins()->OnStackReplacement()->entry()) {
     return ON_STACK_REPLACEMENT;
   }
 
-  ASSERT(Memory::uint32_at(interrupt_address_pointer) ==
-         reinterpret_cast<uint32_t>(
-             isolate->builtins()->OsrAfterStackCheck()->entry()));
+  ASSERT(interrupt_address ==
+         isolate->builtins()->OsrAfterStackCheck()->entry());
   return OSR_AFTER_STACK_CHECK;
 }
 

@@ -36,7 +36,6 @@ from common_includes import *
 TRUNKBRANCH = "TRUNKBRANCH"
 CHROMIUM = "CHROMIUM"
 DEPS_FILE = "DEPS_FILE"
-NEW_CHANGELOG_FILE = "NEW_CHANGELOG_FILE"
 
 CONFIG = {
   BRANCHNAME: "prepare-push",
@@ -46,7 +45,6 @@ CONFIG = {
   DOT_GIT_LOCATION: ".git",
   VERSION_FILE: "src/version.cc",
   CHANGELOG_FILE: "ChangeLog",
-  NEW_CHANGELOG_FILE: "/tmp/v8-push-to-trunk-tempfile-new-changelog",
   CHANGELOG_ENTRY_FILE: "/tmp/v8-push-to-trunk-tempfile-changelog-entry",
   PATCH_FILE: "/tmp/v8-push-to-trunk-tempfile-patch-file",
   COMMITMSG_FILE: "/tmp/v8-push-to-trunk-tempfile-commitmsg",
@@ -112,6 +110,43 @@ class DetectLastPush(Step):
     self["last_push_bleeding_edge"] = last_push_bleeding_edge
 
 
+class IncrementVersion(Step):
+  MESSAGE = "Increment version number."
+
+  def RunStep(self):
+    # Retrieve current version from last trunk push.
+    self.GitCheckoutFile(self.Config(VERSION_FILE), self["last_push_trunk"])
+    self.ReadAndPersistVersion()
+
+    if self.Confirm(("Automatically increment BUILD_NUMBER? (Saying 'n' will "
+                     "fire up your EDITOR on %s so you can make arbitrary "
+                     "changes. When you're done, save the file and exit your "
+                     "EDITOR.)" % self.Config(VERSION_FILE))):
+      text = FileToText(self.Config(VERSION_FILE))
+      text = MSub(r"(?<=#define BUILD_NUMBER)(?P<space>\s+)\d*$",
+                  r"\g<space>%s" % str(int(self["build"]) + 1),
+                  text)
+      TextToFile(text, self.Config(VERSION_FILE))
+    else:
+      self.Editor(self.Config(VERSION_FILE))
+
+    # Variables prefixed with 'new_' contain the new version numbers for the
+    # ongoing trunk push.
+    self.ReadAndPersistVersion("new_")
+    self["version"] = "%s.%s.%s" % (self["new_major"],
+                                    self["new_minor"],
+                                    self["new_build"])
+
+    # TODO(machenbach): The following will be deprecated. Increment version
+    # numbers for version.cc on bleeding_edge (new build level on trunk + 1).
+    text = FileToText(self.Config(VERSION_FILE))
+    text = MSub(r"(?<=#define BUILD_NUMBER)(?P<space>\s+)\d*$",
+                r"\g<space>%s" % str(int(self["new_build"]) + 1),
+                text)
+    TextToFile(text, self.Config(VERSION_FILE))
+    self.ReadAndPersistVersion("new_be_")
+
+
 class PrepareChangeLog(Step):
   MESSAGE = "Prepare raw ChangeLog entry."
 
@@ -134,14 +169,8 @@ class PrepareChangeLog(Step):
     return body
 
   def RunStep(self):
-    # These version numbers are used again later for the trunk commit.
-    self.ReadAndPersistVersion()
     self["date"] = self.GetDate()
-    self["version"] = "%s.%s.%s" % (self["major"],
-                                    self["minor"],
-                                    self["build"])
-    output = "%s: Version %s\n\n" % (self["date"],
-                                     self["version"])
+    output = "%s: Version %s\n\n" % (self["date"], self["version"])
     TextToFile(output, self.Config(CHANGELOG_ENTRY_FILE))
     commits = self.GitLog(format="%H",
         git_hash="%s..HEAD" % self["last_push_bleeding_edge"])
@@ -190,32 +219,7 @@ class EditChangeLog(Step):
       self.Die("Empty ChangeLog entry.")
 
     # Safe new change log for adding it later to the trunk patch.
-    TextToFile(changelog_entry, self.Config(NEW_CHANGELOG_FILE))
-
-    old_change_log = FileToText(self.Config(CHANGELOG_FILE))
-    new_change_log = "%s\n\n\n%s" % (changelog_entry, old_change_log)
-    TextToFile(new_change_log, self.Config(CHANGELOG_FILE))
-
-
-class IncrementVersion(Step):
-  MESSAGE = "Increment version number."
-
-  def RunStep(self):
-    new_build = str(int(self["build"]) + 1)
-
-    if self.Confirm(("Automatically increment BUILD_NUMBER? (Saying 'n' will "
-                     "fire up your EDITOR on %s so you can make arbitrary "
-                     "changes. When you're done, save the file and exit your "
-                     "EDITOR.)" % self.Config(VERSION_FILE))):
-      text = FileToText(self.Config(VERSION_FILE))
-      text = MSub(r"(?<=#define BUILD_NUMBER)(?P<space>\s+)\d*$",
-                  r"\g<space>%s" % new_build,
-                  text)
-      TextToFile(text, self.Config(VERSION_FILE))
-    else:
-      self.Editor(self.Config(VERSION_FILE))
-
-    self.ReadAndPersistVersion("new_")
+    TextToFile(changelog_entry, self.Config(CHANGELOG_ENTRY_FILE))
 
 
 class CommitLocal(Step):
@@ -223,9 +227,9 @@ class CommitLocal(Step):
 
   def RunStep(self):
     self["prep_commit_msg"] = ("Prepare push to trunk.  "
-        "Now working on version %s.%s.%s." % (self["new_major"],
-                                              self["new_minor"],
-                                              self["new_build"]))
+        "Now working on version %s.%s.%s." % (self["new_be_major"],
+                                              self["new_be_minor"],
+                                              self["new_be_build"]))
 
     # Include optional TBR only in the git command. The persisted commit
     # message is used for finding the commit again later.
@@ -242,11 +246,6 @@ class CommitRepository(Step):
 
   def RunStep(self):
     self.WaitForLGTM()
-    # Re-read the ChangeLog entry (to pick up possible changes).
-    # FIXME(machenbach): This was hanging once with a broken pipe.
-    TextToFile(GetLastChangeLogEntries(self.Config(CHANGELOG_FILE)),
-               self.Config(CHANGELOG_ENTRY_FILE))
-
     self.GitPresubmit()
     self.GitDCommit()
 
@@ -260,6 +259,11 @@ class StragglerCommits(Step):
     self.GitCheckout("svn/bleeding_edge")
     self["prepare_commit_hash"] = self.GitLog(n=1, format="%H",
                                               grep=self["prep_commit_msg"])
+    # TODO(machenbach): Retrieve the push hash from a command-line option or
+    # use ToT. The "prepare_commit_hash" will be deprecated along with the
+    # prepare push commit.
+    self["push_hash"] = self.GitLog(n=1, format="%H",
+                                    parent_hash=self["prepare_commit_hash"])
 
 
 class SquashCommits(Step):
@@ -268,7 +272,7 @@ class SquashCommits(Step):
   def RunStep(self):
     # Instead of relying on "git rebase -i", we'll just create a diff, because
     # that's easier to automate.
-    TextToFile(self.GitDiff("svn/trunk", self["prepare_commit_hash"]),
+    TextToFile(self.GitDiff("svn/trunk", self["push_hash"]),
                self.Config(PATCH_FILE))
 
     # Convert the ChangeLog entry to commit message format.
@@ -279,7 +283,7 @@ class SquashCommits(Step):
 
     # Retrieve svn revision for showing the used bleeding edge revision in the
     # commit message.
-    self["svn_revision"] = self.GitSVNFindSVNRev(self["prepare_commit_hash"])
+    self["svn_revision"] = self.GitSVNFindSVNRev(self["push_hash"])
     suffix = PUSH_MESSAGE_SUFFIX % int(self["svn_revision"])
     text = MSub(r"^(Version \d+\.\d+\.\d+)$", "\\1%s" % suffix, text)
 
@@ -293,7 +297,6 @@ class SquashCommits(Step):
     if not text:  # pragma: no cover
       self.Die("Commit message editing failed.")
     TextToFile(text, self.Config(COMMITMSG_FILE))
-    os.remove(self.Config(CHANGELOG_ENTRY_FILE))
 
 
 class NewBranch(Step):
@@ -318,26 +321,29 @@ class AddChangeLog(Step):
     # The change log has been modified by the patch. Reset it to the version
     # on trunk and apply the exact changes determined by this PrepareChangeLog
     # step above.
-    self.GitCheckoutFile(self.Config(CHANGELOG_FILE))
-    changelog_entry = FileToText(self.Config(NEW_CHANGELOG_FILE))
+    self.GitCheckoutFile(self.Config(CHANGELOG_FILE), "svn/trunk")
+    changelog_entry = FileToText(self.Config(CHANGELOG_ENTRY_FILE))
     old_change_log = FileToText(self.Config(CHANGELOG_FILE))
     new_change_log = "%s\n\n\n%s" % (changelog_entry, old_change_log)
     TextToFile(new_change_log, self.Config(CHANGELOG_FILE))
-    os.remove(self.Config(NEW_CHANGELOG_FILE))
+    os.remove(self.Config(CHANGELOG_ENTRY_FILE))
 
 
 class SetVersion(Step):
   MESSAGE = "Set correct version for trunk."
 
   def RunStep(self):
+    # The version file has been modified by the patch. Reset it to the version
+    # on trunk and apply the correct version.
+    self.GitCheckoutFile(self.Config(VERSION_FILE), "svn/trunk")
     output = ""
     for line in FileToText(self.Config(VERSION_FILE)).splitlines():
       if line.startswith("#define MAJOR_VERSION"):
-        line = re.sub("\d+$", self["major"], line)
+        line = re.sub("\d+$", self["new_major"], line)
       elif line.startswith("#define MINOR_VERSION"):
-        line = re.sub("\d+$", self["minor"], line)
+        line = re.sub("\d+$", self["new_minor"], line)
       elif line.startswith("#define BUILD_NUMBER"):
-        line = re.sub("\d+$", self["build"], line)
+        line = re.sub("\d+$", self["new_build"], line)
       elif line.startswith("#define PATCH_LEVEL"):
         line = re.sub("\d+$", "0", line)
       elif line.startswith("#define IS_CANDIDATE_VERSION"):
@@ -350,7 +356,6 @@ class CommitTrunk(Step):
   MESSAGE = "Commit to local trunk branch."
 
   def RunStep(self):
-    self.GitAdd(self.Config(VERSION_FILE))
     self.GitCommit(file_name = self.Config(COMMITMSG_FILE))
     Command("rm", "-f %s*" % self.Config(COMMITMSG_FILE))
 
@@ -534,9 +539,9 @@ class PushToTrunk(ScriptsBase):
       Preparation,
       FreshBranch,
       DetectLastPush,
+      IncrementVersion,
       PrepareChangeLog,
       EditChangeLog,
-      IncrementVersion,
       CommitLocal,
       UploadStep,
       CommitRepository,

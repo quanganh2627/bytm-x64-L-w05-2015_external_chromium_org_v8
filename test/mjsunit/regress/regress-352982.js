@@ -1,4 +1,4 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
+// Copyright 2014 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,22 +25,27 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Flags: --harmony-collections
+// Flags: --allow-natives-syntax --expose-gc
 
-var key = {};
-var map = new WeakMap;
-Object.preventExtensions(key);
-
-// Try querying using frozen key.
-assertFalse(map.has(key));
-assertSame(undefined, map.get(key));
-
-// Try adding using frozen key.
-map.set(key, 1);
-assertTrue(map.has(key));
-assertSame(1, map.get(key));
-
-// Try deleting using frozen key.
-map.delete(key, 1);
-assertFalse(map.has(key));
-assertSame(undefined, map.get(key));
+function __f_4(i1) {
+  return __v_3[i1] * __v_3[0];
+}
+function __f_3(i1) {
+  __f_4(i1);
+  __f_4(i1 + 16);
+  __f_4(i1 + 32);
+  %OptimizeFunctionOnNextCall(__f_4);
+  var x = __f_4(i1 + 993);
+  return x;
+}
+function __f_5() {
+  __v_3[0] = +__v_3[0];
+  gc();
+  __f_3(0) | 0;
+  __v_3 = /\u23a1|x/;
+  return 0;
+}
+var __v_3 = new Float32Array(1000);
+__f_5();
+__f_5();
+__f_5();

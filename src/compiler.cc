@@ -115,7 +115,8 @@ void CompilationInfo::Initialize(Isolate* isolate,
   scope_ = NULL;
   global_scope_ = NULL;
   extension_ = NULL;
-  pre_parse_data_ = NULL;
+  cached_data_ = NULL;
+  cached_data_mode_ = NO_CACHED_DATA;
   zone_ = zone;
   deferred_handles_ = NULL;
   code_stub_ = NULL;
@@ -249,17 +250,6 @@ void CompilationInfo::PrepareForCompilation(Scope* scope) {
   ASSERT(scope_ == NULL);
   scope_ = scope;
   function()->ProcessFeedbackSlots(isolate_);
-  int length = function()->slot_count();
-  // Allocate the feedback vector too.
-  feedback_vector_ = isolate()->factory()->NewFixedArray(length, TENURED);
-  // Ensure we can skip the write barrier
-  ASSERT_EQ(isolate()->heap()->uninitialized_symbol(),
-            *TypeFeedbackInfo::UninitializedSentinel(isolate()));
-  for (int i = 0; i < length; i++) {
-    feedback_vector_->set(i,
-        *TypeFeedbackInfo::UninitializedSentinel(isolate()),
-        SKIP_WRITE_BARRIER);
-  }
 }
 
 
@@ -581,8 +571,6 @@ static void UpdateSharedFunctionInfo(CompilationInfo* info) {
   shared->ReplaceCode(*code);
   if (shared->optimization_disabled()) code->set_optimizable(false);
 
-  shared->set_feedback_vector(*info->feedback_vector());
-
   // Set the expected number of properties for instances.
   FunctionLiteral* lit = info->function();
   int expected = lit->expected_property_count();
@@ -795,15 +783,18 @@ static Handle<SharedFunctionInfo> CompileToplevel(CompilationInfo* info) {
   ASSERT(info->is_eval() || info->is_global());
 
   bool parse_allow_lazy =
-      (info->pre_parse_data() != NULL ||
+      (info->cached_data_mode() == CONSUME_CACHED_DATA ||
        String::cast(script->source())->length() > FLAG_min_preparse_length) &&
       !DebuggerWantsEagerCompilation(info);
 
-  if (!parse_allow_lazy && info->pre_parse_data() != NULL) {
-    // We are going to parse eagerly, but we have preparse data produced by lazy
-    // preparsing. We cannot use it, since it won't contain all the symbols we
-    // need for eager parsing.
-    info->SetPreParseData(NULL);
+  if (!parse_allow_lazy && info->cached_data_mode() != NO_CACHED_DATA) {
+    // We are going to parse eagerly, but we either 1) have cached data produced
+    // by lazy parsing or 2) are asked to generate cached data. We cannot use
+    // the existing data, since it won't contain all the symbols we need for
+    // eager parsing. In addition, it doesn't make sense to produce the data
+    // when parsing eagerly. That data would contain all symbols, but no
+    // functions, so it cannot be used to aid lazy parsing later.
+    info->SetCachedData(NULL, NO_CACHED_DATA);
   }
 
   Handle<SharedFunctionInfo> result;
@@ -836,8 +827,7 @@ static Handle<SharedFunctionInfo> CompileToplevel(CompilationInfo* info) {
         lit->materialized_literal_count(),
         lit->is_generator(),
         info->code(),
-        ScopeInfo::Create(info->scope(), info->zone()),
-        info->feedback_vector());
+        ScopeInfo::Create(info->scope(), info->zone()));
 
     ASSERT_EQ(RelocInfo::kNoPosition, lit->function_token_position());
     SetFunctionInfo(result, lit, true, script);
@@ -924,15 +914,25 @@ Handle<JSFunction> Compiler::GetFunctionFromEval(Handle<String> source,
 }
 
 
-Handle<SharedFunctionInfo> Compiler::CompileScript(Handle<String> source,
-                                                   Handle<Object> script_name,
-                                                   int line_offset,
-                                                   int column_offset,
-                                                   bool is_shared_cross_origin,
-                                                   Handle<Context> context,
-                                                   v8::Extension* extension,
-                                                   ScriptDataImpl* pre_data,
-                                                   NativesFlag natives) {
+Handle<SharedFunctionInfo> Compiler::CompileScript(
+    Handle<String> source,
+    Handle<Object> script_name,
+    int line_offset,
+    int column_offset,
+    bool is_shared_cross_origin,
+    Handle<Context> context,
+    v8::Extension* extension,
+    ScriptDataImpl** cached_data,
+    CachedDataMode cached_data_mode,
+    NativesFlag natives) {
+  if (cached_data_mode == NO_CACHED_DATA) {
+    cached_data = NULL;
+  } else if (cached_data_mode == PRODUCE_CACHED_DATA) {
+    ASSERT(cached_data && !*cached_data);
+  } else {
+    ASSERT(cached_data_mode == CONSUME_CACHED_DATA);
+    ASSERT(cached_data && *cached_data);
+  }
   Isolate* isolate = source->GetIsolate();
   int source_length = source->length();
   isolate->counters()->total_load_size()->Increment(source_length);
@@ -977,7 +977,7 @@ Handle<SharedFunctionInfo> Compiler::CompileScript(Handle<String> source,
     CompilationInfoWithZone info(script);
     info.MarkAsGlobal();
     info.SetExtension(extension);
-    info.SetPreParseData(pre_data);
+    info.SetCachedData(cached_data, cached_data_mode);
     info.SetContext(context);
     if (FLAG_use_strict) info.SetStrictMode(STRICT);
     result = CompileToplevel(&info);
@@ -1036,8 +1036,7 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
                                      literal->materialized_literal_count(),
                                      literal->is_generator(),
                                      info.code(),
-                                     scope_info,
-                                     info.feedback_vector());
+                                     scope_info);
   SetFunctionInfo(result, literal, false, script);
   RecordFunctionCompilation(Logger::FUNCTION_TAG, &info, result);
   result->set_allows_lazy_compilation(allow_lazy);

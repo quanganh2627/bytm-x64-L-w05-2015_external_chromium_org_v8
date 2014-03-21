@@ -441,9 +441,7 @@ void LCodeGen::DoCallNew(LCallNew* instr) {
 
   __ Mov(x0, instr->arity());
   // No cell in x2 for construct type feedback in optimized code.
-  Handle<Object> megamorphic_symbol =
-      TypeFeedbackInfo::MegamorphicSentinel(isolate());
-  __ Mov(x2, Operand(megamorphic_symbol));
+  __ LoadRoot(x2, Heap::kUndefinedValueRootIndex);
 
   CallConstructStub stub(NO_CALL_FUNCTION_FLAGS);
   CallCode(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL, instr);
@@ -458,7 +456,7 @@ void LCodeGen::DoCallNewArray(LCallNewArray* instr) {
   ASSERT(ToRegister(instr->constructor()).is(x1));
 
   __ Mov(x0, Operand(instr->arity()));
-  __ Mov(x2, Operand(TypeFeedbackInfo::MegamorphicSentinel(isolate())));
+  __ LoadRoot(x2, Heap::kUndefinedValueRootIndex);
 
   ElementsKind kind = instr->hydrogen()->elements_kind();
   AllocationSiteOverrideMode override_mode =
@@ -895,6 +893,9 @@ bool LCodeGen::GenerateDeoptJumpTable() {
 
 bool LCodeGen::GenerateSafepointTable() {
   ASSERT(is_done());
+  // We do not know how much data will be emitted for the safepoint table, so
+  // force emission of the veneer pool.
+  masm()->CheckVeneerPool(true, true);
   safepoints_.Emit(masm(), GetStackSlotCount());
   return !is_aborted();
 }
@@ -1103,6 +1104,13 @@ void LCodeGen::DeoptimizeIfNotRoot(Register rt,
                                    LEnvironment* environment) {
   __ CompareRoot(rt, index);
   DeoptimizeIf(ne, environment);
+}
+
+
+void LCodeGen::DeoptimizeIfMinusZero(DoubleRegister input,
+                                     LEnvironment* environment) {
+  __ TestForMinusZero(input);
+  DeoptimizeIf(vs, environment);
 }
 
 
@@ -2528,7 +2536,8 @@ void LCodeGen::DoCheckValue(LCheckValue* instr) {
   Handle<HeapObject> object = instr->hydrogen()->object().handle();
   AllowDeferredHandleDereference smi_check;
   if (isolate()->heap()->InNewSpace(*object)) {
-    Register temp = ToRegister(instr->temp());
+    UseScratchRegisterScope temps(masm());
+    Register temp = temps.AcquireX();
     Handle<Cell> cell = isolate()->factory()->NewCell(object);
     __ Mov(temp, Operand(Handle<Object>(cell)));
     __ Ldr(temp, FieldMemOperand(temp, Cell::kValueOffset));
@@ -2668,8 +2677,7 @@ void LCodeGen::DoDivByConstI(LDivByConstI* instr) {
     DeoptimizeIfZero(dividend, instr->environment());
   }
 
-  __ FlooringDiv(result, dividend, Abs(divisor));
-  __ Add(result, result, Operand(dividend, LSR, 31));
+  __ TruncatingDiv(result, dividend, Abs(divisor));
   if (divisor < 0) __ Neg(result, result);
 
   if (!hdiv->CheckFlag(HInstruction::kAllUsesTruncatingToInt32)) {
@@ -2744,16 +2752,13 @@ void LCodeGen::DoDivI(LDivI* instr) {
 void LCodeGen::DoDoubleToIntOrSmi(LDoubleToIntOrSmi* instr) {
   DoubleRegister input = ToDoubleRegister(instr->value());
   Register result = ToRegister32(instr->result());
-  Label done, deopt;
 
   if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
-    __ JumpIfMinusZero(input, &deopt);
+    DeoptimizeIfMinusZero(input, instr->environment());
   }
 
-  __ TryConvertDoubleToInt32(result, input, double_scratch(), &done);
-  __ Bind(&deopt);
-  Deoptimize(instr->environment());
-  __ Bind(&done);
+  __ TryConvertDoubleToInt32(result, input, double_scratch());
+  DeoptimizeIf(ne, instr->environment());
 
   if (instr->tag_result()) {
     __ SmiTag(result.X());
@@ -3816,11 +3821,9 @@ void LCodeGen::DoMathFloor(LMathFloor* instr) {
   // and produce a valid double result in a single instruction.
   DoubleRegister input = ToDoubleRegister(instr->value());
   Register result = ToRegister(instr->result());
-  Label deopt;
-  Label done;
 
   if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
-    __ JumpIfMinusZero(input, &deopt);
+    DeoptimizeIfMinusZero(input, instr->environment());
   }
 
   __ Fcvtms(result, input);
@@ -3830,12 +3833,7 @@ void LCodeGen::DoMathFloor(LMathFloor* instr) {
   __ Cmp(result, Operand(result, SXTW));
   //  - The input was not NaN.
   __ Fccmp(input, input, NoFlag, eq);
-  __ B(&done, eq);
-
-  __ Bind(&deopt);
-  Deoptimize(instr->environment());
-
-  __ Bind(&done);
+  DeoptimizeIf(ne, instr->environment());
 }
 
 
@@ -3894,7 +3892,8 @@ void LCodeGen::DoFlooringDivByConstI(LFlooringDivByConstI* instr) {
     DeoptimizeIf(eq, instr->environment());
   }
 
-  __ FlooringDiv(result, dividend, divisor);
+  // TODO(svenpanne) Add correction terms.
+  __ TruncatingDiv(result, dividend, divisor);
 }
 
 
@@ -4167,8 +4166,7 @@ void LCodeGen::DoModByConstI(LModByConstI* instr) {
     return;
   }
 
-  __ FlooringDiv(result, dividend, Abs(divisor));
-  __ Add(result, result, Operand(dividend, LSR, 31));
+  __ TruncatingDiv(result, dividend, Abs(divisor));
   __ Sxtw(dividend.X(), dividend);
   __ Mov(temp, Abs(divisor));
   __ Smsubl(result.X(), result, temp, dividend.X());
@@ -4526,32 +4524,35 @@ void LCodeGen::DoNumberUntagD(LNumberUntagD* instr) {
   if (mode == NUMBER_CANDIDATE_IS_ANY_TAGGED) {
     __ JumpIfSmi(input, &load_smi);
 
-    Label convert_undefined, deopt;
+    Label convert_undefined;
 
     // Heap number map check.
-    Label* not_heap_number = can_convert_undefined_to_nan ? &convert_undefined
-                                                          : &deopt;
     __ Ldr(scratch, FieldMemOperand(input, HeapObject::kMapOffset));
-    __ JumpIfNotRoot(scratch, Heap::kHeapNumberMapRootIndex, not_heap_number);
+    if (can_convert_undefined_to_nan) {
+      __ JumpIfNotRoot(scratch, Heap::kHeapNumberMapRootIndex,
+                       &convert_undefined);
+    } else {
+      DeoptimizeIfNotRoot(scratch, Heap::kHeapNumberMapRootIndex,
+                          instr->environment());
+    }
 
     // Load heap number.
     __ Ldr(result, FieldMemOperand(input, HeapNumber::kValueOffset));
     if (instr->hydrogen()->deoptimize_on_minus_zero()) {
-      __ JumpIfMinusZero(result, &deopt);
+      DeoptimizeIfMinusZero(result, instr->environment());
     }
     __ B(&done);
 
     if (can_convert_undefined_to_nan) {
       __ Bind(&convert_undefined);
-      __ JumpIfNotRoot(input, Heap::kUndefinedValueRootIndex, &deopt);
+      DeoptimizeIfNotRoot(input, Heap::kUndefinedValueRootIndex,
+                          instr->environment());
 
       __ LoadRoot(scratch, Heap::kNanValueRootIndex);
       __ Ldr(result, FieldMemOperand(scratch, HeapNumber::kValueOffset));
       __ B(&done);
     }
 
-    __ Bind(&deopt);
-    Deoptimize(instr->environment());
   } else {
     ASSERT(mode == NUMBER_CANDIDATE_IS_SMI);
     // Fall through to load_smi.
@@ -5494,7 +5495,6 @@ void LCodeGen::DoDeferredTaggedToI(LTaggedToI* instr,
     Register output = ToRegister32(instr->result());
 
     DoubleRegister dbl_scratch2 = ToDoubleRegister(temp2);
-    Label converted;
 
     // Deoptimized if it's not a heap number.
     DeoptimizeIfNotRoot(scratch1, Heap::kHeapNumberMapRootIndex,
@@ -5503,10 +5503,8 @@ void LCodeGen::DoDeferredTaggedToI(LTaggedToI* instr,
     // A heap number: load value and convert to int32 using non-truncating
     // function. If the result is out of range, branch to deoptimize.
     __ Ldr(dbl_scratch1, FieldMemOperand(input, HeapNumber::kValueOffset));
-    __ TryConvertDoubleToInt32(output, dbl_scratch1, dbl_scratch2, &converted);
-    Deoptimize(instr->environment());
-
-    __ Bind(&converted);
+    __ TryConvertDoubleToInt32(output, dbl_scratch1, dbl_scratch2);
+    DeoptimizeIf(ne, instr->environment());
 
     if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
       __ Cmp(output, 0);
@@ -5630,7 +5628,8 @@ void LCodeGen::DoTransitionElementsKind(LTransitionElementsKind* instr) {
         this, Safepoint::kWithRegistersAndDoubles);
     __ Mov(x0, object);
     __ Mov(x1, Operand(to_map));
-    TransitionElementsKindStub stub(from_kind, to_kind);
+    bool is_js_array = from_map->instance_type() == JS_ARRAY_TYPE;
+    TransitionElementsKindStub stub(from_kind, to_kind, is_js_array);
     __ CallStub(&stub);
     RecordSafepointWithRegistersAndDoubles(
         instr->pointer_map(), 0, Safepoint::kNoLazyDeopt);

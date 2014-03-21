@@ -616,6 +616,24 @@ bool Assembler::IsConstantPoolAt(Instruction* instr) {
 
 
 int Assembler::ConstantPoolSizeAt(Instruction* instr) {
+#ifdef USE_SIMULATOR
+  // Assembler::debug() embeds constants directly into the instruction stream.
+  // Although this is not a genuine constant pool, treat it like one to avoid
+  // disassembling the constants.
+  if ((instr->Mask(ExceptionMask) == HLT) &&
+      (instr->ImmException() == kImmExceptionIsDebug)) {
+    const char* message =
+        reinterpret_cast<const char*>(
+            instr->InstructionAtOffset(kDebugMessageOffset));
+    int size = kDebugMessageOffset + strlen(message) + 1;
+    return RoundUp(size, kInstructionSize) / kInstructionSize;
+  }
+  // Same for printf support, see MacroAssembler::CallPrintf().
+  if ((instr->Mask(ExceptionMask) == HLT) &&
+      (instr->ImmException() == kImmExceptionIsPrintf)) {
+    return kPrintfLength / kInstructionSize;
+  }
+#endif
   if (IsConstantPoolAt(instr)) {
     return instr->ImmLLiteral();
   } else {
@@ -2548,7 +2566,7 @@ void Assembler::CheckConstPool(bool force_emit, bool require_jump) {
 
   // Emit veneers for branches that would go out of range during emission of the
   // constant pool.
-  CheckVeneerPool(require_jump, kVeneerDistanceMargin + pool_size);
+  CheckVeneerPool(false, require_jump, kVeneerDistanceMargin + pool_size);
 
   Label size_check;
   bind(&size_check);
@@ -2641,7 +2659,7 @@ void Assembler::RecordVeneerPool(int location_offset, int size) {
 }
 
 
-void Assembler::EmitVeneers(bool need_protection, int margin) {
+void Assembler::EmitVeneers(bool force_emit, bool need_protection, int margin) {
   BlockPoolsScope scope(this);
   RecordComment("[ Veneers");
 
@@ -2667,7 +2685,7 @@ void Assembler::EmitVeneers(bool need_protection, int margin) {
 
   it = unresolved_branches_.begin();
   while (it != unresolved_branches_.end()) {
-    if (ShouldEmitVeneer(it->first, margin)) {
+    if (force_emit || ShouldEmitVeneer(it->first, margin)) {
       Instruction* branch = InstructionAt(it->second.pc_offset_);
       Label* label = it->second.label_;
 
@@ -2710,7 +2728,7 @@ void Assembler::EmitVeneers(bool need_protection, int margin) {
 }
 
 
-void Assembler::CheckVeneerPool(bool require_jump,
+void Assembler::CheckVeneerPool(bool force_emit, bool require_jump,
                                 int margin) {
   // There is nothing to do if there are no pending veneer pool entries.
   if (unresolved_branches_.empty())  {
@@ -2724,6 +2742,7 @@ void Assembler::CheckVeneerPool(bool require_jump,
   // emission, such sequences are protected by calls to BlockVeneerPoolFor and
   // BlockVeneerPoolScope.
   if (is_veneer_pool_blocked()) {
+    ASSERT(!force_emit);
     return;
   }
 
@@ -2731,8 +2750,8 @@ void Assembler::CheckVeneerPool(bool require_jump,
     // Prefer emitting veneers protected by an existing instruction.
     margin *= kVeneerNoProtectionFactor;
   }
-  if (ShouldEmitVeneers(margin)) {
-    EmitVeneers(require_jump, margin);
+  if (force_emit || ShouldEmitVeneers(margin)) {
+    EmitVeneers(force_emit, require_jump, margin);
   } else {
     next_veneer_pool_check_ =
       unresolved_branches_first_limit() - kVeneerDistanceCheckMargin;
@@ -2773,6 +2792,19 @@ void Assembler::RecordConstPool(int size) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   RecordRelocInfo(RelocInfo::CONST_POOL, static_cast<intptr_t>(size));
 #endif
+}
+
+
+MaybeObject* Assembler::AllocateConstantPool(Heap* heap) {
+  // No out-of-line constant pool support.
+  UNREACHABLE();
+  return NULL;
+}
+
+
+void Assembler::PopulateConstantPool(ConstantPoolArray* constant_pool) {
+  // No out-of-line constant pool support.
+  UNREACHABLE();
 }
 
 

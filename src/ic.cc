@@ -1096,7 +1096,6 @@ MaybeObject* KeyedLoadIC::Load(Handle<Object> object, Handle<Object> key) {
     maybe_object = LoadIC::Load(object, Handle<String>::cast(key));
     if (maybe_object->IsFailure()) return maybe_object;
   } else if (FLAG_use_ic && !object->IsAccessCheckNeeded()) {
-    ASSERT(!object->IsAccessCheckNeeded());
     if (object->IsString() && key->IsNumber()) {
       if (state() == UNINITIALIZED) stub = string_stub();
     } else if (object->IsJSObject()) {
@@ -1117,7 +1116,6 @@ MaybeObject* KeyedLoadIC::Load(Handle<Object> object, Handle<Object> key) {
     if (*stub == *generic_stub()) {
       TRACE_GENERIC_IC(isolate(), "KeyedLoadIC", "set generic");
     }
-    ASSERT(!stub.is_null());
     set_target(*stub);
     TRACE_IC("LoadIC", key);
   }
@@ -1228,26 +1226,6 @@ MaybeObject* StoreIC::Store(Handle<Object> object,
 
   // Observed objects are always modified through the runtime.
   if (receiver->map()->is_observed()) {
-    Handle<Object> result = JSReceiver::SetProperty(
-        receiver, name, value, NONE, strict_mode(), store_mode);
-    RETURN_IF_EMPTY_HANDLE(isolate(), result);
-    return *result;
-  }
-
-  // Use specialized code for setting the length of arrays with fast
-  // properties. Slow properties might indicate redefinition of the length
-  // property. Note that when redefined using Object.freeze, it's possible
-  // to have fast properties but a read-only length.
-  if (FLAG_use_ic &&
-      receiver->IsJSArray() &&
-      name->Equals(isolate()->heap()->length_string()) &&
-      Handle<JSArray>::cast(receiver)->AllowsSetElementsLength() &&
-      receiver->HasFastProperties() &&
-      !receiver->map()->is_frozen()) {
-    Handle<Code> stub =
-        StoreArrayLengthStub(kind(), strict_mode()).GetCode(isolate());
-    set_target(*stub);
-    TRACE_IC("StoreIC", name);
     Handle<Object> result = JSReceiver::SetProperty(
         receiver, name, value, NONE, strict_mode(), store_mode);
     RETURN_IF_EMPTY_HANDLE(isolate(), result);
@@ -1369,7 +1347,7 @@ Handle<Code> StoreIC::CompileHandler(LookupResult* lookup,
         StoreGlobalStub stub(
             union_type->IsConstant(), receiver->IsJSGlobalProxy());
         Handle<Code> code = stub.GetCodeCopyFromTemplate(
-            isolate(), *global, *cell);
+            isolate(), global, cell);
         // TODO(verwaest): Move caching of these NORMAL stubs outside as well.
         HeapObject::UpdateMapCodeCache(receiver, name, code);
         return code;
@@ -1404,6 +1382,17 @@ Handle<Code> StoreIC::CompileHandler(LookupResult* lookup,
       // TODO(dcarney): Handle correctly.
       if (callback->IsDeclaredAccessorInfo()) break;
       ASSERT(callback->IsForeign());
+
+      // Use specialized code for setting the length of arrays with fast
+      // properties. Slow properties might indicate redefinition of the length
+      // property.
+      if (receiver->IsJSArray() &&
+          name->Equals(isolate()->heap()->length_string()) &&
+          Handle<JSArray>::cast(receiver)->AllowsSetElementsLength() &&
+          receiver->HasFastProperties()) {
+        return compiler.CompileStoreArrayLength(receiver, lookup, name);
+      }
+
       // No IC support for old-style native accessors.
       break;
     }
@@ -1696,7 +1685,9 @@ MaybeObject* KeyedStoreIC::Store(Handle<Object> object,
                                   JSReceiver::MAY_BE_STORE_FROM_KEYED);
     if (maybe_object->IsFailure()) return maybe_object;
   } else {
-    bool use_ic = FLAG_use_ic && !object->IsAccessCheckNeeded() &&
+    bool use_ic = FLAG_use_ic &&
+        !object->IsAccessCheckNeeded() &&
+        !object->IsJSGlobalProxy() &&
         !(object->IsJSObject() &&
           JSObject::cast(*object)->map()->is_observed());
     if (use_ic && !object->IsSmi()) {
@@ -1820,11 +1811,11 @@ RUNTIME_FUNCTION(MaybeObject*, StoreIC_MissFromStubFailure) {
 
 
 RUNTIME_FUNCTION(MaybeObject*, StoreIC_ArrayLength) {
-  SealHandleScope shs(isolate);
+  HandleScope scope(isolate);
 
   ASSERT(args.length() == 2);
-  JSArray* receiver = JSArray::cast(args[0]);
-  Object* len = args[1];
+  Handle<JSArray> receiver = args.at<JSArray>(0);
+  Handle<Object> len = args.at<Object>(1);
 
   // The generated code should filter out non-Smis before we get here.
   ASSERT(len->IsSmi());
@@ -1836,11 +1827,9 @@ RUNTIME_FUNCTION(MaybeObject*, StoreIC_ArrayLength) {
   ASSERT(debug_lookup.IsPropertyCallbacks() && !debug_lookup.IsReadOnly());
 #endif
 
-  Object* result;
-  MaybeObject* maybe_result = receiver->SetElementsLength(len);
-  if (!maybe_result->To(&result)) return maybe_result;
-
-  return len;
+  RETURN_IF_EMPTY_HANDLE(isolate,
+                         JSArray::SetElementsLength(receiver, len));
+  return *len;
 }
 
 
@@ -2379,7 +2368,7 @@ const char* BinaryOpIC::State::KindToString(Kind kind) {
 Type* BinaryOpIC::State::KindToType(Kind kind, Zone* zone) {
   switch (kind) {
     case NONE: return Type::None(zone);
-    case SMI: return Type::Smi(zone);
+    case SMI: return Type::SignedSmall(zone);
     case INT32: return Type::Signed32(zone);
     case NUMBER: return Type::Number(zone);
     case STRING: return Type::String(zone);
@@ -2404,8 +2393,11 @@ MaybeObject* BinaryOpIC::Transition(Handle<AllocationSite> allocation_site,
       isolate(), function, left, 1, &right, &caught_exception);
   if (caught_exception) return Failure::Exception();
 
+  // Execution::Call can execute arbitrary JavaScript, hence potentially
+  // update the state of this very IC, so we must update the stored state.
+  UpdateTarget();
   // Compute the new state.
-  State old_state = state;
+  State old_state(target()->extra_ic_state());
   state.Update(left, right, result);
 
   // Check if we have a string operation here.
@@ -2522,7 +2514,7 @@ Type* CompareIC::StateToType(
     Handle<Map> map) {
   switch (state) {
     case CompareIC::UNINITIALIZED: return Type::None(zone);
-    case CompareIC::SMI: return Type::Smi(zone);
+    case CompareIC::SMI: return Type::SignedSmall(zone);
     case CompareIC::NUMBER: return Type::Number(zone);
     case CompareIC::STRING: return Type::String(zone);
     case CompareIC::INTERNALIZED_STRING: return Type::InternalizedString(zone);

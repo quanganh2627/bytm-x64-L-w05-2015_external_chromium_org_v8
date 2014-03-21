@@ -1171,6 +1171,8 @@ class MaybeObject BASE_EMBEDDED {
   V(kExpectedFixedArrayInRegisterRbx,                                         \
     "Expected fixed array in register rbx")                                   \
   V(kExpectedSmiOrHeapNumber, "Expected smi or HeapNumber")                   \
+  V(kExpectedUndefinedOrCell,                                                 \
+    "Expected undefined or cell in register")                                 \
   V(kExpectingAlignmentForCopyBytes,                                          \
     "Expecting alignment for CopyBytes")                                      \
   V(kExportDeclaration, "Export declaration")                                 \
@@ -1324,6 +1326,8 @@ class MaybeObject BASE_EMBEDDED {
   V(kTheInstructionShouldBeAnOri, "The instruction should be an ori")         \
   V(kTheInstructionToPatchShouldBeALoadFromPc,                                \
     "The instruction to patch should be a load from pc")                      \
+  V(kTheInstructionToPatchShouldBeALoadFromPp,                                \
+    "The instruction to patch should be a load from pp")                      \
   V(kTheInstructionToPatchShouldBeAnLdrLiteral,                               \
     "The instruction to patch should be a ldr literal")                       \
   V(kTheInstructionToPatchShouldBeALui,                                       \
@@ -1532,6 +1536,8 @@ class Object : public MaybeObject {
 
   // Converts this to a Smi if possible.
   // Failure is returned otherwise.
+  static MUST_USE_RESULT inline Handle<Object> ToSmi(Isolate* isolate,
+                                                     Handle<Object> object);
   MUST_USE_RESULT inline MaybeObject* ToSmi();
 
   void Lookup(Name* name, LookupResult* result);
@@ -1575,11 +1581,10 @@ class Object : public MaybeObject {
   MUST_USE_RESULT MaybeObject* GetPropertyWithDefinedGetter(Object* receiver,
                                                             JSReceiver* getter);
 
-  static Handle<Object> GetElement(Isolate* isolate,
-                                   Handle<Object> object,
-                                   uint32_t index);
-  MUST_USE_RESULT inline MaybeObject* GetElement(Isolate* isolate,
-                                                 uint32_t index);
+  static inline Handle<Object> GetElement(Isolate* isolate,
+                                          Handle<Object> object,
+                                          uint32_t index);
+
   // For use when we know that no exception can be thrown.
   inline Object* GetElementNoExceptionThrown(Isolate* isolate, uint32_t index);
   MUST_USE_RESULT MaybeObject* GetElementWithReceiver(Isolate* isolate,
@@ -2419,6 +2424,12 @@ class JSObject: public JSReceiver {
   MUST_USE_RESULT inline MaybeObject* EnsureCanContainElements(
       FixedArrayBase* elements,
       uint32_t length,
+      EnsureElementsMode mode);
+  static void EnsureCanContainElements(
+      Handle<JSObject> object,
+      Arguments* arguments,
+      uint32_t first_arg,
+      uint32_t arg_count,
       EnsureElementsMode mode);
   MUST_USE_RESULT MaybeObject* EnsureCanContainElements(
       Arguments* arguments,
@@ -5372,7 +5383,6 @@ class Code: public HeapObject {
 
   // Find an object in a stub with a specified map
   Object* FindNthObject(int n, Map* match_map);
-  void ReplaceNthObject(int n, Map* match_map, Object* replace_with);
 
   // Find the first allocation site in an IC stub.
   AllocationSite* FindFirstAllocationSite();
@@ -5381,7 +5391,6 @@ class Code: public HeapObject {
   Map* FindFirstMap();
   void FindAllMaps(MapHandleList* maps);
   void FindAllTypes(TypeHandleList* types);
-  void ReplaceFirstMap(Map* replace);
 
   // Find the first handler in an IC stub.
   Code* FindFirstHandler();
@@ -5393,7 +5402,12 @@ class Code: public HeapObject {
   // Find the first name in an IC stub.
   Name* FindFirstName();
 
-  void ReplaceNthCell(int n, Cell* replace_with);
+  class FindAndReplacePattern;
+  // For each (map-to-find, object-to-replace) pair in the pattern, this
+  // function replaces the corresponding placeholder in the code with the
+  // object-to-replace. The function assumes that pairs in the pattern come in
+  // the same order as the placeholders in the code.
+  void FindAndReplace(const FindAndReplacePattern& pattern);
 
   // The entire code object including its header is copied verbatim to the
   // snapshot so that it can be written in one, fast, memcpy during
@@ -5496,6 +5510,8 @@ class Code: public HeapObject {
 
   void ClearInlineCaches();
   void ClearInlineCaches(Kind kind);
+
+  void ClearTypeFeedbackInfo(Heap* heap);
 
   BailoutId TranslatePcOffsetToAstId(uint32_t pc_offset);
   uint32_t TranslateAstIdToPcOffset(BailoutId ast_id);
@@ -6218,6 +6234,7 @@ class Map: public HeapObject {
       Descriptor* descriptor,
       int index,
       TransitionFlag flag);
+  static Handle<Map> AsElementsKind(Handle<Map> map, ElementsKind kind);
   MUST_USE_RESULT MaybeObject* AsElementsKind(ElementsKind kind);
 
   MUST_USE_RESULT MaybeObject* CopyAsElementsKind(ElementsKind kind,
@@ -6692,8 +6709,6 @@ class SharedFunctionInfo: public HeapObject {
   // Removed a specific optimized code object from the optimized code map.
   void EvictFromOptimizedCodeMap(Code* optimized_code, const char* reason);
 
-  void ClearTypeFeedbackInfo(Heap* heap);
-
   // Trims the optimized code map after entries have been removed.
   void TrimOptimizedCodeMap(int shrink_by);
 
@@ -6801,12 +6816,6 @@ class SharedFunctionInfo: public HeapObject {
   // the tracking phase.
   inline int construction_count();
   inline void set_construction_count(int value);
-
-  // [feedback_vector] - accumulates ast node feedback from full-codegen and
-  // (increasingly) from crankshafted code where sufficient feedback isn't
-  // available. Currently the field is duplicated in
-  // TypeFeedbackInfo::feedback_vector, but the allocation is done here.
-  DECL_ACCESSORS(feedback_vector, FixedArray)
 
   // [initial_map]: initial map of the first function called as a constructor.
   // Saved for the duration of the tracking phase.
@@ -7088,10 +7097,8 @@ class SharedFunctionInfo: public HeapObject {
   static const int kScriptOffset = kFunctionDataOffset + kPointerSize;
   static const int kDebugInfoOffset = kScriptOffset + kPointerSize;
   static const int kInferredNameOffset = kDebugInfoOffset + kPointerSize;
-  static const int kFeedbackVectorOffset =
-      kInferredNameOffset + kPointerSize;
   static const int kInitialMapOffset =
-      kFeedbackVectorOffset + kPointerSize;
+      kInferredNameOffset + kPointerSize;
   // ast_node_count is a Smi field. It could be grouped with another Smi field
   // into a PSEUDO_SMI_ACCESSORS pair (on x64), if one becomes available.
   static const int kAstNodeCountOffset =
@@ -8177,6 +8184,8 @@ class TypeFeedbackInfo: public Struct {
   inline void set_inlined_type_change_checksum(int checksum);
   inline bool matches_inlined_type_change_checksum(int checksum);
 
+  DECL_ACCESSORS(feedback_vector, FixedArray)
+
   static inline TypeFeedbackInfo* cast(Object* obj);
 
   // Dispatched behavior.
@@ -8185,9 +8194,10 @@ class TypeFeedbackInfo: public Struct {
 
   static const int kStorage1Offset = HeapObject::kHeaderSize;
   static const int kStorage2Offset = kStorage1Offset + kPointerSize;
-  static const int kSize = kStorage2Offset + kPointerSize;
+  static const int kFeedbackVectorOffset =
+      kStorage2Offset + kPointerSize;
+  static const int kSize = kFeedbackVectorOffset + kPointerSize;
 
-  // TODO(mvstanton): move these sentinel declarations to shared function info.
   // The object that indicates an uninitialized cache.
   static inline Handle<Object> UninitializedSentinel(Isolate* isolate);
 
@@ -8202,6 +8212,9 @@ class TypeFeedbackInfo: public Struct {
   // A raw version of the uninitialized sentinel that's safe to read during
   // garbage collection (e.g., for patching the cache).
   static inline Object* RawUninitializedSentinel(Heap* heap);
+
+  static const int kForInFastCaseMarker = 0;
+  static const int kForInSlowCaseMarker = 1;
 
  private:
   static const int kTypeChangeChecksumBits = 7;
@@ -10010,12 +10023,13 @@ class JSArray: public JSObject {
   // Initialize the array with the given capacity. The function may
   // fail due to out-of-memory situations, but only if the requested
   // capacity is non-zero.
-  MUST_USE_RESULT MaybeObject* Initialize(int capacity, int length = 0);
+  static void Initialize(Handle<JSArray> array, int capacity, int length = 0);
 
   // Initializes the array to a certain length.
   inline bool AllowsSetElementsLength();
   // Can cause GC.
-  MUST_USE_RESULT MaybeObject* SetElementsLength(Object* length);
+  static Handle<Object> SetElementsLength(Handle<JSArray> array,
+                                          Handle<Object> length);
 
   // Set the content of the array to the content of storage.
   MUST_USE_RESULT inline MaybeObject* SetContent(FixedArrayBase* storage);

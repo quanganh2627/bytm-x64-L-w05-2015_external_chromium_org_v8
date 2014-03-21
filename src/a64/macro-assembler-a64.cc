@@ -737,13 +737,27 @@ void MacroAssembler::Abs(const Register& rd, const Register& rm,
 void MacroAssembler::Push(const CPURegister& src0, const CPURegister& src1,
                           const CPURegister& src2, const CPURegister& src3) {
   ASSERT(AreSameSizeAndType(src0, src1, src2, src3));
-  ASSERT(src0.IsValid());
 
   int count = 1 + src1.IsValid() + src2.IsValid() + src3.IsValid();
   int size = src0.SizeInBytes();
 
   PrepareForPush(count, size);
   PushHelper(count, size, src0, src1, src2, src3);
+}
+
+
+void MacroAssembler::Push(const CPURegister& src0, const CPURegister& src1,
+                          const CPURegister& src2, const CPURegister& src3,
+                          const CPURegister& src4, const CPURegister& src5,
+                          const CPURegister& src6, const CPURegister& src7) {
+  ASSERT(AreSameSizeAndType(src0, src1, src2, src3, src4, src5, src6, src7));
+
+  int count = 5 + src5.IsValid() + src6.IsValid() + src6.IsValid();
+  int size = src0.SizeInBytes();
+
+  PrepareForPush(count, size);
+  PushHelper(4, size, src0, src1, src2, src3);
+  PushHelper(count - 4, size, src4, src5, src6, src7);
 }
 
 
@@ -1528,6 +1542,20 @@ void MacroAssembler::AssertName(Register object) {
 }
 
 
+void MacroAssembler::AssertUndefinedOrAllocationSite(Register object,
+                                                     Register scratch) {
+  if (emit_debug_code()) {
+    Label done_checking;
+    AssertNotSmi(object);
+    JumpIfRoot(object, Heap::kUndefinedValueRootIndex, &done_checking);
+    Ldr(scratch, FieldMemOperand(object, HeapObject::kMapOffset));
+    CompareRoot(scratch, Heap::kAllocationSiteMapRootIndex);
+    Assert(eq, kExpectedUndefinedOrCell);
+    Bind(&done_checking);
+  }
+}
+
+
 void MacroAssembler::AssertString(Register object) {
   if (emit_debug_code()) {
     UseScratchRegisterScope temps(this);
@@ -2225,14 +2253,19 @@ void MacroAssembler::TryConvertDoubleToInt(Register as_int,
 }
 
 
-void MacroAssembler::JumpIfMinusZero(DoubleRegister input,
-                                     Label* on_negative_zero) {
+void MacroAssembler::TestForMinusZero(DoubleRegister input) {
   UseScratchRegisterScope temps(this);
   Register temp = temps.AcquireX();
   // Floating point -0.0 is kMinInt as an integer, so subtracting 1 (cmp) will
   // cause overflow.
   Fmov(temp, input);
   Cmp(temp, 1);
+}
+
+
+void MacroAssembler::JumpIfMinusZero(DoubleRegister input,
+                                     Label* on_negative_zero) {
+  TestForMinusZero(input);
   B(vs, on_negative_zero);
 }
 
@@ -2423,10 +2456,12 @@ void MacroAssembler::CopyBytes(Register dst,
                                Register length,
                                Register scratch,
                                CopyHint hint) {
-  ASSERT(!AreAliased(src, dst, length, scratch));
+  UseScratchRegisterScope temps(this);
+  Register tmp1 = temps.AcquireX();
+  Register tmp2 = temps.AcquireX();
+  ASSERT(!AreAliased(src, dst, length, scratch, tmp1, tmp2));
+  ASSERT(!AreAliased(src, dst, csp));
 
-  // TODO(all): Implement a faster copy function, and use hint to determine
-  // which algorithm to use for copies.
   if (emit_debug_code()) {
     // Check copy length.
     Cmp(length, 0);
@@ -2440,14 +2475,33 @@ void MacroAssembler::CopyBytes(Register dst,
     Assert(le, kCopyBuffersOverlap);
   }
 
-  Label loop, done;
-  Cbz(length, &done);
+  Label short_copy, short_loop, bulk_loop, done;
 
-  Bind(&loop);
+  if ((hint == kCopyLong || hint == kCopyUnknown) && !FLAG_optimize_for_size) {
+    Register bulk_length = scratch;
+    int pair_size = 2 * kXRegSize;
+    int pair_mask = pair_size - 1;
+
+    Bic(bulk_length, length, pair_mask);
+    Cbz(bulk_length, &short_copy);
+    Bind(&bulk_loop);
+    Sub(bulk_length, bulk_length, pair_size);
+    Ldp(tmp1, tmp2, MemOperand(src, pair_size, PostIndex));
+    Stp(tmp1, tmp2, MemOperand(dst, pair_size, PostIndex));
+    Cbnz(bulk_length, &bulk_loop);
+
+    And(length, length, pair_mask);
+  }
+
+  Bind(&short_copy);
+  Cbz(length, &done);
+  Bind(&short_loop);
   Sub(length, length, 1);
-  Ldrb(scratch, MemOperand(src, 1, PostIndex));
-  Strb(scratch, MemOperand(dst, 1, PostIndex));
-  Cbnz(length, &loop);
+  Ldrb(tmp1, MemOperand(src, 1, PostIndex));
+  Strb(tmp1, MemOperand(dst, 1, PostIndex));
+  Cbnz(length, &short_loop);
+
+
   Bind(&done);
 }
 
@@ -2926,7 +2980,6 @@ void MacroAssembler::ExitFrameRestoreFPRegs() {
 }
 
 
-// TODO(jbramley): Check that we're handling the frame pointer correctly.
 void MacroAssembler::EnterExitFrame(bool save_doubles,
                                     const Register& scratch,
                                     int extra_space) {
@@ -2970,7 +3023,7 @@ void MacroAssembler::EnterExitFrame(bool save_doubles,
   //   fp -> fp[0]: CallerFP (old fp)
   //         fp[-8]: Space reserved for SPOffset.
   //         fp[-16]: CodeObject()
-  //         jssp[-16 - fp_size]: Saved doubles (if save_doubles is true).
+  //         fp[-16 - fp_size]: Saved doubles (if save_doubles is true).
   //         jssp[8]: Extra space reserved for caller (if extra_space != 0).
   // jssp -> jssp[0]: Space reserved for the return address.
 
@@ -2982,7 +3035,7 @@ void MacroAssembler::EnterExitFrame(bool save_doubles,
   //   fp -> fp[0]: CallerFP (old fp)
   //         fp[-8]: Space reserved for SPOffset.
   //         fp[-16]: CodeObject()
-  //         csp[...]: Saved doubles, if saved_doubles is true.
+  //         fp[-16 - fp_size]: Saved doubles (if save_doubles is true).
   //         csp[8]: Memory reserved for the caller if extra_space != 0.
   //                 Alignment padding, if necessary.
   //  csp -> csp[0]: Space reserved for the return address.
@@ -3625,11 +3678,9 @@ void MacroAssembler::TestMapBitfield(Register object, uint64_t mask) {
 }
 
 
-void MacroAssembler::LoadElementsKind(Register result, Register object) {
-  // Load map.
-  __ Ldr(result, FieldMemOperand(object, HeapObject::kMapOffset));
+void MacroAssembler::LoadElementsKindFromMap(Register result, Register map) {
   // Load the map's "bit field 2".
-  __ Ldrb(result, FieldMemOperand(result, Map::kBitField2Offset));
+  __ Ldrb(result, FieldMemOperand(map, Map::kBitField2Offset));
   // Retrieve elements_kind from bit field 2.
   __ Ubfx(result, result, Map::kElementsKindShift, Map::kElementsKindBitCount);
 }
@@ -3783,17 +3834,6 @@ void MacroAssembler::CheckFastObjectElements(Register map,
   // If cond==ls, set cond=hi, otherwise compare.
   Ccmp(scratch,
        Operand(Map::kMaximumBitField2FastHoleyElementValue), CFlag, hi);
-  B(hi, fail);
-}
-
-
-void MacroAssembler::CheckFastSmiElements(Register map,
-                                          Register scratch,
-                                          Label* fail) {
-  STATIC_ASSERT(FAST_SMI_ELEMENTS == 0);
-  STATIC_ASSERT(FAST_HOLEY_SMI_ELEMENTS == 1);
-  Ldrb(scratch, FieldMemOperand(map, Map::kBitField2Offset));
-  Cmp(scratch, Map::kMaximumBitField2FastHoleySmiElementValue);
   B(hi, fail);
 }
 
@@ -5032,9 +5072,9 @@ bool MacroAssembler::IsCodeAgeSequence(byte* sequence) {
 #endif
 
 
-void MacroAssembler::FlooringDiv(Register result,
-                                 Register dividend,
-                                 int32_t divisor) {
+void MacroAssembler::TruncatingDiv(Register result,
+                                   Register dividend,
+                                   int32_t divisor) {
   ASSERT(!AreAliased(result, dividend));
   ASSERT(result.Is32Bits() && dividend.Is32Bits());
   MultiplierAndShift ms(divisor);
@@ -5044,6 +5084,7 @@ void MacroAssembler::FlooringDiv(Register result,
   if (divisor > 0 && ms.multiplier() < 0) Add(result, result, dividend);
   if (divisor < 0 && ms.multiplier() > 0) Sub(result, result, dividend);
   if (ms.shift() > 0) Asr(result, result, ms.shift());
+  Add(result, result, Operand(dividend, LSR, 31));
 }
 
 
@@ -5116,7 +5157,7 @@ InlineSmiCheckInfo::InlineSmiCheckInfo(Address info)
       reg_ = Register::XRegFromCode(reg_code);
       uint64_t smi_check_delta = DeltaBits::decode(payload);
       ASSERT(smi_check_delta != 0);
-      smi_check_ = inline_data - (smi_check_delta * kInstructionSize);
+      smi_check_ = inline_data->preceding(smi_check_delta);
     }
   }
 }

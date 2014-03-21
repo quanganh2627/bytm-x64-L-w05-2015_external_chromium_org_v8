@@ -1674,7 +1674,7 @@ HValue* HGraphBuilder::BuildNumberToString(HValue* object, Type* type) {
   }
   if_objectissmi.Else();
   {
-    if (type->Is(Type::Smi())) {
+    if (type->Is(Type::SignedSmall())) {
       if_objectissmi.Deopt("Expected smi");
     } else {
       // Check if the object is a heap number.
@@ -7206,7 +7206,6 @@ bool HOptimizedGraphBuilder::TryInline(Handle<JSFunction> target,
       target_shared->set_scope_info(*target_scope_info);
     }
     target_shared->EnableDeoptimizationSupport(*target_info.code());
-    target_shared->set_feedback_vector(*target_info.feedback_vector());
     Compiler::RecordFunctionCompilation(Logger::FUNCTION_TAG,
                                         &target_info,
                                         target_shared);
@@ -8279,12 +8278,25 @@ void HOptimizedGraphBuilder::VisitCallNew(CallNew* expr) {
 
     // Allocate an instance of the implicit receiver object.
     HValue* size_in_bytes = Add<HConstant>(instance_size);
-    PretenureFlag pretenure_flag =
-        (FLAG_pretenuring_call_new && !FLAG_allocation_site_pretenuring) ?
-            isolate()->heap()->GetPretenureMode() : NOT_TENURED;
+    HAllocationMode allocation_mode;
+    if (FLAG_pretenuring_call_new) {
+      if (FLAG_allocation_site_pretenuring) {
+        // Try to use pretenuring feedback.
+        Handle<AllocationSite> allocation_site = expr->allocation_site();
+        allocation_mode = HAllocationMode(allocation_site);
+        // Take a dependency on allocation site.
+        AllocationSite::AddDependentCompilationInfo(allocation_site,
+                                                    AllocationSite::TENURING,
+                                                    top_info());
+      } else {
+        allocation_mode = HAllocationMode(
+            isolate()->heap()->GetPretenureMode());
+      }
+    }
+
     HAllocate* receiver =
-        Add<HAllocate>(size_in_bytes, HType::JSObject(), pretenure_flag,
-        JS_OBJECT_TYPE);
+        BuildAllocate(size_in_bytes, HType::JSObject(), JS_OBJECT_TYPE,
+                      allocation_mode);
     receiver->set_known_initial_map(initial_map);
 
     // Load the initial map from the constructor.
@@ -8981,7 +8993,7 @@ bool CanBeZero(HValue* right) {
 
 HValue* HGraphBuilder::EnforceNumberType(HValue* number,
                                          Type* expected) {
-  if (expected->Is(Type::Smi())) {
+  if (expected->Is(Type::SignedSmall())) {
     return AddUncasted<HForceRepresentation>(number, Representation::Smi());
   }
   if (expected->Is(Type::Signed32())) {
@@ -9024,7 +9036,7 @@ HValue* HGraphBuilder::TruncateToNumber(HValue* value, Type** expected) {
 
   if (expected_obj->Is(Type::Undefined(zone()))) {
     // This is already done by HChange.
-    *expected = Type::Union(expected_number, Type::Double(zone()), zone());
+    *expected = Type::Union(expected_number, Type::Float(zone()), zone());
     return value;
   }
 
@@ -9757,6 +9769,18 @@ HInstruction* HOptimizedGraphBuilder::BuildFastLiteral(
   int elements_size = (elements->length() > 0 &&
       elements->map() != isolate()->heap()->fixed_cow_array_map()) ?
           elements->Size() : 0;
+
+  if (pretenure_flag == TENURED &&
+      elements->map() == isolate()->heap()->fixed_cow_array_map() &&
+      isolate()->heap()->InNewSpace(*elements)) {
+    // If we would like to pretenure a fixed cow array, we must ensure that the
+    // array is already in old space, otherwise we'll create too many old-to-
+    // new-space pointers (overflowing the store buffer).
+    elements = Handle<FixedArrayBase>(
+        isolate()->factory()->CopyAndTenureFixedCOWArray(
+            Handle<FixedArray>::cast(elements)));
+    boilerplate_object->set_elements(*elements);
+  }
 
   HInstruction* object_elements = NULL;
   if (elements_size > 0) {

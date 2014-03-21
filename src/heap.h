@@ -333,10 +333,6 @@ namespace internal {
   V(MakeReferenceError_string, "MakeReferenceError")                     \
   V(MakeSyntaxError_string, "MakeSyntaxError")                           \
   V(MakeTypeError_string, "MakeTypeError")                               \
-  V(invalid_lhs_in_assignment_string, "invalid_lhs_in_assignment")       \
-  V(invalid_lhs_in_for_in_string, "invalid_lhs_in_for_in")               \
-  V(invalid_lhs_in_postfix_op_string, "invalid_lhs_in_postfix_op")       \
-  V(invalid_lhs_in_prefix_op_string, "invalid_lhs_in_prefix_op")         \
   V(illegal_return_string, "illegal_return")                             \
   V(illegal_break_string, "illegal_break")                               \
   V(illegal_continue_string, "illegal_continue")                         \
@@ -979,6 +975,10 @@ class Heap {
   // Failure::RetryAfterGC(requested_bytes, space) if the allocation failed.
   MUST_USE_RESULT inline MaybeObject* CopyFixedArray(FixedArray* src);
 
+  // Make a copy of src and return it. Returns
+  // Failure::RetryAfterGC(requested_bytes, space) if the allocation failed.
+  MUST_USE_RESULT MaybeObject* CopyAndTenureFixedCOWArray(FixedArray* src);
+
   // Make a copy of src, set the map, and return the copy. Returns
   // Failure::RetryAfterGC(requested_bytes, space) if the allocation failed.
   MUST_USE_RESULT MaybeObject* CopyFixedArrayWithMap(FixedArray* src, Map* map);
@@ -1170,6 +1170,11 @@ class Heap {
   // Initialize a filler object to keep the ability to iterate over the heap
   // when shortening objects.
   void CreateFillerObjectAt(Address addr, int size);
+
+  enum InvocationMode { FROM_GC, FROM_MUTATOR };
+
+  // Maintain marking consistency for IncrementalMarking.
+  void AdjustLiveBytes(Address address, int by, InvocationMode mode);
 
   // Makes a new native code object
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
@@ -1489,10 +1494,6 @@ class Heap {
 #ifdef DEBUG
   void set_allocation_timeout(int timeout) {
     allocation_timeout_ = timeout;
-  }
-
-  bool disallow_allocation_failure() {
-    return disallow_allocation_failure_;
   }
 
   void TracePathToObjectFrom(Object* target, Object* root);
@@ -2004,10 +2005,6 @@ class Heap {
   // variable holds the value indicating the number of allocations
   // remain until the next failure and garbage collection.
   int allocation_timeout_;
-
-  // Do we expect to be able to handle allocation failure at this
-  // time?
-  bool disallow_allocation_failure_;
 #endif  // DEBUG
 
   // Indicates that the new space should be kept small due to high promotion
@@ -2516,13 +2513,11 @@ class Heap {
   MemoryChunk* chunks_queued_for_free_;
 
   Mutex* relocation_mutex_;
-#ifdef DEBUG
-  bool relocation_mutex_locked_by_optimizer_thread_;
-#endif  // DEBUG;
+
+  int gc_callbacks_depth_;
 
   friend class Factory;
   friend class GCTracer;
-  friend class DisallowAllocationFailure;
   friend class AlwaysAllocateScope;
   friend class Page;
   friend class Isolate;
@@ -2532,6 +2527,7 @@ class Heap {
 #ifdef VERIFY_HEAP
   friend class NoWeakObjectVerificationScope;
 #endif
+  friend class GCCallbacksScope;
 
   DISALLOW_COPY_AND_ASSIGN(Heap);
 };
@@ -2572,26 +2568,15 @@ class HeapStats {
 };
 
 
-class DisallowAllocationFailure {
- public:
-  inline DisallowAllocationFailure();
-  inline ~DisallowAllocationFailure();
-
-#ifdef DEBUG
- private:
-  bool old_state_;
-#endif
-};
-
-
 class AlwaysAllocateScope {
  public:
-  inline AlwaysAllocateScope();
+  explicit inline AlwaysAllocateScope(Isolate* isolate);
   inline ~AlwaysAllocateScope();
 
  private:
   // Implicitly disable artificial allocation failures.
-  DisallowAllocationFailure disallow_allocation_failure_;
+  Heap* heap_;
+  DisallowAllocationFailure daf_;
 };
 
 
@@ -2602,6 +2587,18 @@ class NoWeakObjectVerificationScope {
   inline ~NoWeakObjectVerificationScope();
 };
 #endif
+
+
+class GCCallbacksScope {
+ public:
+  explicit inline GCCallbacksScope(Heap* heap);
+  inline ~GCCallbacksScope();
+
+  inline bool CheckReenter();
+
+ private:
+  Heap* heap_;
+};
 
 
 // Visitor class to verify interior pointers in spaces that do not contain
@@ -2862,6 +2859,7 @@ class GCTracer BASE_EMBEDDED {
       MC_MARK,
       MC_SWEEP,
       MC_SWEEP_NEWSPACE,
+      MC_SWEEP_OLDSPACE,
       MC_EVACUATE_PAGES,
       MC_UPDATE_NEW_TO_NEW_POINTERS,
       MC_UPDATE_ROOT_TO_NEW_POINTERS,

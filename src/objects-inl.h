@@ -1031,6 +1031,21 @@ bool Object::IsNaN() {
 }
 
 
+// static
+Handle<Object> Object::ToSmi(Isolate* isolate, Handle<Object> object) {
+  if (object->IsSmi()) return object;
+  if (object->IsHeapNumber()) {
+    double value = Handle<HeapNumber>::cast(object)->value();
+    int int_value = FastD2I(value);
+    if (value == FastI2D(int_value) && Smi::IsValid(int_value)) {
+      return handle(Smi::FromInt(int_value), isolate);
+    }
+  }
+  return Handle<Object>();
+}
+
+
+// TODO(ishell): Use handlified version instead.
 MaybeObject* Object::ToSmi() {
   if (IsSmi()) return this;
   if (IsHeapNumber()) {
@@ -1049,12 +1064,16 @@ bool Object::HasSpecificClassOf(String* name) {
 }
 
 
-MaybeObject* Object::GetElement(Isolate* isolate, uint32_t index) {
+Handle<Object> Object::GetElement(Isolate* isolate,
+                                  Handle<Object> object,
+                                  uint32_t index) {
   // GetElement can trigger a getter which can cause allocation.
   // This was not always the case. This ASSERT is here to catch
   // leftover incorrect uses.
   ASSERT(AllowHeapAllocation::IsAllowed());
-  return GetElementWithReceiver(isolate, this, index);
+  CALL_HEAP_FUNCTION(isolate,
+                     object->GetElementWithReceiver(isolate, *object, index),
+                     Object);
 }
 
 
@@ -1470,7 +1489,8 @@ void AllocationSite::MarkZombie() {
 // elements kind is the initial elements kind.
 AllocationSiteMode AllocationSite::GetMode(
     ElementsKind boilerplate_elements_kind) {
-  if (IsFastSmiElementsKind(boilerplate_elements_kind)) {
+  if (FLAG_pretenuring_call_new ||
+      IsFastSmiElementsKind(boilerplate_elements_kind)) {
     return TRACK_ALLOCATION_SITE;
   }
 
@@ -1480,8 +1500,9 @@ AllocationSiteMode AllocationSite::GetMode(
 
 AllocationSiteMode AllocationSite::GetMode(ElementsKind from,
                                            ElementsKind to) {
-  if (IsFastSmiElementsKind(from) &&
-       IsMoreGeneralElementsKindTransition(from, to)) {
+  if (FLAG_pretenuring_call_new ||
+      (IsFastSmiElementsKind(from) &&
+       IsMoreGeneralElementsKindTransition(from, to))) {
     return TRACK_ALLOCATION_SITE;
   }
 
@@ -2740,7 +2761,8 @@ void DescriptorArray::SwapSortedKeys(int first, int second) {
 DescriptorArray::WhitenessWitness::WhitenessWitness(FixedArray* array)
     : marking_(array->GetHeap()->incremental_marking()) {
   marking_->EnterNoMarkingScope();
-  ASSERT(Marking::Color(array) == Marking::WHITE_OBJECT);
+  ASSERT(!marking_->IsMarking() ||
+         Marking::Color(array) == Marking::WHITE_OBJECT);
 }
 
 
@@ -4591,6 +4613,24 @@ bool Code::IsWeakObjectInOptimizedCode(Object* object) {
 }
 
 
+class Code::FindAndReplacePattern {
+ public:
+  FindAndReplacePattern() : count_(0) { }
+  void Add(Handle<Map> map_to_find, Handle<Object> obj_to_replace) {
+    ASSERT(count_ < kMaxCount);
+    find_[count_] = map_to_find;
+    replace_[count_] = obj_to_replace;
+    ++count_;
+  }
+ private:
+  static const int kMaxCount = 4;
+  int count_;
+  Handle<Map> find_[kMaxCount];
+  Handle<Object> replace_[kMaxCount];
+  friend class Code;
+};
+
+
 Object* Map::prototype() {
   return READ_FIELD(this, kPrototypeOffset);
 }
@@ -4980,8 +5020,6 @@ ACCESSORS(SharedFunctionInfo, name, Object, kNameOffset)
 ACCESSORS(SharedFunctionInfo, optimized_code_map, Object,
                  kOptimizedCodeMapOffset)
 ACCESSORS(SharedFunctionInfo, construct_stub, Code, kConstructStubOffset)
-ACCESSORS(SharedFunctionInfo, feedback_vector, FixedArray,
-          kFeedbackVectorOffset)
 ACCESSORS(SharedFunctionInfo, initial_map, Object, kInitialMapOffset)
 ACCESSORS(SharedFunctionInfo, instance_class_name, Object,
           kInstanceClassNameOffset)
@@ -6652,6 +6690,10 @@ bool TypeFeedbackInfo::matches_inlined_type_change_checksum(int checksum) {
   int mask = (1 << kTypeChangeChecksumBits) - 1;
   return InlinedTypeChangeChecksum::decode(value) == (checksum & mask);
 }
+
+
+ACCESSORS(TypeFeedbackInfo, feedback_vector, FixedArray,
+          kFeedbackVectorOffset)
 
 
 SMI_ACCESSORS(AliasedArgumentsEntry, aliased_context_slot, kAliasedContextSlot)
