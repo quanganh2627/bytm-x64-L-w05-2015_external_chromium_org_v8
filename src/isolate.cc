@@ -951,6 +951,12 @@ Failure* Isolate::ThrowIllegalOperation() {
 }
 
 
+Failure* Isolate::ThrowInvalidStringLength() {
+  return Throw(*factory()->NewRangeError(
+      "invalid_string_length", HandleVector<Object>(NULL, 0)));
+}
+
+
 void Isolate::ScheduleThrow(Object* exception) {
   // When scheduling a throw we first throw the exception to get the
   // error reporting if it is uncaught before rescheduling it.
@@ -1966,7 +1972,7 @@ bool Isolate::Init(Deserializer* des) {
 
   // Initialize other runtime facilities
 #if defined(USE_SIMULATOR)
-#if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_A64 || V8_TARGET_ARCH_MIPS
+#if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_MIPS
   Simulator::Initialize(this);
 #endif
 #endif

@@ -1031,7 +1031,6 @@ bool Object::IsNaN() {
 }
 
 
-// static
 Handle<Object> Object::ToSmi(Isolate* isolate, Handle<Object> object) {
   if (object->IsSmi()) return object;
   if (object->IsHeapNumber()) {
@@ -1077,11 +1076,20 @@ Handle<Object> Object::GetElement(Isolate* isolate,
 }
 
 
-Object* Object::GetElementNoExceptionThrown(Isolate* isolate, uint32_t index) {
-  MaybeObject* maybe = GetElementWithReceiver(isolate, this, index);
-  ASSERT(!maybe->IsFailure());
-  Object* result = NULL;  // Initialization to please compiler.
-  maybe->ToObject(&result);
+static Handle<Object> GetElementNoExceptionThrownHelper(Isolate* isolate,
+                                                        Handle<Object> object,
+                                                        uint32_t index) {
+  CALL_HEAP_FUNCTION(isolate,
+                     object->GetElementWithReceiver(isolate, *object, index),
+                     Object);
+}
+
+Handle<Object> Object::GetElementNoExceptionThrown(Isolate* isolate,
+                                                   Handle<Object> object,
+                                                   uint32_t index) {
+  Handle<Object> result =
+      GetElementNoExceptionThrownHelper(isolate, object, index);
+  CHECK_NOT_EMPTY_HANDLE(isolate, result);
   return result;
 }
 
@@ -1653,6 +1661,18 @@ MaybeObject* JSObject::EnsureCanContainElements(Object** objects,
 }
 
 
+// TODO(ishell): Temporary wrapper until handlified.
+void JSObject::EnsureCanContainElements(Handle<JSObject> object,
+                                        Handle<FixedArrayBase> elements,
+                                        uint32_t length,
+                                        EnsureElementsMode mode) {
+  CALL_HEAP_FUNCTION_VOID(object->GetIsolate(),
+                          object->EnsureCanContainElements(*elements,
+                                                           length,
+                                                           mode));
+}
+
+
 MaybeObject* JSObject::EnsureCanContainElements(FixedArrayBase* elements,
                                                 uint32_t length,
                                                 EnsureElementsMode mode) {
@@ -2107,6 +2127,7 @@ void Object::VerifyApiCallResultType() {
 #if ENABLE_EXTRA_CHECKS
   if (!(IsSmi() ||
         IsString() ||
+        IsSymbol() ||
         IsSpecObject() ||
         IsHeapNumber() ||
         IsUndefined() ||
@@ -6559,19 +6580,19 @@ bool JSArray::AllowsSetElementsLength() {
 }
 
 
-MaybeObject* JSArray::SetContent(FixedArrayBase* storage) {
-  MaybeObject* maybe_result = EnsureCanContainElements(
-      storage, storage->length(), ALLOW_COPIED_DOUBLE_ELEMENTS);
-  if (maybe_result->IsFailure()) return maybe_result;
-  ASSERT((storage->map() == GetHeap()->fixed_double_array_map() &&
-          IsFastDoubleElementsKind(GetElementsKind())) ||
-         ((storage->map() != GetHeap()->fixed_double_array_map()) &&
-          (IsFastObjectElementsKind(GetElementsKind()) ||
-           (IsFastSmiElementsKind(GetElementsKind()) &&
-            FixedArray::cast(storage)->ContainsOnlySmisOrHoles()))));
-  set_elements(storage);
-  set_length(Smi::FromInt(storage->length()));
-  return this;
+void JSArray::SetContent(Handle<JSArray> array,
+                         Handle<FixedArrayBase> storage) {
+  EnsureCanContainElements(array, storage, storage->length(),
+                           ALLOW_COPIED_DOUBLE_ELEMENTS);
+
+  ASSERT((storage->map() == array->GetHeap()->fixed_double_array_map() &&
+          IsFastDoubleElementsKind(array->GetElementsKind())) ||
+         ((storage->map() != array->GetHeap()->fixed_double_array_map()) &&
+          (IsFastObjectElementsKind(array->GetElementsKind()) ||
+           (IsFastSmiElementsKind(array->GetElementsKind()) &&
+            Handle<FixedArray>::cast(storage)->ContainsOnlySmisOrHoles()))));
+  array->set_elements(*storage);
+  array->set_length(Smi::FromInt(storage->length()));
 }
 
 

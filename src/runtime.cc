@@ -636,6 +636,13 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SymbolDescription) {
 }
 
 
+RUNTIME_FUNCTION(MaybeObject*, Runtime_SymbolRegistry) {
+  SealHandleScope shs(isolate);
+  ASSERT(args.length() == 0);
+  return isolate->heap()->symbol_registry();
+}
+
+
 RUNTIME_FUNCTION(MaybeObject*, Runtime_SymbolIsPrivate) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 1);
@@ -1679,6 +1686,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetPrototype) {
   ASSERT(args.length() == 2);
   CONVERT_ARG_HANDLE_CHECKED(JSObject, obj, 0);
   CONVERT_ARG_HANDLE_CHECKED(Object, prototype, 1);
+  if (obj->IsAccessCheckNeeded() &&
+      !isolate->MayNamedAccessWrapper(obj,
+                                      isolate->factory()->proto_string(),
+                                      v8::ACCESS_SET)) {
+    isolate->ReportFailedAccessCheckWrapper(obj, v8::ACCESS_SET);
+    RETURN_IF_SCHEDULED_EXCEPTION(isolate);
+    return isolate->heap()->undefined_value();
+  }
   if (obj->map()->is_observed()) {
     Handle<Object> old_value(
         GetPrototypeSkipHiddenPrototypes(isolate, *obj), isolate);
@@ -3289,8 +3304,7 @@ class FixedArrayBuilder {
   }
 
   Handle<JSArray> ToJSArray(Handle<JSArray> target_array) {
-    Factory* factory = target_array->GetIsolate()->factory();
-    factory->SetContent(target_array, array_);
+    JSArray::SetContent(target_array, array_);
     target_array->set_length(Smi::FromInt(length_));
     return target_array;
   }
@@ -3330,7 +3344,8 @@ class ReplacementStringBuilder {
         array_builder_(heap->isolate(), estimated_part_count),
         subject_(subject),
         character_count_(0),
-        is_ascii_(subject->IsOneByteRepresentation()) {
+        is_ascii_(subject->IsOneByteRepresentation()),
+        overflowed_(false) {
     // Require a non-zero initial size. Ensures that doubling the size to
     // extend the array will work.
     ASSERT(estimated_part_count > 0);
@@ -3378,6 +3393,11 @@ class ReplacementStringBuilder {
 
 
   Handle<String> ToString() {
+    if (overflowed_) {
+      heap_->isolate()->ThrowInvalidStringLength();
+      return Handle<String>();
+    }
+
     if (array_builder_.length() == 0) {
       return heap_->isolate()->factory()->empty_string();
     }
@@ -3409,7 +3429,7 @@ class ReplacementStringBuilder {
 
   void IncrementCharacterCount(int by) {
     if (character_count_ > String::kMaxLength - by) {
-      V8::FatalProcessOutOfMemory("String.replace result too large.");
+      overflowed_ = true;
     }
     character_count_ += by;
   }
@@ -3436,6 +3456,7 @@ class ReplacementStringBuilder {
   Handle<String> subject_;
   int character_count_;
   bool is_ascii_;
+  bool overflowed_;
 };
 
 
@@ -4034,7 +4055,9 @@ MUST_USE_RESULT static MaybeObject* StringReplaceGlobalRegExpWithString(
                                capture_count,
                                global_cache.LastSuccessfulMatch());
 
-  return *(builder.ToString());
+  Handle<String> result = builder.ToString();
+  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  return *result;
 }
 
 
@@ -4180,8 +4203,8 @@ Handle<String> StringReplaceOneCharWithString(Isolate* isolate,
                                        replace,
                                        found,
                                        recursion_limit - 1);
-    if (*found) return isolate->factory()->NewConsString(new_first, second);
     if (new_first.is_null()) return new_first;
+    if (*found) return isolate->factory()->NewConsString(new_first, second);
 
     Handle<String> new_second =
         StringReplaceOneCharWithString(isolate,
@@ -4190,8 +4213,8 @@ Handle<String> StringReplaceOneCharWithString(Isolate* isolate,
                                        replace,
                                        found,
                                        recursion_limit - 1);
-    if (*found) return isolate->factory()->NewConsString(first, new_second);
     if (new_second.is_null()) return new_second;
+    if (*found) return isolate->factory()->NewConsString(first, new_second);
 
     return subject;
   } else {
@@ -4200,6 +4223,7 @@ Handle<String> StringReplaceOneCharWithString(Isolate* isolate,
     *found = true;
     Handle<String> first = isolate->factory()->NewSubString(subject, 0, index);
     Handle<String> cons1 = isolate->factory()->NewConsString(first, replace);
+    RETURN_IF_EMPTY_HANDLE_VALUE(isolate, cons1, Handle<String>());
     Handle<String> second =
         isolate->factory()->NewSubString(subject, index + 1, subject->length());
     return isolate->factory()->NewConsString(cons1, second);
@@ -4225,6 +4249,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringReplaceOneCharWithString) {
                                                          &found,
                                                          kRecursionLimit);
   if (!result.is_null()) return *result;
+  if (isolate->has_pending_exception()) return Failure::Exception();
   return *StringReplaceOneCharWithString(isolate,
                                          FlattenGetString(subject),
                                          search,
@@ -4555,7 +4580,7 @@ static MaybeObject* SearchRegExpMultiple(
       Handle<FixedArray> cached_fixed_array =
           Handle<FixedArray>(FixedArray::cast(*cached_answer));
       // The cache FixedArray is a COW-array and can therefore be reused.
-      isolate->factory()->SetContent(result_array, cached_fixed_array);
+      JSArray::SetContent(result_array, cached_fixed_array);
       // The actual length of the result array is stored in the last element of
       // the backing store (the backing FixedArray may have a larger capacity).
       Object* cached_fixed_array_last_element =
@@ -6225,7 +6250,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_URIEscape) {
   Handle<String> result = string->IsOneByteRepresentationUnderneath()
       ? URIEscape::Escape<uint8_t>(isolate, source)
       : URIEscape::Escape<uc16>(isolate, source);
-  if (result.is_null()) return Failure::OutOfMemoryException(0x12);
+  RETURN_IF_EMPTY_HANDLE(isolate, result);
   return *result;
 }
 
@@ -6359,9 +6384,9 @@ MUST_USE_RESULT static MaybeObject* ConvertCaseHelper(
         int char_length = mapping->get(current, 0, chars);
         if (char_length == 0) char_length = 1;
         current_length += char_length;
-        if (current_length > Smi::kMaxValue) {
-          isolate->context()->mark_out_of_memory();
-          return Failure::OutOfMemoryException(0x13);
+        if (current_length > String::kMaxLength) {
+          AllowHeapAllocation allocate_error_and_return;
+          return isolate->ThrowInvalidStringLength();
         }
       }
       // Try again with the real length.  Return signed if we need
@@ -7016,7 +7041,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringAdd) {
   CONVERT_ARG_HANDLE_CHECKED(String, str1, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, str2, 1);
   isolate->counters()->string_add_runtime()->Increment();
-  return *isolate->factory()->NewConsString(str1, str2);
+  Handle<String> result = isolate->factory()->NewConsString(str1, str2);
+  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  return *result;
 }
 
 
@@ -7063,10 +7090,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderConcat) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, array, 0);
-  if (!args[1]->IsSmi()) {
-    isolate->context()->mark_out_of_memory();
-    return Failure::OutOfMemoryException(0x14);
-  }
+  if (!args[1]->IsSmi()) return isolate->ThrowInvalidStringLength();
   int array_length = args.smi_at(1);
   CONVERT_ARG_HANDLE_CHECKED(String, special, 2);
 
@@ -7140,8 +7164,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderConcat) {
       return isolate->Throw(isolate->heap()->illegal_argument_string());
     }
     if (increment > String::kMaxLength - position) {
-      isolate->context()->mark_out_of_memory();
-      return Failure::OutOfMemoryException(0x15);
+      return isolate->ThrowInvalidStringLength();
     }
     position += increment;
   }
@@ -7176,20 +7199,15 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderConcat) {
 
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderJoin) {
-  SealHandleScope shs(isolate);
+  HandleScope scope(isolate);
   ASSERT(args.length() == 3);
-  CONVERT_ARG_CHECKED(JSArray, array, 0);
-  if (!args[1]->IsSmi()) {
-    isolate->context()->mark_out_of_memory();
-    return Failure::OutOfMemoryException(0x16);
-  }
+  CONVERT_ARG_HANDLE_CHECKED(JSArray, array, 0);
+  if (!args[1]->IsSmi()) return isolate->ThrowInvalidStringLength();
   int array_length = args.smi_at(1);
-  CONVERT_ARG_CHECKED(String, separator, 2);
+  CONVERT_ARG_HANDLE_CHECKED(String, separator, 2);
+  RUNTIME_ASSERT(array->HasFastObjectElements());
 
-  if (!array->HasFastObjectElements()) {
-    return isolate->Throw(isolate->heap()->illegal_argument_string());
-  }
-  FixedArray* fixed_array = FixedArray::cast(array->elements());
+  Handle<FixedArray> fixed_array(FixedArray::cast(array->elements()));
   if (fixed_array->length() < array_length) {
     array_length = fixed_array->length();
   }
@@ -7198,38 +7216,32 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderJoin) {
     return isolate->heap()->empty_string();
   } else if (array_length == 1) {
     Object* first = fixed_array->get(0);
-    if (first->IsString()) return first;
+    RUNTIME_ASSERT(first->IsString());
+    return first;
   }
 
   int separator_length = separator->length();
   int max_nof_separators =
       (String::kMaxLength + separator_length - 1) / separator_length;
   if (max_nof_separators < (array_length - 1)) {
-      isolate->context()->mark_out_of_memory();
-      return Failure::OutOfMemoryException(0x17);
+    return isolate->ThrowInvalidStringLength();
   }
   int length = (array_length - 1) * separator_length;
   for (int i = 0; i < array_length; i++) {
     Object* element_obj = fixed_array->get(i);
-    if (!element_obj->IsString()) {
-      // TODO(1161): handle this case.
-      return isolate->Throw(isolate->heap()->illegal_argument_string());
-    }
+    RUNTIME_ASSERT(element_obj->IsString());
     String* element = String::cast(element_obj);
     int increment = element->length();
     if (increment > String::kMaxLength - length) {
-      isolate->context()->mark_out_of_memory();
-      return Failure::OutOfMemoryException(0x18);
+      return isolate->ThrowInvalidStringLength();
     }
     length += increment;
   }
 
-  Object* object;
-  { MaybeObject* maybe_object =
-        isolate->heap()->AllocateRawTwoByteString(length);
-    if (!maybe_object->ToObject(&object)) return maybe_object;
-  }
-  SeqTwoByteString* answer = SeqTwoByteString::cast(object);
+  Handle<SeqTwoByteString> answer =
+      isolate->factory()->NewRawTwoByteString(length);
+
+  DisallowHeapAllocation no_gc;
 
   uc16* sink = answer->GetChars();
 #ifdef DEBUG
@@ -7237,13 +7249,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderJoin) {
 #endif
 
   String* first = String::cast(fixed_array->get(0));
+  String* seperator_raw = *separator;
   int first_length = first->length();
   String::WriteToFlat(first, sink, 0, first_length);
   sink += first_length;
 
   for (int i = 1; i < array_length; i++) {
     ASSERT(sink + separator_length <= end);
-    String::WriteToFlat(separator, sink, 0, separator_length);
+    String::WriteToFlat(seperator_raw, sink, 0, separator_length);
     sink += separator_length;
 
     String* element = String::cast(fixed_array->get(i));
@@ -7256,7 +7269,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderJoin) {
 
   // Use %_FastAsciiArrayJoin instead.
   ASSERT(!answer->IsOneByteRepresentation());
-  return answer;
+  return *answer;
 }
 
 template <typename Char>
@@ -7315,12 +7328,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SparseJoinWithSeparator) {
   // Find total length of join result.
   int string_length = 0;
   bool is_ascii = separator->IsOneByteRepresentation();
-  int max_string_length;
-  if (is_ascii) {
-    max_string_length = SeqOneByteString::kMaxLength;
-  } else {
-    max_string_length = SeqTwoByteString::kMaxLength;
-  }
   bool overflow = false;
   CONVERT_NUMBER_CHECKED(int, elements_length,
                          Int32, elements_array->length());
@@ -7333,10 +7340,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SparseJoinWithSeparator) {
     int length = string->length();
     if (is_ascii && !string->IsOneByteRepresentation()) {
       is_ascii = false;
-      max_string_length = SeqTwoByteString::kMaxLength;
     }
-    if (length > max_string_length ||
-        max_string_length - length < string_length) {
+    if (length > String::kMaxLength ||
+        String::kMaxLength - length < string_length) {
       overflow = true;
       break;
     }
@@ -7346,7 +7352,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SparseJoinWithSeparator) {
   if (!overflow && separator_length > 0) {
     if (array_length <= 0x7fffffffu) {
       int separator_count = static_cast<int>(array_length) - 1;
-      int remaining_length = max_string_length - string_length;
+      int remaining_length = String::kMaxLength - string_length;
       if ((remaining_length / separator_length) >= separator_count) {
         string_length += separator_length * (array_length - 1);
       } else {
@@ -7364,9 +7370,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SparseJoinWithSeparator) {
     // Throw an exception if the resulting string is too large. See
     // https://code.google.com/p/chromium/issues/detail?id=336820
     // for details.
-    return isolate->Throw(*isolate->factory()->
-                          NewRangeError("invalid_string_length",
-                                        HandleVector<Object>(NULL, 0)));
+    return isolate->ThrowInvalidStringLength();
   }
 
   if (is_ascii) {
@@ -9694,8 +9698,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DateCacheVersion) {
   // Return result as a JS array.
   Handle<JSObject> result =
       isolate->factory()->NewJSObject(isolate->array_function());
-  isolate->factory()->SetContent(Handle<JSArray>::cast(result),
-                                 date_cache_version);
+  JSArray::SetContent(Handle<JSArray>::cast(result), date_cache_version);
   return *result;
 }
 
@@ -11812,7 +11815,8 @@ class ScopeIterator {
 
   ScopeIterator(Isolate* isolate,
                 JavaScriptFrame* frame,
-                int inlined_jsframe_index)
+                int inlined_jsframe_index,
+                bool ignore_nested_scopes = false)
     : isolate_(isolate),
       frame_(frame),
       inlined_jsframe_index_(inlined_jsframe_index),
@@ -11836,19 +11840,31 @@ class ScopeIterator {
       // Return if ensuring debug info failed.
       return;
     }
-    Handle<DebugInfo> debug_info = Debug::GetDebugInfo(shared_info);
 
-    // Find the break point where execution has stopped.
-    BreakLocationIterator break_location_iterator(debug_info,
-                                                  ALL_BREAK_LOCATIONS);
-    // pc points to the instruction after the current one, possibly a break
-    // location as well. So the "- 1" to exclude it from the search.
-    break_location_iterator.FindBreakLocationFromAddress(frame->pc() - 1);
-    if (break_location_iterator.IsExit()) {
-      // We are within the return sequence. At the momemt it is not possible to
+    // Currently it takes too much time to find nested scopes due to script
+    // parsing. Sometimes we want to run the ScopeIterator as fast as possible
+    // (for example, while collecting async call stacks on every
+    // addEventListener call), even if we drop some nested scopes.
+    // Later we may optimize getting the nested scopes (cache the result?)
+    // and include nested scopes into the "fast" iteration case as well.
+    if (!ignore_nested_scopes) {
+      Handle<DebugInfo> debug_info = Debug::GetDebugInfo(shared_info);
+
+      // Find the break point where execution has stopped.
+      BreakLocationIterator break_location_iterator(debug_info,
+                                                    ALL_BREAK_LOCATIONS);
+      // pc points to the instruction after the current one, possibly a break
+      // location as well. So the "- 1" to exclude it from the search.
+      break_location_iterator.FindBreakLocationFromAddress(frame->pc() - 1);
+
+      // Within the return sequence at the moment it is not possible to
       // get a source position which is consistent with the current scope chain.
       // Thus all nested with, catch and block contexts are skipped and we only
       // provide the function scope.
+      ignore_nested_scopes = break_location_iterator.IsExit();
+    }
+
+    if (ignore_nested_scopes) {
       if (scope_info->HasContext()) {
         context_ = Handle<Context>(context_->declaration_context(), isolate_);
       } else {
@@ -11856,7 +11872,7 @@ class ScopeIterator {
           context_ = Handle<Context>(context_->previous(), isolate_);
         }
       }
-      if (scope_info->scope_type() != EVAL_SCOPE) {
+      if (scope_info->scope_type() == FUNCTION_SCOPE) {
         nested_scope_chain_.Add(scope_info);
       }
     } else {
@@ -12324,13 +12340,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetScopeDetails) {
 // args[0]: number: break id
 // args[1]: number: frame index
 // args[2]: number: inlined frame index
+// args[3]: boolean: ignore nested scopes
 //
 // The array returned contains arrays with the following information:
 // 0: Scope type
 // 1: Scope object
 RUNTIME_FUNCTION(MaybeObject*, Runtime_GetAllScopesDetails) {
   HandleScope scope(isolate);
-  ASSERT(args.length() == 3);
+  ASSERT(args.length() == 3 || args.length() == 4);
 
   // Check arguments.
   Object* check;
@@ -12341,13 +12358,19 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetAllScopesDetails) {
   CONVERT_SMI_ARG_CHECKED(wrapped_id, 1);
   CONVERT_NUMBER_CHECKED(int, inlined_jsframe_index, Int32, args[2]);
 
+  bool ignore_nested_scopes = false;
+  if (args.length() == 4) {
+    CONVERT_BOOLEAN_ARG_CHECKED(flag, 3);
+    ignore_nested_scopes = flag;
+  }
+
   // Get the frame where the debugging is performed.
   StackFrame::Id id = UnwrapFrameId(wrapped_id);
   JavaScriptFrameIterator frame_it(isolate, id);
   JavaScriptFrame* frame = frame_it.frame();
 
   List<Handle<JSObject> > result(4);
-  ScopeIterator it(isolate, frame, inlined_jsframe_index);
+  ScopeIterator it(isolate, frame, inlined_jsframe_index, ignore_nested_scopes);
   for (; !it.Done(); it.Next()) {
     Handle<JSObject> details = MaterializeScopeDetails(isolate, &it);
     RETURN_IF_EMPTY_HANDLE(isolate, details);
@@ -12971,7 +12994,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugGetLoadedScripts) {
   // Return result as a JS array.
   Handle<JSObject> result =
       isolate->factory()->NewJSObject(isolate->array_function());
-  isolate->factory()->SetContent(Handle<JSArray>::cast(result), instances);
+  JSArray::SetContent(Handle<JSArray>::cast(result), instances);
   return *result;
 }
 
@@ -13052,20 +13075,20 @@ static int DebugReferencedBy(HeapIterator* iterator,
 // args[1]: constructor function for instances to exclude (Mirror)
 // args[2]: the the maximum number of objects to return
 RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugReferencedBy) {
-  SealHandleScope shs(isolate);
+  HandleScope scope(isolate);
   ASSERT(args.length() == 3);
 
   // First perform a full GC in order to avoid references from dead objects.
-  isolate->heap()->CollectAllGarbage(Heap::kMakeHeapIterableMask,
-                                     "%DebugReferencedBy");
+  Heap* heap = isolate->heap();
+  heap->CollectAllGarbage(Heap::kMakeHeapIterableMask, "%DebugReferencedBy");
   // The heap iterator reserves the right to do a GC to make the heap iterable.
   // Due to the GC above we know it won't need to do that, but it seems cleaner
   // to get the heap iterator constructed before we start having unprotected
   // Object* locals that are not protected by handles.
 
   // Check parameters.
-  CONVERT_ARG_CHECKED(JSObject, target, 0);
-  Object* instance_filter = args[1];
+  CONVERT_ARG_HANDLE_CHECKED(JSObject, target, 0);
+  Handle<Object> instance_filter = args.at<Object>(1);
   RUNTIME_ASSERT(instance_filter->IsUndefined() ||
                  instance_filter->IsJSObject());
   CONVERT_NUMBER_CHECKED(int32_t, max_references, Int32, args[2]);
@@ -13073,40 +13096,36 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugReferencedBy) {
 
 
   // Get the constructor function for context extension and arguments array.
-  JSObject* arguments_boilerplate =
-      isolate->context()->native_context()->sloppy_arguments_boilerplate();
-  JSFunction* arguments_function =
-      JSFunction::cast(arguments_boilerplate->map()->constructor());
+  Handle<JSObject> arguments_boilerplate(
+      isolate->context()->native_context()->sloppy_arguments_boilerplate());
+  Handle<JSFunction> arguments_function(
+      JSFunction::cast(arguments_boilerplate->map()->constructor()));
 
   // Get the number of referencing objects.
   int count;
-  Heap* heap = isolate->heap();
   HeapIterator heap_iterator(heap);
   count = DebugReferencedBy(&heap_iterator,
-                            target, instance_filter, max_references,
-                            NULL, 0, arguments_function);
+                            *target, *instance_filter, max_references,
+                            NULL, 0, *arguments_function);
 
   // Allocate an array to hold the result.
-  Object* object;
-  { MaybeObject* maybe_object = heap->AllocateFixedArray(count);
-    if (!maybe_object->ToObject(&object)) return maybe_object;
-  }
-  FixedArray* instances = FixedArray::cast(object);
+  Handle<FixedArray> instances = isolate->factory()->NewFixedArray(count);
 
   // Fill the referencing objects.
   // AllocateFixedArray above does not make the heap non-iterable.
   ASSERT(heap->IsHeapIterable());
   HeapIterator heap_iterator2(heap);
   count = DebugReferencedBy(&heap_iterator2,
-                            target, instance_filter, max_references,
-                            instances, count, arguments_function);
+                            *target, *instance_filter, max_references,
+                            *instances, count, *arguments_function);
 
   // Return result as JS array.
-  Object* result;
-  MaybeObject* maybe_result = heap->AllocateJSObject(
+  Handle<JSFunction> constructor(
       isolate->context()->native_context()->array_function());
-  if (!maybe_result->ToObject(&result)) return maybe_result;
-  return JSArray::cast(result)->SetContent(instances);
+
+  Handle<JSObject> result = isolate->factory()->NewJSObject(constructor);
+  JSArray::SetContent(Handle<JSArray>::cast(result), instances);
+  return *result;
 }
 
 
@@ -13146,7 +13165,7 @@ static int DebugConstructedBy(HeapIterator* iterator,
 // args[0]: the constructor to find instances of
 // args[1]: the the maximum number of objects to return
 RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugConstructedBy) {
-  SealHandleScope shs(isolate);
+  HandleScope scope(isolate);
   ASSERT(args.length() == 2);
 
   // First perform a full GC in order to avoid dead objects.
@@ -13154,7 +13173,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugConstructedBy) {
   heap->CollectAllGarbage(Heap::kMakeHeapIterableMask, "%DebugConstructedBy");
 
   // Check parameters.
-  CONVERT_ARG_CHECKED(JSFunction, constructor, 0);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, constructor, 0);
   CONVERT_NUMBER_CHECKED(int32_t, max_references, Int32, args[1]);
   RUNTIME_ASSERT(max_references >= 0);
 
@@ -13162,34 +13181,29 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugConstructedBy) {
   int count;
   HeapIterator heap_iterator(heap);
   count = DebugConstructedBy(&heap_iterator,
-                             constructor,
+                             *constructor,
                              max_references,
                              NULL,
                              0);
 
   // Allocate an array to hold the result.
-  Object* object;
-  { MaybeObject* maybe_object = heap->AllocateFixedArray(count);
-    if (!maybe_object->ToObject(&object)) return maybe_object;
-  }
-  FixedArray* instances = FixedArray::cast(object);
+  Handle<FixedArray> instances = isolate->factory()->NewFixedArray(count);
 
-  ASSERT(isolate->heap()->IsHeapIterable());
+  ASSERT(heap->IsHeapIterable());
   // Fill the referencing objects.
   HeapIterator heap_iterator2(heap);
   count = DebugConstructedBy(&heap_iterator2,
-                             constructor,
+                             *constructor,
                              max_references,
-                             instances,
+                             *instances,
                              count);
 
   // Return result as JS array.
-  Object* result;
-  { MaybeObject* maybe_result = isolate->heap()->AllocateJSObject(
+  Handle<JSFunction> array_function(
       isolate->context()->native_context()->array_function());
-    if (!maybe_result->ToObject(&result)) return maybe_result;
-  }
-  return JSArray::cast(result)->SetContent(instances);
+  Handle<JSObject> result = isolate->factory()->NewJSObject(array_function);
+  JSArray::SetContent(Handle<JSArray>::cast(result), instances);
+  return *result;
 }
 
 

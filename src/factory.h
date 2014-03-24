@@ -44,7 +44,7 @@ class Factory {
       Handle<Object> value,
       PretenureFlag pretenure = NOT_TENURED);
 
-  // Allocate a new uninitialized fixed array.
+  // Allocates a fixed array initialized with undefined values.
   Handle<FixedArray> NewFixedArray(
       int size,
       PretenureFlag pretenure = NOT_TENURED);
@@ -53,6 +53,9 @@ class Factory {
   Handle<FixedArray> NewFixedArrayWithHoles(
       int size,
       PretenureFlag pretenure = NOT_TENURED);
+
+  // Allocates an uninitialized fixed array. It must be filled by the caller.
+  Handle<FixedArray> NewUninitializedFixedArray(int size);
 
   // Allocate a new uninitialized fixed double array.
   Handle<FixedDoubleArray> NewFixedDoubleArray(
@@ -352,14 +355,31 @@ class Factory {
 
   // JS arrays are pretenured when allocated by the parser.
   Handle<JSArray> NewJSArray(
+      ElementsKind elements_kind,
+      int length,
+      int capacity,
+      PretenureFlag pretenure = NOT_TENURED);
+
+  Handle<JSArray> NewJSArray(
       int capacity,
       ElementsKind elements_kind = TERMINAL_FAST_ELEMENTS_KIND,
+      PretenureFlag pretenure = NOT_TENURED) {
+    return NewJSArray(elements_kind, 0, capacity, pretenure);
+  }
+
+  Handle<JSArray> NewJSArrayWithElements(
+      Handle<FixedArrayBase> elements,
+      ElementsKind elements_kind,
+      int length,
       PretenureFlag pretenure = NOT_TENURED);
 
   Handle<JSArray> NewJSArrayWithElements(
       Handle<FixedArrayBase> elements,
       ElementsKind elements_kind = TERMINAL_FAST_ELEMENTS_KIND,
-      PretenureFlag pretenure = NOT_TENURED);
+      PretenureFlag pretenure = NOT_TENURED) {
+    return NewJSArrayWithElements(
+        elements, elements_kind, elements->length(), pretenure);
+  }
 
   void NewJSArrayStorage(
       Handle<JSArray> array,
@@ -370,8 +390,6 @@ class Factory {
   void SetElementsCapacityAndLength(Handle<JSArray> array,
                                     int capacity,
                                     int length);
-
-  void SetContent(Handle<JSArray> array, Handle<FixedArrayBase> elements);
 
   Handle<JSGeneratorObject> NewJSGeneratorObject(Handle<JSFunction> function);
 

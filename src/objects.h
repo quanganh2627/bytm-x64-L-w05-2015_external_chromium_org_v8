@@ -37,8 +37,8 @@
 #include "property-details.h"
 #include "smart-pointers.h"
 #include "unicode-inl.h"
-#if V8_TARGET_ARCH_A64
-#include "a64/constants-a64.h"
+#if V8_TARGET_ARCH_ARM64
+#include "arm64/constants-arm64.h"
 #elif V8_TARGET_ARCH_ARM
 #include "arm/constants-arm.h"
 #elif V8_TARGET_ARCH_MIPS
@@ -1246,8 +1246,8 @@ class MaybeObject BASE_EMBEDDED {
   V(kLetBindingReInitialization, "Let binding re-initialization")             \
   V(kLhsHasBeenClobbered, "lhs has been clobbered")                           \
   V(kLiveBytesCountOverflowChunkSize, "Live Bytes Count overflow chunk size") \
-  V(kLiveEditFrameDroppingIsNotSupportedOnA64,                                \
-    "LiveEdit frame dropping is not supported on a64")                        \
+  V(kLiveEditFrameDroppingIsNotSupportedOnARM64,                              \
+    "LiveEdit frame dropping is not supported on arm64")                      \
   V(kLiveEditFrameDroppingIsNotSupportedOnArm,                                \
     "LiveEdit frame dropping is not supported on arm")                        \
   V(kLiveEditFrameDroppingIsNotSupportedOnMips,                               \
@@ -1586,7 +1586,10 @@ class Object : public MaybeObject {
                                           uint32_t index);
 
   // For use when we know that no exception can be thrown.
-  inline Object* GetElementNoExceptionThrown(Isolate* isolate, uint32_t index);
+  static inline Handle<Object> GetElementNoExceptionThrown(
+      Isolate* isolate,
+      Handle<Object> object,
+      uint32_t index);
   MUST_USE_RESULT MaybeObject* GetElementWithReceiver(Isolate* isolate,
                                                       Object* receiver,
                                                       uint32_t index);
@@ -2421,6 +2424,11 @@ class JSObject: public JSReceiver {
       Object** elements,
       uint32_t count,
       EnsureElementsMode mode);
+  static inline void EnsureCanContainElements(
+      Handle<JSObject> object,
+      Handle<FixedArrayBase> elements,
+      uint32_t length,
+      EnsureElementsMode mode);
   MUST_USE_RESULT inline MaybeObject* EnsureCanContainElements(
       FixedArrayBase* elements,
       uint32_t length,
@@ -2599,8 +2607,6 @@ class JSObject: public JSReceiver {
   // SeededNumberDictionary dictionary.  Returns the backing after conversion.
   static Handle<SeededNumberDictionary> NormalizeElements(
       Handle<JSObject> object);
-
-  MUST_USE_RESULT MaybeObject* NormalizeElements();
 
   // Transform slow named properties to fast variants.
   static void TransformToFastProperties(Handle<JSObject> object,
@@ -8904,7 +8910,7 @@ class String: public Name {
   static const int kEmptyStringHash = kIsNotArrayIndexMask;
 
   // Maximal string length.
-  static const int kMaxLength = (1 << (32 - 2)) - 1;
+  static const int kMaxLength = (1 << 28) - 16;
 
   // Max length for computing hash. For strings longer than this limit the
   // string length is used as the hash value.
@@ -9066,9 +9072,7 @@ class SeqOneByteString: public SeqString {
 
   // Maximal memory usage for a single sequential ASCII string.
   static const int kMaxSize = 512 * MB - 1;
-  // Maximal length of a single sequential ASCII string.
-  // Q.v. String::kMaxLength which is the maximal size of concatenated strings.
-  static const int kMaxLength = (kMaxSize - kHeaderSize);
+  STATIC_CHECK((kMaxSize - kHeaderSize) >= String::kMaxLength);
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(SeqOneByteString);
@@ -9108,9 +9112,8 @@ class SeqTwoByteString: public SeqString {
 
   // Maximal memory usage for a single sequential two-byte string.
   static const int kMaxSize = 512 * MB - 1;
-  // Maximal length of a single sequential two-byte string.
-  // Q.v. String::kMaxLength which is the maximal size of concatenated strings.
-  static const int kMaxLength = (kMaxSize - kHeaderSize) / sizeof(uint16_t);
+  STATIC_CHECK(static_cast<int>((kMaxSize - kHeaderSize)/sizeof(uint16_t)) >=
+               String::kMaxLength);
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(SeqTwoByteString);
@@ -10032,7 +10035,8 @@ class JSArray: public JSObject {
                                           Handle<Object> length);
 
   // Set the content of the array to the content of storage.
-  MUST_USE_RESULT inline MaybeObject* SetContent(FixedArrayBase* storage);
+  static inline void SetContent(Handle<JSArray> array,
+                                Handle<FixedArrayBase> storage);
 
   // Casting.
   static inline JSArray* cast(Object* obj);

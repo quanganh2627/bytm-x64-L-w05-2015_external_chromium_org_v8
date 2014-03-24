@@ -67,8 +67,8 @@
 #include "ia32/lithium-codegen-ia32.h"
 #elif V8_TARGET_ARCH_X64
 #include "x64/lithium-codegen-x64.h"
-#elif V8_TARGET_ARCH_A64
-#include "a64/lithium-codegen-a64.h"
+#elif V8_TARGET_ARCH_ARM64
+#include "arm64/lithium-codegen-arm64.h"
 #elif V8_TARGET_ARCH_ARM
 #include "arm/lithium-codegen-arm.h"
 #elif V8_TARGET_ARCH_MIPS
@@ -1791,19 +1791,10 @@ HAllocate* HGraphBuilder::BuildAllocate(
 
 HValue* HGraphBuilder::BuildAddStringLengths(HValue* left_length,
                                              HValue* right_length) {
-  // Compute the combined string length. If the result is larger than the max
-  // supported string length, we bailout to the runtime. This is done implicitly
-  // when converting the result back to a smi in case the max string length
-  // equals the max smi value. Otherwise, for platforms with 32-bit smis, we do
+  // Compute the combined string length and check against max string length.
   HValue* length = AddUncasted<HAdd>(left_length, right_length);
-  STATIC_ASSERT(String::kMaxLength <= Smi::kMaxValue);
-  if (String::kMaxLength != Smi::kMaxValue) {
-    IfBuilder if_nooverflow(this);
-    if_nooverflow.If<HCompareNumericAndBranch>(
-        length, Add<HConstant>(String::kMaxLength), Token::LTE);
-    if_nooverflow.Then();
-    if_nooverflow.ElseDeopt("String length exceeds limit");
-  }
+  HValue* max_length = Add<HConstant>(String::kMaxLength);
+  Add<HBoundsCheck>(length, max_length);
   return length;
 }
 
@@ -4372,7 +4363,12 @@ void HOptimizedGraphBuilder::VisitReturnStatement(ReturnStatement* stmt) {
       TestContext* test = TestContext::cast(context);
       VisitForControl(stmt->expression(), test->if_true(), test->if_false());
     } else if (context->IsEffect()) {
-      CHECK_ALIVE(VisitForEffect(stmt->expression()));
+      // Visit in value context and ignore the result. This is needed to keep
+      // environment in sync with full-codegen since some visitors (e.g.
+      // VisitCountOperation) use the operand stack differently depending on
+      // context.
+      CHECK_ALIVE(VisitForValue(stmt->expression()));
+      Pop();
       Goto(function_return(), state);
     } else {
       ASSERT(context->IsValue());
@@ -6403,6 +6399,11 @@ HValue* HOptimizedGraphBuilder::HandlePolymorphicElementAccess(
     if (IsFastElementsKind(elements_kind) &&
         elements_kind != GetInitialFastElementsKind()) {
       possible_transitioned_maps.Add(map);
+    }
+    if (elements_kind == SLOPPY_ARGUMENTS_ELEMENTS) {
+      HInstruction* result = BuildKeyedGeneric(access_type, object, key, val);
+      *has_side_effects = result->HasObservableSideEffects();
+      return AddInstruction(result);
     }
   }
   // Get transition target for each map (NULL == no transition).
