@@ -102,6 +102,7 @@ LOCAL_SRC_FILES := \
 	v8/src/hydrogen-removable-simulates.cc \
 	v8/src/hydrogen-representation-changes.cc \
 	v8/src/hydrogen-sce.cc \
+	v8/src/hydrogen-store-elimination.cc \
 	v8/src/hydrogen-uint32-analysis.cc \
 	v8/src/i18n.cc \
 	v8/src/icu_util.cc \
@@ -246,6 +247,7 @@ MY_DEFS_Debug := \
 	'-DV8_I18N_SUPPORT' \
 	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
+	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DU_USING_ICU_NAMESPACE=0' \
 	'-DU_STATIC_IMPLEMENTATION' \
 	'-DUSE_OPENSSL=1' \
@@ -324,6 +326,7 @@ MY_DEFS_Release := \
 	'-DV8_I18N_SUPPORT' \
 	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
+	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DU_USING_ICU_NAMESPACE=0' \
 	'-DU_STATIC_IMPLEMENTATION' \
 	'-DUSE_OPENSSL=1' \
