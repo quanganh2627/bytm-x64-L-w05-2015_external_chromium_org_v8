@@ -1557,6 +1557,9 @@ class Object : public MaybeObject {
       Name* key,
       PropertyAttributes* attributes);
 
+  static Handle<Object> GetPropertyOrElement(Handle<Object> object,
+                                             Handle<Name> key);
+
   static Handle<Object> GetProperty(Handle<Object> object,
                                     Handle<Name> key);
   static Handle<Object> GetProperty(Handle<Object> object,
@@ -3046,6 +3049,8 @@ class FixedArray: public FixedArrayBase {
   // Gives access to raw memory which stores the array's data.
   inline Object** data_start();
 
+  inline void FillWithHoles(int from, int to);
+
   // Shrink length and insert filler objects.
   void Shrink(int length);
 
@@ -3137,6 +3142,8 @@ class FixedDoubleArray: public FixedArrayBase {
   inline double get_scalar(int index);
   inline int64_t get_representation(int index);
   MUST_USE_RESULT inline MaybeObject* get(int index);
+  // TODO(ishell): Rename as get() once all usages handlified.
+  inline Handle<Object> get_as_handle(int index);
   inline void set(int index, double value);
   inline void set_the_hole(int index);
 
@@ -3153,6 +3160,8 @@ class FixedDoubleArray: public FixedArrayBase {
 
   // Gives access to raw memory which stores the array's data.
   inline double* data_start();
+
+  inline void FillWithHoles(int from, int to);
 
   // Code Generation support.
   static int OffsetOfElementAt(int index) { return SizeFor(index); }
@@ -3430,19 +3439,14 @@ class DescriptorArray: public FixedArray {
                 DescriptorArray* src,
                 int src_index,
                 const WhitenessWitness&);
-  static Handle<DescriptorArray> Merge(Handle<DescriptorArray> desc,
+  static Handle<DescriptorArray> Merge(Handle<Map> left_map,
                                        int verbatim,
                                        int valid,
                                        int new_size,
                                        int modify_index,
                                        StoreMode store_mode,
-                                       Handle<DescriptorArray> other);
-  MUST_USE_RESULT MaybeObject* Merge(int verbatim,
-                                     int valid,
-                                     int new_size,
-                                     int modify_index,
-                                     StoreMode store_mode,
-                                     DescriptorArray* other);
+                                       Handle<Map> right_map)
+      V8_WARN_UNUSED_RESULT;
 
   bool IsMoreGeneralThan(int verbatim,
                          int valid,

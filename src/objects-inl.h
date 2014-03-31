@@ -2195,6 +2195,15 @@ MaybeObject* FixedDoubleArray::get(int index) {
 }
 
 
+Handle<Object> FixedDoubleArray::get_as_handle(int index) {
+  if (is_the_hole(index)) {
+    return GetIsolate()->factory()->the_hole_value();
+  } else {
+    return GetIsolate()->factory()->NewNumber(get_scalar(index));
+  }
+}
+
+
 void FixedDoubleArray::set(int index, double value) {
   ASSERT(map() != GetHeap()->fixed_cow_array_map() &&
          map() != GetHeap()->fixed_array_map());
@@ -2215,6 +2224,18 @@ void FixedDoubleArray::set_the_hole(int index) {
 bool FixedDoubleArray::is_the_hole(int index) {
   int offset = kHeaderSize + index * kDoubleSize;
   return is_the_hole_nan(READ_DOUBLE_FIELD(this, offset));
+}
+
+
+double* FixedDoubleArray::data_start() {
+  return reinterpret_cast<double*>(FIELD_ADDR(this, kHeaderSize));
+}
+
+
+void FixedDoubleArray::FillWithHoles(int from, int to) {
+  for (int i = from; i < to; i++) {
+    set_the_hole(i);
+  }
 }
 
 
@@ -2411,8 +2432,10 @@ void FixedArray::set_the_hole(int index) {
 }
 
 
-double* FixedDoubleArray::data_start() {
-  return reinterpret_cast<double*>(FIELD_ADDR(this, kHeaderSize));
+void FixedArray::FillWithHoles(int from, int to) {
+  for (int i = from; i < to; i++) {
+    set_the_hole(i);
+  }
 }
 
 

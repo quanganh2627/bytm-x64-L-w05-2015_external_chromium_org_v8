@@ -1,4 +1,4 @@
-// Copyright 2009 the V8 project authors. All rights reserved.
+// Copyright 2014 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,36 +25,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Tests from http://blog.stevenlevithan.com/archives/npcg-javascript
+// This test passes if it does not crash in debug mode
 
-assertEquals(true, /(x)?\1y/.test("y"));
-assertEquals(["y", undefined], /(x)?\1y/.exec("y"));
-assertEquals(["y", undefined], /(x)?y/.exec("y"));
-assertEquals(["y", undefined], "y".match(/(x)?\1y/));
-assertEquals(["y", undefined], "y".match(/(x)?y/));
-assertEquals(["y"], "y".match(/(x)?\1y/g));
-assertEquals(["", undefined, ""], "y".split(/(x)?\1y/));
-assertEquals(["", undefined, ""], "y".split(/(x)?y/));
-assertEquals(0, "y".search(/(x)?\1y/));
-assertEquals("z", "y".replace(/(x)?\1y/, "z"));
-assertEquals("", "y".replace(/(x)?y/, "$1"));
-assertEquals("undefined", "y".replace(/(x)?\1y/,
-    function($0, $1){
-        return String($1);
-    }));
-assertEquals("undefined", "y".replace(/(x)?y/,
-    function($0, $1){
-        return String($1);
-    }));
-assertEquals("undefined", "y".replace(/(x)?y/,
-    function($0, $1){
-        return $1;
-    }));
-
-// See https://bugzilla.mozilla.org/show_bug.cgi?id=476146
-assertEquals(["bbc", "b"], /^(b+|a){1,2}?bc/.exec("bbc"));
-assertEquals(["bbaa", "a", "", "a"],
-             /((\3|b)\2(a)){2,}/.exec("bbaababbabaaaaabbaaaabba"));
-
-// From crbug.com/128821 - don't hang:
-"".match(/((a|i|A|I|u|o|U|O)(s|c|b|c|d|f|g|h|j|k|l|m|n|p|q|r|s|t|v|w|x|y|z|B|C|D|F|G|H|J|K|L|M|N|P|Q|R|S|T|V|W|X|Y|Z)*) de\/da([.,!?\s]|$)/);
+arr = ['a', 'b', 'c', 'd'];
+Object.defineProperty(arr.__proto__, '0', { get: function(){} });
+Object.defineProperty(arr, '2', {get: function(){} });
+Object.observe(arr, function() {});
+arr.length = 2;

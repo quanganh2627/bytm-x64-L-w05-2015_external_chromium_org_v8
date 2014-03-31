@@ -628,8 +628,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CreateGlobalPrivateSymbol) {
   Handle<JSObject> registry = isolate->GetSymbolRegistry();
   Handle<String> part = isolate->factory()->private_intern_string();
   Handle<JSObject> privates =
-      Handle<JSObject>::cast(JSObject::GetProperty(registry, part));
-  Handle<Object> symbol = JSObject::GetProperty(privates, name);
+      Handle<JSObject>::cast(Object::GetPropertyOrElement(registry, part));
+  Handle<Object> symbol = Object::GetPropertyOrElement(privates, name);
   if (!symbol->IsSymbol()) {
     ASSERT(symbol->IsUndefined());
     symbol = isolate->factory()->NewPrivateSymbol();
@@ -966,8 +966,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayInitialize) {
 
   ExternalArrayType array_type = kExternalInt8Array;  // Bogus initialization.
   size_t element_size = 1;  // Bogus initialization.
-  ElementsKind external_elements_kind = EXTERNAL_INT8_ELEMENTS;
-  ElementsKind fixed_elements_kind = INT8_ELEMENTS;
+  ElementsKind external_elements_kind =
+      EXTERNAL_INT8_ELEMENTS;  // Bogus initialization.
+  ElementsKind fixed_elements_kind = INT8_ELEMENTS;  // Bogus initialization.
   Runtime::ArrayIdToTypeAndSize(arrayId,
       &array_type,
       &external_elements_kind,
@@ -1044,8 +1045,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayInitializeFromArrayLike) {
 
   ExternalArrayType array_type = kExternalInt8Array;  // Bogus initialization.
   size_t element_size = 1;  // Bogus initialization.
-  ElementsKind external_elements_kind;
-  ElementsKind fixed_elements_kind;
+  ElementsKind external_elements_kind =
+      EXTERNAL_INT8_ELEMENTS;  // Bogus intialization.
+  ElementsKind fixed_elements_kind = INT8_ELEMENTS;  // Bogus initialization.
   Runtime::ArrayIdToTypeAndSize(arrayId,
       &array_type,
       &external_elements_kind,
@@ -1130,33 +1132,26 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayInitializeFromArrayLike) {
 }
 
 
-#define TYPED_ARRAY_GETTER(getter, accessor) \
-  RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayGet##getter) {             \
+#define BUFFER_VIEW_GETTER(Type, getter, accessor) \
+  RUNTIME_FUNCTION(MaybeObject*, Runtime_##Type##Get##getter) {               \
     HandleScope scope(isolate);                                               \
     ASSERT(args.length() == 1);                                               \
-    CONVERT_ARG_HANDLE_CHECKED(Object, holder, 0);                            \
-    if (!holder->IsJSTypedArray())                                            \
-      return isolate->Throw(*isolate->factory()->NewTypeError(                \
-          "not_typed_array", HandleVector<Object>(NULL, 0)));                 \
-    Handle<JSTypedArray> typed_array(JSTypedArray::cast(*holder));            \
-    return typed_array->accessor();                                           \
+    CONVERT_ARG_HANDLE_CHECKED(JS##Type, holder, 0);                          \
+    return holder->accessor();                                                \
   }
 
-TYPED_ARRAY_GETTER(ByteLength, byte_length)
-TYPED_ARRAY_GETTER(ByteOffset, byte_offset)
-TYPED_ARRAY_GETTER(Length, length)
+BUFFER_VIEW_GETTER(ArrayBufferView, ByteLength, byte_length)
+BUFFER_VIEW_GETTER(ArrayBufferView, ByteOffset, byte_offset)
+BUFFER_VIEW_GETTER(TypedArray, Length, length)
+BUFFER_VIEW_GETTER(DataView, Buffer, buffer)
 
-#undef TYPED_ARRAY_GETTER
+#undef BUFFER_VIEW_GETTER
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayGetBuffer) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 1);
-  CONVERT_ARG_HANDLE_CHECKED(Object, holder, 0);
-  if (!holder->IsJSTypedArray())
-    return isolate->Throw(*isolate->factory()->NewTypeError(
-        "not_typed_array", HandleVector<Object>(NULL, 0)));
-  Handle<JSTypedArray> typed_array(JSTypedArray::cast(*holder));
-  return *typed_array->GetBuffer();
+  CONVERT_ARG_HANDLE_CHECKED(JSTypedArray, holder, 0);
+  return *holder->GetBuffer();
 }
 
 
@@ -1234,7 +1229,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArraySetFastCases) {
 
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_TypedArrayMaxSizeInHeap) {
-  ASSERT_OBJECT_SIZE(FLAG_typed_array_max_size_in_heap);
+  ASSERT_OBJECT_SIZE(
+      FLAG_typed_array_max_size_in_heap + FixedTypedArrayBase::kDataOffset);
   return Smi::FromInt(FLAG_typed_array_max_size_in_heap);
 }
 
@@ -1267,30 +1263,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DataViewInitialize) {
   buffer->set_weak_first_view(*holder);
 
   return isolate->heap()->undefined_value();
-}
-
-
-RUNTIME_FUNCTION(MaybeObject*, Runtime_DataViewGetBuffer) {
-  HandleScope scope(isolate);
-  ASSERT(args.length() == 1);
-  CONVERT_ARG_HANDLE_CHECKED(JSDataView, data_view, 0);
-  return data_view->buffer();
-}
-
-
-RUNTIME_FUNCTION(MaybeObject*, Runtime_DataViewGetByteOffset) {
-  HandleScope scope(isolate);
-  ASSERT(args.length() == 1);
-  CONVERT_ARG_HANDLE_CHECKED(JSDataView, data_view, 0);
-  return data_view->byte_offset();
-}
-
-
-RUNTIME_FUNCTION(MaybeObject*, Runtime_DataViewGetByteLength) {
-  HandleScope scope(isolate);
-  ASSERT(args.length() == 1);
-  CONVERT_ARG_HANDLE_CHECKED(JSDataView, data_view, 0);
-  return data_view->byte_length();
 }
 
 
@@ -1956,8 +1928,8 @@ static Handle<Object> GetOwnProperty(Isolate* isolate,
 
   if (raw_accessors == NULL) {
     elms->set(WRITABLE_INDEX, heap->ToBoolean((attrs & READ_ONLY) == 0));
-    // GetProperty does access check.
-    Handle<Object> value = GetProperty(isolate, obj, name);
+    // Runtime::GetObjectProperty does access check.
+    Handle<Object> value = Runtime::GetObjectProperty(isolate, obj, name);
     RETURN_IF_EMPTY_HANDLE_VALUE(isolate, value, Handle<Object>::null());
     elms->set(VALUE_INDEX, *value);
   } else {
@@ -4977,59 +4949,46 @@ MaybeObject* Runtime::HasObjectProperty(Isolate* isolate,
   return isolate->heap()->ToBoolean(JSReceiver::HasProperty(object, name));
 }
 
-MaybeObject* Runtime::GetObjectPropertyOrFail(
-    Isolate* isolate,
-    Handle<Object> object,
-    Handle<Object> key) {
-  CALL_HEAP_FUNCTION_PASS_EXCEPTION(isolate,
-      GetObjectProperty(isolate, object, key));
-}
 
-MaybeObject* Runtime::GetObjectProperty(Isolate* isolate,
-                                        Handle<Object> object,
-                                        Handle<Object> key) {
-  HandleScope scope(isolate);
-
+Handle<Object> Runtime::GetObjectProperty(Isolate* isolate,
+                                          Handle<Object> object,
+                                          Handle<Object> key) {
   if (object->IsUndefined() || object->IsNull()) {
     Handle<Object> args[2] = { key, object };
-    Handle<Object> error =
-        isolate->factory()->NewTypeError("non_object_property_load",
-                                         HandleVector(args, 2));
-    return isolate->Throw(*error);
+    isolate->Throw(*isolate->factory()->NewTypeError("non_object_property_load",
+                                                     HandleVector(args, 2)));
+    return Handle<Object>();
   }
 
   // Check if the given key is an array index.
   uint32_t index;
   if (key->ToArrayIndex(&index)) {
-    Handle<Object> result = GetElementOrCharAt(isolate, object, index);
-    RETURN_IF_EMPTY_HANDLE(isolate, result);
-    return *result;
+    return GetElementOrCharAt(isolate, object, index);
   }
 
   // Convert the key to a name - possibly by calling back into JavaScript.
   Handle<Name> name = ToName(isolate, key);
-  RETURN_IF_EMPTY_HANDLE(isolate, name);
+  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, name, Handle<Object>());
 
   // Check if the name is trivially convertible to an index and get
   // the element if so.
   if (name->AsArrayIndex(&index)) {
-    Handle<Object> result = GetElementOrCharAt(isolate, object, index);
-    RETURN_IF_EMPTY_HANDLE(isolate, result);
-    return *result;
+    return GetElementOrCharAt(isolate, object, index);
   } else {
-    return object->GetProperty(*name);
+    return Object::GetProperty(object, name);
   }
 }
 
 
 RUNTIME_FUNCTION(MaybeObject*, Runtime_GetProperty) {
-  SealHandleScope shs(isolate);
+  HandleScope scope(isolate);
   ASSERT(args.length() == 2);
 
   Handle<Object> object = args.at<Object>(0);
   Handle<Object> key = args.at<Object>(1);
-
-  return Runtime::GetObjectProperty(isolate, object, key);
+  Handle<Object> result = Runtime::GetObjectProperty(isolate, object, key);
+  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  return *result;
 }
 
 
@@ -5132,9 +5091,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_KeyedGetProperty) {
   }
 
   // Fall back to GetObjectProperty.
-  return Runtime::GetObjectProperty(isolate,
-                                    args.at<Object>(0),
-                                    args.at<Object>(1));
+  HandleScope scope(isolate);
+  Handle<Object> result = Runtime::GetObjectProperty(
+      isolate, args.at<Object>(0), args.at<Object>(1));
+  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  return *result;
 }
 
 
@@ -7759,19 +7720,19 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_StringCompare) {
 }
 
 
-#define RUNTIME_UNARY_MATH(NAME)                                               \
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_##NAME) {                          \
+#define RUNTIME_UNARY_MATH(Name, name)                                         \
+RUNTIME_FUNCTION(MaybeObject*, Runtime_Math##Name) {                           \
   SealHandleScope shs(isolate);                                                \
   ASSERT(args.length() == 1);                                                  \
-  isolate->counters()->math_##NAME()->Increment();                             \
+  isolate->counters()->math_##name()->Increment();                             \
   CONVERT_DOUBLE_ARG_CHECKED(x, 0);                                            \
-  return isolate->heap()->AllocateHeapNumber(std::NAME(x));                    \
+  return isolate->heap()->AllocateHeapNumber(std::name(x));                    \
 }
 
-RUNTIME_UNARY_MATH(acos)
-RUNTIME_UNARY_MATH(asin)
-RUNTIME_UNARY_MATH(atan)
-RUNTIME_UNARY_MATH(log)
+RUNTIME_UNARY_MATH(Acos, acos)
+RUNTIME_UNARY_MATH(Asin, asin)
+RUNTIME_UNARY_MATH(Atan, atan)
+RUNTIME_UNARY_MATH(Log, log)
 #undef RUNTIME_UNARY_MATH
 
 
@@ -7807,7 +7768,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ConstructDouble) {
 static const double kPiDividedBy4 = 0.78539816339744830962;
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_atan2) {
+RUNTIME_FUNCTION(MaybeObject*, Runtime_MathAtan2) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 2);
   isolate->counters()->math_atan2()->Increment();
@@ -7830,7 +7791,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_atan2) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_exp) {
+RUNTIME_FUNCTION(MaybeObject*, Runtime_MathExp) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 1);
   isolate->counters()->math_exp()->Increment();
@@ -7841,7 +7802,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_exp) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_floor) {
+RUNTIME_FUNCTION(MaybeObject*, Runtime_MathFloor) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 1);
   isolate->counters()->math_floor()->Increment();
@@ -7853,7 +7814,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_floor) {
 
 // Slow version of Math.pow.  We check for fast paths for special cases.
 // Used if SSE2/VFP3 is not available.
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_pow) {
+RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_MathPowSlow) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 2);
   isolate->counters()->math_pow()->Increment();
@@ -7876,7 +7837,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_pow) {
 
 // Fast version of Math.pow if we know that y is not an integer and y is not
 // -0.5 or 0.5.  Used as slow case from full codegen.
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_pow_cfunction) {
+RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_MathPow) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 2);
   isolate->counters()->math_pow()->Increment();
@@ -7936,7 +7897,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_RoundNumber) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_sqrt) {
+RUNTIME_FUNCTION(MaybeObject*, Runtime_MathSqrt) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 1);
   isolate->counters()->math_sqrt()->Increment();
@@ -7946,7 +7907,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_sqrt) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Runtime_Math_fround) {
+RUNTIME_FUNCTION(MaybeObject*, Runtime_MathFround) {
   SealHandleScope shs(isolate);
   ASSERT(args.length() == 1);
 
@@ -11551,7 +11512,7 @@ static void UpdateStackLocalsFromMaterializedObject(Isolate* isolate,
     ASSERT(!frame->GetParameter(i)->IsTheHole());
     HandleScope scope(isolate);
     Handle<String> name(scope_info->ParameterName(i));
-    Handle<Object> value = GetProperty(isolate, target, name);
+    Handle<Object> value = Object::GetPropertyOrElement(target, name);
     frame->SetParameterValue(i, *value);
   }
 
@@ -11559,8 +11520,8 @@ static void UpdateStackLocalsFromMaterializedObject(Isolate* isolate,
   for (int i = 0; i < scope_info->StackLocalCount(); ++i) {
     if (frame->GetExpression(i)->IsTheHole()) continue;
     HandleScope scope(isolate);
-    Handle<Object> value = GetProperty(
-        isolate, target, Handle<String>(scope_info->StackLocalName(i)));
+    Handle<Object> value = Object::GetPropertyOrElement(
+        target, Handle<String>(scope_info->StackLocalName(i)));
     frame->SetExpression(i, *value);
   }
 }
@@ -11604,7 +11565,7 @@ static Handle<JSObject> MaterializeLocalContext(Isolate* isolate,
             Runtime::SetObjectProperty(isolate,
                                        target,
                                        key,
-                                       GetProperty(isolate, ext, key),
+                                       Object::GetPropertyOrElement(ext, key),
                                        NONE,
                                        SLOPPY),
             Handle<JSObject>());
@@ -11754,7 +11715,7 @@ static Handle<JSObject> MaterializeClosure(Isolate* isolate,
        RETURN_IF_EMPTY_HANDLE_VALUE(
           isolate,
           Runtime::SetObjectProperty(isolate, closure_scope, key,
-                                     GetProperty(isolate, ext, key),
+                                     Object::GetPropertyOrElement(ext, key),
                                      NONE, SLOPPY),
           Handle<JSObject>());
     }
@@ -15174,5 +15135,10 @@ void Runtime::PerformGC(Object* result, Isolate* isolate) {
   }
 }
 
+
+void Runtime::OutOfMemory() {
+  Heap::FatalProcessOutOfMemory("CALL_AND_RETRY_LAST", true);
+  UNREACHABLE();
+}
 
 } }  // namespace v8::internal

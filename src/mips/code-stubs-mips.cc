@@ -1511,7 +1511,7 @@ void MathPowStub::Generate(MacroAssembler* masm) {
   if (exponent_type_ == ON_STACK) {
     // The arguments are still on the stack.
     __ bind(&call_runtime);
-    __ TailCallRuntime(Runtime::kMath_pow_cfunction, 2, 1);
+    __ TailCallRuntime(Runtime::kHiddenMathPow, 2, 1);
 
     // The stub is called from non-optimized code, which expects the result
     // as heap number in exponent.
@@ -1793,6 +1793,12 @@ void CEntryStub::Generate(MacroAssembler* masm) {
                &throw_termination_exception,
                true,
                true);
+
+  { FrameScope scope(masm, StackFrame::MANUAL);
+    __ PrepareCallCFunction(0, v0);
+    __ CallCFunction(
+        ExternalReference::out_of_memory_function(masm->isolate()), 0);
+  }
 
   __ bind(&throw_termination_exception);
   __ ThrowUncatchable(v0);

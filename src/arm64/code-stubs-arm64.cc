@@ -1389,7 +1389,7 @@ void MathPowStub::Generate(MacroAssembler* masm) {
     __ Bind(&call_runtime);
     // Put the arguments back on the stack.
     __ Push(base_tagged, exponent_tagged);
-    __ TailCallRuntime(Runtime::kMath_pow_cfunction, 2, 1);
+    __ TailCallRuntime(Runtime::kHiddenMathPow, 2, 1);
 
     // Return.
     __ Bind(&done);
@@ -1755,13 +1755,15 @@ void CEntryStub::Generate(MacroAssembler* masm) {
                true,
                true);
 
+  { FrameScope scope(masm, StackFrame::MANUAL);
+    __ CallCFunction(
+        ExternalReference::out_of_memory_function(masm->isolate()), 0);
+  }
+
   // We didn't execute a return case, so the stack frame hasn't been updated
   // (except for the return address slot). However, we don't need to initialize
   // jssp because the throw method will immediately overwrite it when it
   // unwinds the stack.
-  if (__ emit_debug_code()) {
-    __ Mov(jssp, kDebugZapValue);
-  }
   __ SetStackPointer(jssp);
 
   // Throw exceptions.
