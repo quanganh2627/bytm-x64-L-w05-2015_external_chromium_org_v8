@@ -211,7 +211,7 @@ bool LCodeGen::GeneratePrologue() {
       __ CallStub(&stub);
     } else {
       __ push(r1);
-      __ CallRuntime(Runtime::kNewFunctionContext, 1);
+      __ CallRuntime(Runtime::kHiddenNewFunctionContext, 1);
     }
     RecordSafepoint(Safepoint::kNoLazyDeopt);
     // Context is returned in both r0 and cp.  It replaces the context
@@ -269,6 +269,9 @@ void LCodeGen::GenerateOsrPrologue() {
 
 
 void LCodeGen::GenerateBodyInstructionPre(LInstruction* instr) {
+  if (instr->IsCall()) {
+    EnsureSpaceForLazyDeopt(Deoptimizer::patch_size());
+  }
   if (!instr->IsLazyBailout() && !instr->IsGap()) {
     safepoints_.BumpLastLazySafepointIndex();
   }
@@ -1507,8 +1510,31 @@ void LCodeGen::DoFlooringDivByConstI(LFlooringDivByConstI* instr) {
     DeoptimizeIf(eq, instr->environment());
   }
 
-  // TODO(svenpanne) Add correction terms.
-  __ TruncatingDiv(result, dividend, divisor);
+  // Easy case: We need no dynamic check for the dividend and the flooring
+  // division is the same as the truncating division.
+  if ((divisor > 0 && !hdiv->CheckFlag(HValue::kLeftCanBeNegative)) ||
+      (divisor < 0 && !hdiv->CheckFlag(HValue::kLeftCanBePositive))) {
+    __ TruncatingDiv(result, dividend, Abs(divisor));
+    if (divisor < 0) __ rsb(result, result, Operand::Zero());
+    return;
+  }
+
+  // In the general case we may need to adjust before and after the truncating
+  // division to get a flooring division.
+  Register temp = ToRegister(instr->temp());
+  ASSERT(!temp.is(dividend) && !temp.is(result));
+  Label needs_adjustment, done;
+  __ cmp(dividend, Operand::Zero());
+  __ b(divisor > 0 ? lt : gt, &needs_adjustment);
+  __ TruncatingDiv(result, dividend, Abs(divisor));
+  if (divisor < 0) __ rsb(result, result, Operand::Zero());
+  __ jmp(&done);
+  __ bind(&needs_adjustment);
+  __ add(temp, dividend, Operand(divisor > 0 ? 1 : -1));
+  __ TruncatingDiv(result, temp, Abs(divisor));
+  if (divisor < 0) __ rsb(result, result, Operand::Zero());
+  __ sub(result, result, Operand(1));
+  __ bind(&done);
 }
 
 
@@ -3513,7 +3539,7 @@ void LCodeGen::DoDeclareGlobals(LDeclareGlobals* instr) {
   __ push(scratch0());
   __ mov(scratch0(), Operand(Smi::FromInt(instr->hydrogen()->flags())));
   __ push(scratch0());
-  CallRuntime(Runtime::kDeclareGlobals, 3, instr);
+  CallRuntime(Runtime::kHiddenDeclareGlobals, 3, instr);
 }
 
 
@@ -3604,7 +3630,7 @@ void LCodeGen::DoDeferredMathAbsTaggedHeapNumber(LMathAbs* instr) {
     // Slow case: Call the runtime system to do the number allocation.
     __ bind(&slow);
 
-    CallRuntimeFromDeferred(Runtime::kAllocateHeapNumber, 0, instr,
+    CallRuntimeFromDeferred(Runtime::kHiddenAllocateHeapNumber, 0, instr,
                             instr->context());
     // Set the pointer to the new heap number in tmp.
     if (!tmp1.is(r0)) __ mov(tmp1, Operand(r0));
@@ -4007,6 +4033,9 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
       instr->hydrogen()->value()->IsHeapObject()
           ? OMIT_SMI_CHECK : INLINE_SMI_CHECK;
 
+  ASSERT(!(representation.IsSmi() &&
+           instr->value()->IsConstantOperand() &&
+           !IsSmi(LConstantOperand::cast(instr->value()))));
   if (representation.IsHeapObject()) {
     Register value = ToRegister(instr->value());
     if (!instr->hydrogen()->value()->type().IsHeapObject()) {
@@ -4434,7 +4463,7 @@ void LCodeGen::DoDeferredStringCharCodeAt(LStringCharCodeAt* instr) {
     __ SmiTag(index);
     __ push(index);
   }
-  CallRuntimeFromDeferred(Runtime::kStringCharCodeAt, 2, instr,
+  CallRuntimeFromDeferred(Runtime::kHiddenStringCharCodeAt, 2, instr,
                           instr->context());
   __ AssertSmi(r0);
   __ SmiUntag(r0);
@@ -4621,11 +4650,11 @@ void LCodeGen::DoDeferredNumberTagIU(LInstruction* instr,
 
     // NumberTagI and NumberTagD use the context from the frame, rather than
     // the environment's HContext or HInlinedContext value.
-    // They only call Runtime::kAllocateHeapNumber.
+    // They only call Runtime::kHiddenAllocateHeapNumber.
     // The corresponding HChange instructions are added in a phase that does
     // not have easy access to the local context.
     __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
-    __ CallRuntimeSaveDoubles(Runtime::kAllocateHeapNumber);
+    __ CallRuntimeSaveDoubles(Runtime::kHiddenAllocateHeapNumber);
     RecordSafepointWithRegisters(
         instr->pointer_map(), 0, Safepoint::kNoLazyDeopt);
     __ sub(r0, r0, Operand(kHeapObjectTag));
@@ -4685,11 +4714,11 @@ void LCodeGen::DoDeferredNumberTagD(LNumberTagD* instr) {
   PushSafepointRegistersScope scope(this, Safepoint::kWithRegisters);
   // NumberTagI and NumberTagD use the context from the frame, rather than
   // the environment's HContext or HInlinedContext value.
-  // They only call Runtime::kAllocateHeapNumber.
+  // They only call Runtime::kHiddenAllocateHeapNumber.
   // The corresponding HChange instructions are added in a phase that does
   // not have easy access to the local context.
   __ ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));
-  __ CallRuntimeSaveDoubles(Runtime::kAllocateHeapNumber);
+  __ CallRuntimeSaveDoubles(Runtime::kHiddenAllocateHeapNumber);
   RecordSafepointWithRegisters(
       instr->pointer_map(), 0, Safepoint::kNoLazyDeopt);
   __ sub(r0, r0, Operand(kHeapObjectTag));
@@ -5290,7 +5319,7 @@ void LCodeGen::DoDeferredAllocate(LAllocate* instr) {
   __ Push(Smi::FromInt(flags));
 
   CallRuntimeFromDeferred(
-      Runtime::kAllocateInTargetSpace, 2, instr, instr->context());
+      Runtime::kHiddenAllocateInTargetSpace, 2, instr, instr->context());
   __ StoreToSafepointRegisterSlot(r0, result);
 }
 
@@ -5324,7 +5353,7 @@ void LCodeGen::DoRegExpLiteral(LRegExpLiteral* instr) {
   __ mov(r4, Operand(instr->hydrogen()->pattern()));
   __ mov(r3, Operand(instr->hydrogen()->flags()));
   __ Push(r6, r5, r4, r3);
-  CallRuntime(Runtime::kMaterializeRegExpLiteral, 4, instr);
+  CallRuntime(Runtime::kHiddenMaterializeRegExpLiteral, 4, instr);
   __ mov(r1, r0);
 
   __ bind(&materialized);
@@ -5337,7 +5366,7 @@ void LCodeGen::DoRegExpLiteral(LRegExpLiteral* instr) {
   __ bind(&runtime_allocate);
   __ mov(r0, Operand(Smi::FromInt(size)));
   __ Push(r1, r0);
-  CallRuntime(Runtime::kAllocateInNewSpace, 1, instr);
+  CallRuntime(Runtime::kHiddenAllocateInNewSpace, 1, instr);
   __ pop(r1);
 
   __ bind(&allocated);
@@ -5361,7 +5390,7 @@ void LCodeGen::DoFunctionLiteral(LFunctionLiteral* instr) {
     __ mov(r1, Operand(pretenure ? factory()->true_value()
                                  : factory()->false_value()));
     __ Push(cp, r2, r1);
-    CallRuntime(Runtime::kNewClosure, 3, instr);
+    CallRuntime(Runtime::kHiddenNewClosure, 3, instr);
   }
 }
 
@@ -5510,7 +5539,7 @@ void LCodeGen::EnsureSpaceForLazyDeopt(int space_needed) {
 
 
 void LCodeGen::DoLazyBailout(LLazyBailout* instr) {
-  EnsureSpaceForLazyDeopt(Deoptimizer::patch_size());
+  last_lazy_deopt_pc_ = masm()->pc_offset();
   ASSERT(instr->HasEnvironment());
   LEnvironment* env = instr->environment();
   RegisterEnvironmentForDeoptimization(env, Safepoint::kLazyDeopt);
@@ -5546,7 +5575,7 @@ void LCodeGen::DoDummyUse(LDummyUse* instr) {
 void LCodeGen::DoDeferredStackCheck(LStackCheck* instr) {
   PushSafepointRegistersScope scope(this, Safepoint::kWithRegisters);
   LoadContextFromDeferred(instr->context());
-  __ CallRuntimeSaveDoubles(Runtime::kStackGuard);
+  __ CallRuntimeSaveDoubles(Runtime::kHiddenStackGuard);
   RecordSafepointWithLazyDeopt(
       instr, RECORD_SAFEPOINT_WITH_REGISTERS_AND_NO_ARGUMENTS);
   ASSERT(instr->HasEnvironment());
@@ -5584,10 +5613,7 @@ void LCodeGen::DoStackCheck(LStackCheck* instr) {
     CallCode(isolate()->builtins()->StackCheck(),
               RelocInfo::CODE_TARGET,
               instr);
-    EnsureSpaceForLazyDeopt(Deoptimizer::patch_size());
     __ bind(&done);
-    RegisterEnvironmentForDeoptimization(env, Safepoint::kLazyDeopt);
-    safepoints_.RecordLazyDeoptimizationIndex(env->deoptimization_index());
   } else {
     ASSERT(instr->hydrogen()->is_backwards_branch());
     // Perform stack overflow check if this goto needs it before jumping.

@@ -86,12 +86,12 @@ class LCodeGen: public LCodeGenBase {
   Register ToRegister(LOperand* op) const;
   XMMRegister ToDoubleRegister(LOperand* op) const;
   bool IsInteger32Constant(LConstantOperand* op) const;
+  bool IsDehoistedKeyConstant(LConstantOperand* op) const;
   bool IsSmiConstant(LConstantOperand* op) const;
   int32_t ToInteger32(LConstantOperand* op) const;
   Smi* ToSmi(LConstantOperand* op) const;
   double ToDouble(LConstantOperand* op) const;
   ExternalReference ToExternalReference(LConstantOperand* op) const;
-  bool IsTaggedConstant(LConstantOperand* op) const;
   Handle<Object> ToHandle(LConstantOperand* op) const;
   Operand ToOperand(LOperand* op) const;
 
@@ -158,6 +158,7 @@ class LCodeGen: public LCodeGenBase {
   // Code generation passes.  Returns true if code generation should
   // continue.
   void GenerateBodyInstructionPre(LInstruction* instr) V8_OVERRIDE;
+  void GenerateBodyInstructionPost(LInstruction* instr) V8_OVERRIDE;
   bool GeneratePrologue();
   bool GenerateDeferredCode();
   bool GenerateJumpTable();

@@ -187,7 +187,7 @@ bool LCodeGen::GeneratePrologue() {
   int slots = GetStackSlotCount();
   if (slots > 0) {
     if (FLAG_debug_code) {
-      __ subq(rsp, Immediate(slots * kPointerSize));
+      __ subp(rsp, Immediate(slots * kPointerSize));
 #ifdef _MSC_VER
       MakeSureStackPagesMapped(slots * kPointerSize);
 #endif
@@ -202,7 +202,7 @@ bool LCodeGen::GeneratePrologue() {
       __ j(not_zero, &loop);
       __ Pop(rax);
     } else {
-      __ subq(rsp, Immediate(slots * kPointerSize));
+      __ subp(rsp, Immediate(slots * kPointerSize));
 #ifdef _MSC_VER
       MakeSureStackPagesMapped(slots * kPointerSize);
 #endif
@@ -223,7 +223,7 @@ bool LCodeGen::GeneratePrologue() {
       __ CallStub(&stub);
     } else {
       __ Push(rdi);
-      __ CallRuntime(Runtime::kNewFunctionContext, 1);
+      __ CallRuntime(Runtime::kHiddenNewFunctionContext, 1);
     }
     RecordSafepoint(Safepoint::kNoLazyDeopt);
     // Context is returned in rax.  It replaces the context passed to us.
@@ -269,13 +269,32 @@ void LCodeGen::GenerateOsrPrologue() {
   // optimized frame.
   int slots = GetStackSlotCount() - graph()->osr()->UnoptimizedFrameSlots();
   ASSERT(slots >= 0);
-  __ subq(rsp, Immediate(slots * kPointerSize));
+  __ subp(rsp, Immediate(slots * kPointerSize));
 }
 
 
 void LCodeGen::GenerateBodyInstructionPre(LInstruction* instr) {
+  if (instr->IsCall()) {
+    EnsureSpaceForLazyDeopt(Deoptimizer::patch_size());
+  }
   if (!instr->IsLazyBailout() && !instr->IsGap()) {
     safepoints_.BumpLastLazySafepointIndex();
+  }
+}
+
+
+void LCodeGen::GenerateBodyInstructionPost(LInstruction* instr) {
+  if (instr->HasResult() && instr->MustSignExtendResult(chunk())) {
+    if (instr->result()->IsRegister()) {
+      Register result_reg = ToRegister(instr->result());
+      __ movsxlq(result_reg, result_reg);
+    } else {
+      // Sign extend the 32bit result in the stack slots.
+      ASSERT(instr->result()->IsStackSlot());
+      Operand src = ToOperand(instr->result());
+      __ movsxlq(kScratchRegister, src);
+      __ movq(src, kScratchRegister);
+    }
   }
 }
 
@@ -353,7 +372,7 @@ bool LCodeGen::GenerateDeferredCode() {
         __ pushq(rbp);  // Caller's frame pointer.
         __ Push(Operand(rbp, StandardFrameConstants::kContextOffset));
         __ Push(Smi::FromInt(StackFrame::STUB));
-        __ lea(rbp, Operand(rsp, 2 * kPointerSize));
+        __ leap(rbp, Operand(rsp, 2 * kPointerSize));
         Comment(";;; Deferred code");
       }
       code->Generate();
@@ -406,20 +425,18 @@ XMMRegister LCodeGen::ToDoubleRegister(LOperand* op) const {
 
 
 bool LCodeGen::IsInteger32Constant(LConstantOperand* op) const {
+  return chunk_->LookupLiteralRepresentation(op).IsSmiOrInteger32();
+}
+
+
+bool LCodeGen::IsDehoistedKeyConstant(LConstantOperand* op) const {
   return op->IsConstantOperand() &&
-      chunk_->LookupLiteralRepresentation(op).IsSmiOrInteger32();
+      chunk_->IsDehoistedKey(chunk_->LookupConstant(op));
 }
 
 
 bool LCodeGen::IsSmiConstant(LConstantOperand* op) const {
-  return op->IsConstantOperand() &&
-      chunk_->LookupLiteralRepresentation(op).IsSmi();
-}
-
-
-bool LCodeGen::IsTaggedConstant(LConstantOperand* op) const {
-  return op->IsConstantOperand() &&
-      chunk_->LookupLiteralRepresentation(op).IsTagged();
+  return chunk_->LookupLiteralRepresentation(op).IsSmi();
 }
 
 
@@ -1160,8 +1177,31 @@ void LCodeGen::DoFlooringDivByConstI(LFlooringDivByConstI* instr) {
     DeoptimizeIf(zero, instr->environment());
   }
 
-  // TODO(svenpanne) Add correction terms.
-  __ TruncatingDiv(dividend, divisor);
+  // Easy case: We need no dynamic check for the dividend and the flooring
+  // division is the same as the truncating division.
+  if ((divisor > 0 && !hdiv->CheckFlag(HValue::kLeftCanBeNegative)) ||
+      (divisor < 0 && !hdiv->CheckFlag(HValue::kLeftCanBePositive))) {
+    __ TruncatingDiv(dividend, Abs(divisor));
+    if (divisor < 0) __ negl(rdx);
+    return;
+  }
+
+  // In the general case we may need to adjust before and after the truncating
+  // division to get a flooring division.
+  Register temp = ToRegister(instr->temp3());
+  ASSERT(!temp.is(dividend) && !temp.is(rax) && !temp.is(rdx));
+  Label needs_adjustment, done;
+  __ cmpl(dividend, Immediate(0));
+  __ j(divisor > 0 ? less : greater, &needs_adjustment, Label::kNear);
+  __ TruncatingDiv(dividend, Abs(divisor));
+  if (divisor < 0) __ negl(rdx);
+  __ jmp(&done, Label::kNear);
+  __ bind(&needs_adjustment);
+  __ leal(temp, Operand(dividend, divisor > 0 ? 1 : -1));
+  __ TruncatingDiv(temp, Abs(divisor));
+  if (divisor < 0) __ negl(rdx);
+  __ decl(rdx);
+  __ bind(&done);
 }
 
 
@@ -1221,7 +1261,7 @@ void LCodeGen::DoDivByConstI(LDivByConstI* instr) {
   }
 
   __ TruncatingDiv(dividend, Abs(divisor));
-  if (divisor < 0) __ neg(rdx);
+  if (divisor < 0) __ negp(rdx);
 
   if (!hdiv->CheckFlag(HInstruction::kAllUsesTruncatingToInt32)) {
     __ movl(rax, rdx);
@@ -1348,14 +1388,14 @@ void LCodeGen::DoMulI(LMulI* instr) {
   } else if (right->IsStackSlot()) {
     if (instr->hydrogen_value()->representation().IsSmi()) {
       __ SmiToInteger64(left, left);
-      __ imul(left, ToOperand(right));
+      __ imulp(left, ToOperand(right));
     } else {
       __ imull(left, ToOperand(right));
     }
   } else {
     if (instr->hydrogen_value()->representation().IsSmi()) {
       __ SmiToInteger64(left, left);
-      __ imul(left, ToRegister(right));
+      __ imulp(left, ToRegister(right));
     } else {
       __ imull(left, ToRegister(right));
     }
@@ -1369,7 +1409,7 @@ void LCodeGen::DoMulI(LMulI* instr) {
     // Bail out if the result is supposed to be negative zero.
     Label done;
     if (instr->hydrogen_value()->representation().IsSmi()) {
-      __ testq(left, left);
+      __ testp(left, left);
     } else {
       __ testl(left, left);
     }
@@ -1385,7 +1425,7 @@ void LCodeGen::DoMulI(LMulI* instr) {
       }
     } else if (right->IsStackSlot()) {
       if (instr->hydrogen_value()->representation().IsSmi()) {
-        __ or_(kScratchRegister, ToOperand(right));
+        __ orp(kScratchRegister, ToOperand(right));
       } else {
         __ orl(kScratchRegister, ToOperand(right));
       }
@@ -1393,7 +1433,7 @@ void LCodeGen::DoMulI(LMulI* instr) {
     } else {
       // Test the non-zero operand for negative sign.
       if (instr->hydrogen_value()->representation().IsSmi()) {
-        __ or_(kScratchRegister, ToRegister(right));
+        __ orp(kScratchRegister, ToRegister(right));
       } else {
         __ orl(kScratchRegister, ToRegister(right));
       }
@@ -1433,13 +1473,13 @@ void LCodeGen::DoBitI(LBitI* instr) {
   } else if (right->IsStackSlot()) {
     switch (instr->op()) {
       case Token::BIT_AND:
-        __ and_(ToRegister(left), ToOperand(right));
+        __ andp(ToRegister(left), ToOperand(right));
         break;
       case Token::BIT_OR:
-        __ or_(ToRegister(left), ToOperand(right));
+        __ orp(ToRegister(left), ToOperand(right));
         break;
       case Token::BIT_XOR:
-        __ xor_(ToRegister(left), ToOperand(right));
+        __ xorp(ToRegister(left), ToOperand(right));
         break;
       default:
         UNREACHABLE();
@@ -1449,13 +1489,13 @@ void LCodeGen::DoBitI(LBitI* instr) {
     ASSERT(right->IsRegister());
     switch (instr->op()) {
       case Token::BIT_AND:
-        __ and_(ToRegister(left), ToRegister(right));
+        __ andp(ToRegister(left), ToRegister(right));
         break;
       case Token::BIT_OR:
-        __ or_(ToRegister(left), ToRegister(right));
+        __ orp(ToRegister(left), ToRegister(right));
         break;
       case Token::BIT_XOR:
-        __ xor_(ToRegister(left), ToRegister(right));
+        __ xorp(ToRegister(left), ToRegister(right));
         break;
       default:
         UNREACHABLE();
@@ -1543,13 +1583,13 @@ void LCodeGen::DoSubI(LSubI* instr) {
             Immediate(ToInteger32(LConstantOperand::cast(right))));
   } else if (right->IsRegister()) {
     if (instr->hydrogen_value()->representation().IsSmi()) {
-      __ subq(ToRegister(left), ToRegister(right));
+      __ subp(ToRegister(left), ToRegister(right));
     } else {
       __ subl(ToRegister(left), ToRegister(right));
     }
   } else {
     if (instr->hydrogen_value()->representation().IsSmi()) {
-      __ subq(ToRegister(left), ToOperand(right));
+      __ subp(ToRegister(left), ToOperand(right));
     } else {
       __ subl(ToRegister(left), ToOperand(right));
     }
@@ -1626,7 +1666,7 @@ void LCodeGen::DoDateField(LDateField* instr) {
       ExternalReference stamp = ExternalReference::date_cache_stamp(isolate());
       Operand stamp_operand = __ ExternalOperand(stamp);
       __ movp(kScratchRegister, stamp_operand);
-      __ cmpq(kScratchRegister, FieldOperand(object,
+      __ cmpp(kScratchRegister, FieldOperand(object,
                                              JSDate::kCacheStampOffset));
       __ j(not_equal, &runtime, Label::kNear);
       __ movp(result, FieldOperand(object, JSDate::kValueOffset +
@@ -1669,12 +1709,12 @@ void LCodeGen::DoSeqStringGetChar(LSeqStringGetChar* instr) {
   if (FLAG_debug_code) {
     __ Push(string);
     __ movp(string, FieldOperand(string, HeapObject::kMapOffset));
-    __ movzxbq(string, FieldOperand(string, Map::kInstanceTypeOffset));
+    __ movzxbp(string, FieldOperand(string, Map::kInstanceTypeOffset));
 
     __ andb(string, Immediate(kStringRepresentationMask | kStringEncodingMask));
     static const uint32_t one_byte_seq_type = kSeqStringTag | kOneByteStringTag;
     static const uint32_t two_byte_seq_type = kSeqStringTag | kTwoByteStringTag;
-    __ cmpq(string, Immediate(encoding == String::ONE_BYTE_ENCODING
+    __ cmpp(string, Immediate(encoding == String::ONE_BYTE_ENCODING
                               ? one_byte_seq_type : two_byte_seq_type));
     __ Check(equal, kUnexpectedStringType);
     __ Pop(string);
@@ -1731,44 +1771,44 @@ void LCodeGen::DoAddI(LAddI* instr) {
   LOperand* right = instr->right();
 
   Representation target_rep = instr->hydrogen()->representation();
-  bool is_q = target_rep.IsSmi() || target_rep.IsExternal();
+  bool is_p = target_rep.IsSmi() || target_rep.IsExternal();
 
   if (LAddI::UseLea(instr->hydrogen()) && !left->Equals(instr->result())) {
     if (right->IsConstantOperand()) {
       int32_t offset = ToInteger32(LConstantOperand::cast(right));
-      if (is_q) {
-        __ lea(ToRegister(instr->result()),
-               MemOperand(ToRegister(left), offset));
+      if (is_p) {
+        __ leap(ToRegister(instr->result()),
+                MemOperand(ToRegister(left), offset));
       } else {
         __ leal(ToRegister(instr->result()),
                 MemOperand(ToRegister(left), offset));
       }
     } else {
       Operand address(ToRegister(left), ToRegister(right), times_1, 0);
-      if (is_q) {
-        __ lea(ToRegister(instr->result()), address);
+      if (is_p) {
+        __ leap(ToRegister(instr->result()), address);
       } else {
         __ leal(ToRegister(instr->result()), address);
       }
     }
   } else {
     if (right->IsConstantOperand()) {
-      if (is_q) {
-        __ addq(ToRegister(left),
+      if (is_p) {
+        __ addp(ToRegister(left),
                 Immediate(ToInteger32(LConstantOperand::cast(right))));
       } else {
         __ addl(ToRegister(left),
                 Immediate(ToInteger32(LConstantOperand::cast(right))));
       }
     } else if (right->IsRegister()) {
-      if (is_q) {
-        __ addq(ToRegister(left), ToRegister(right));
+      if (is_p) {
+        __ addp(ToRegister(left), ToRegister(right));
       } else {
         __ addl(ToRegister(left), ToRegister(right));
       }
     } else {
-      if (is_q) {
-        __ addq(ToRegister(left), ToOperand(right));
+      if (is_p) {
+        __ addp(ToRegister(left), ToOperand(right));
       } else {
         __ addl(ToRegister(left), ToOperand(right));
       }
@@ -1801,7 +1841,7 @@ void LCodeGen::DoMathMinMax(LMathMinMax* instr) {
     } else if (right->IsRegister()) {
       Register right_reg = ToRegister(right);
       if (instr->hydrogen_value()->representation().IsSmi()) {
-        __ cmpq(left_reg, right_reg);
+        __ cmpp(left_reg, right_reg);
       } else {
         __ cmpl(left_reg, right_reg);
       }
@@ -1810,7 +1850,7 @@ void LCodeGen::DoMathMinMax(LMathMinMax* instr) {
     } else {
       Operand right_op = ToOperand(right);
       if (instr->hydrogen_value()->representation().IsSmi()) {
-        __ cmpq(left_reg, right_op);
+        __ cmpp(left_reg, right_op);
       } else {
         __ cmpl(left_reg, right_op);
       }
@@ -1949,7 +1989,7 @@ void LCodeGen::DoBranch(LBranch* instr) {
   } else if (r.IsSmi()) {
     ASSERT(!info()->IsStub());
     Register reg = ToRegister(instr->value());
-    __ testq(reg, reg);
+    __ testp(reg, reg);
     EmitBranch(instr, not_zero);
   } else if (r.IsDouble()) {
     ASSERT(!info()->IsStub());
@@ -1981,7 +2021,7 @@ void LCodeGen::DoBranch(LBranch* instr) {
       EmitBranch(instr, not_equal);
     } else if (type.IsString()) {
       ASSERT(!info()->IsStub());
-      __ cmpq(FieldOperand(reg, String::kLengthOffset), Immediate(0));
+      __ cmpp(FieldOperand(reg, String::kLengthOffset), Immediate(0));
       EmitBranch(instr, not_equal);
     } else {
       ToBooleanStub::Types expected = instr->hydrogen()->expected_input_types();
@@ -2041,7 +2081,7 @@ void LCodeGen::DoBranch(LBranch* instr) {
         Label not_string;
         __ CmpInstanceType(map, FIRST_NONSTRING_TYPE);
         __ j(above_equal, &not_string, Label::kNear);
-        __ cmpq(FieldOperand(reg, String::kLengthOffset), Immediate(0));
+        __ cmpp(FieldOperand(reg, String::kLengthOffset), Immediate(0));
         __ j(not_zero, instr->TrueLabel(chunk_));
         __ jmp(instr->FalseLabel(chunk_));
         __ bind(&not_string);
@@ -2164,9 +2204,9 @@ void LCodeGen::DoCompareNumericAndBranch(LCompareNumericAndBranch* instr) {
         cc = ReverseCondition(cc);
       } else if (instr->hydrogen_value()->representation().IsSmi()) {
         if (right->IsRegister()) {
-          __ cmpq(ToRegister(left), ToRegister(right));
+          __ cmpp(ToRegister(left), ToRegister(right));
         } else {
-          __ cmpq(ToRegister(left), ToOperand(right));
+          __ cmpp(ToRegister(left), ToOperand(right));
         }
       } else {
         if (right->IsRegister()) {
@@ -2189,7 +2229,7 @@ void LCodeGen::DoCmpObjectEqAndBranch(LCmpObjectEqAndBranch* instr) {
     __ Cmp(left, right);
   } else {
     Register right = ToRegister(instr->right());
-    __ cmpq(left, right);
+    __ cmpp(left, right);
   }
   EmitBranch(instr, equal);
 }
@@ -2207,9 +2247,9 @@ void LCodeGen::DoCmpHoleAndBranch(LCmpHoleAndBranch* instr) {
   __ ucomisd(input_reg, input_reg);
   EmitFalseBranch(instr, parity_odd);
 
-  __ subq(rsp, Immediate(kDoubleSize));
+  __ subp(rsp, Immediate(kDoubleSize));
   __ movsd(MemOperand(rsp, 0), input_reg);
-  __ addq(rsp, Immediate(kDoubleSize));
+  __ addp(rsp, Immediate(kDoubleSize));
 
   int offset = sizeof(kHoleNanUpper32);
   __ cmpl(MemOperand(rsp, -offset), Immediate(kHoleNanUpper32));
@@ -2235,8 +2275,8 @@ void LCodeGen::DoCompareMinusZeroAndBranch(LCompareMinusZeroAndBranch* instr) {
     Handle<Map> map = masm()->isolate()->factory()->heap_number_map();
     __ CheckMap(value, map, instr->FalseLabel(chunk()), DO_SMI_CHECK);
     __ cmpl(FieldOperand(value, HeapNumber::kExponentOffset),
-            Immediate(0x80000000));
-    EmitFalseBranch(instr, not_equal);
+            Immediate(0x1));
+    EmitFalseBranch(instr, no_overflow);
     __ cmpl(FieldOperand(value, HeapNumber::kMantissaOffset),
             Immediate(0x00000000));
     EmitBranch(instr, equal);
@@ -2343,7 +2383,7 @@ void LCodeGen::DoStringCompareAndBranch(LStringCompareAndBranch* instr) {
   CallCode(ic, RelocInfo::CODE_TARGET, instr);
 
   Condition condition = TokenToCondition(op, false);
-  __ testq(rax, rax);
+  __ testp(rax, rax);
 
   EmitBranch(instr, condition);
 }
@@ -2436,8 +2476,8 @@ void LCodeGen::EmitClassOfTest(Label* is_true,
     // actual type and do a signed compare with the width of the type range.
     __ movp(temp, FieldOperand(input, HeapObject::kMapOffset));
     __ movzxbl(temp2, FieldOperand(temp, Map::kInstanceTypeOffset));
-    __ subq(temp2, Immediate(FIRST_NONCALLABLE_SPEC_OBJECT_TYPE));
-    __ cmpq(temp2, Immediate(LAST_NONCALLABLE_SPEC_OBJECT_TYPE -
+    __ subp(temp2, Immediate(FIRST_NONCALLABLE_SPEC_OBJECT_TYPE));
+    __ cmpp(temp2, Immediate(LAST_NONCALLABLE_SPEC_OBJECT_TYPE -
                              FIRST_NONCALLABLE_SPEC_OBJECT_TYPE));
     __ j(above, is_false);
   }
@@ -2499,7 +2539,7 @@ void LCodeGen::DoInstanceOf(LInstanceOf* instr) {
   __ Push(ToRegister(instr->right()));
   CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
   Label true_value, done;
-  __ testq(rax, rax);
+  __ testp(rax, rax);
   __ j(zero, &true_value, Label::kNear);
   __ LoadRoot(ToRegister(instr->result()), Heap::kFalseValueRootIndex);
   __ jmp(&done, Label::kNear);
@@ -2545,7 +2585,7 @@ void LCodeGen::DoInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr) {
   __ bind(deferred->map_check());  // Label for calculating code patching.
   Handle<Cell> cache_cell = factory()->NewCell(factory()->the_hole_value());
   __ Move(kScratchRegister, cache_cell, RelocInfo::CELL);
-  __ cmpq(map, Operand(kScratchRegister, 0));
+  __ cmpp(map, Operand(kScratchRegister, 0));
   __ j(not_equal, &cache_miss, Label::kNear);
   // Patched to load either true or false.
   __ LoadRoot(ToRegister(instr->result()), Heap::kTheHoleValueRootIndex);
@@ -2607,7 +2647,7 @@ void LCodeGen::DoDeferredInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
     // PushSafepointRegisterScope.
     __ movp(kScratchRegister, rax);
   }
-  __ testq(kScratchRegister, kScratchRegister);
+  __ testp(kScratchRegister, kScratchRegister);
   Label load_false;
   Label done;
   __ j(not_zero, &load_false, Label::kNear);
@@ -2628,7 +2668,7 @@ void LCodeGen::DoCmpT(LCmpT* instr) {
 
   Condition condition = TokenToCondition(op, false);
   Label true_value, done;
-  __ testq(rax, rax);
+  __ testp(rax, rax);
   __ j(condition, &true_value, Label::kNear);
   __ LoadRoot(ToRegister(instr->result()), Heap::kFalseValueRootIndex);
   __ jmp(&done, Label::kNear);
@@ -2667,7 +2707,7 @@ void LCodeGen::DoReturn(LReturn* instr) {
     Register return_addr_reg = reg.is(rcx) ? rbx : rcx;
     __ PopReturnAddressTo(return_addr_reg);
     __ shl(reg, Immediate(kPointerSizeLog2));
-    __ addq(rsp, reg);
+    __ addp(rsp, reg);
     __ jmp(return_addr_reg);
   }
   if (no_frame_start != -1) {
@@ -2892,9 +2932,13 @@ void LCodeGen::DoAccessArgumentsAt(LAccessArgumentsAt* instr) {
       instr->index()->IsConstantOperand()) {
     int32_t const_index = ToInteger32(LConstantOperand::cast(instr->index()));
     int32_t const_length = ToInteger32(LConstantOperand::cast(instr->length()));
-    StackArgumentsAccessor args(arguments, const_length,
-                                ARGUMENTS_DONT_CONTAIN_RECEIVER);
-    __ movp(result, args.GetArgumentOperand(const_index));
+    if (const_index >= 0 && const_index < const_length) {
+      StackArgumentsAccessor args(arguments, const_length,
+                                  ARGUMENTS_DONT_CONTAIN_RECEIVER);
+      __ movp(result, args.GetArgumentOperand(const_index));
+    } else if (FLAG_debug_code) {
+      __ int3();
+    }
   } else {
     Register length = ToRegister(instr->length());
     // There are two words between the frame pointer and the last argument.
@@ -2914,19 +2958,6 @@ void LCodeGen::DoAccessArgumentsAt(LAccessArgumentsAt* instr) {
 void LCodeGen::DoLoadKeyedExternalArray(LLoadKeyed* instr) {
   ElementsKind elements_kind = instr->elements_kind();
   LOperand* key = instr->key();
-  if (!key->IsConstantOperand()) {
-    Register key_reg = ToRegister(key);
-    // Even though the HLoad/StoreKeyed (in this case) instructions force
-    // the input representation for the key to be an integer, the input
-    // gets replaced during bound check elimination with the index argument
-    // to the bounds check, which can be tagged, so that case must be
-    // handled here, too.
-    if (instr->hydrogen()->IsDehoisted()) {
-      // Sign extend key because it could be a 32 bit negative value
-      // and the dehoisted address computation happens in 64 bits
-      __ movsxlq(key_reg, key_reg);
-    }
-  }
   int base_offset = instr->is_fixed_typed_array()
     ? FixedTypedArrayBase::kDataOffset - kHeapObjectTag
     : 0;
@@ -2956,7 +2987,7 @@ void LCodeGen::DoLoadKeyedExternalArray(LLoadKeyed* instr) {
       case EXTERNAL_UINT8_CLAMPED_ELEMENTS:
       case UINT8_ELEMENTS:
       case UINT8_CLAMPED_ELEMENTS:
-        __ movzxbq(result, operand);
+        __ movzxbp(result, operand);
         break;
       case EXTERNAL_INT16_ELEMENTS:
       case INT16_ELEMENTS:
@@ -2964,7 +2995,7 @@ void LCodeGen::DoLoadKeyedExternalArray(LLoadKeyed* instr) {
         break;
       case EXTERNAL_UINT16_ELEMENTS:
       case UINT16_ELEMENTS:
-        __ movzxwq(result, operand);
+        __ movzxwp(result, operand);
         break;
       case EXTERNAL_INT32_ELEMENTS:
       case INT32_ELEMENTS:
@@ -3000,19 +3031,6 @@ void LCodeGen::DoLoadKeyedExternalArray(LLoadKeyed* instr) {
 void LCodeGen::DoLoadKeyedFixedDoubleArray(LLoadKeyed* instr) {
   XMMRegister result(ToDoubleRegister(instr->result()));
   LOperand* key = instr->key();
-  if (!key->IsConstantOperand()) {
-    Register key_reg = ToRegister(key);
-    // Even though the HLoad/StoreKeyed instructions force the input
-    // representation for the key to be an integer, the input gets replaced
-    // during bound check elimination with the index argument to the bounds
-    // check, which can be tagged, so that case must be handled here, too.
-    if (instr->hydrogen()->IsDehoisted()) {
-      // Sign extend key because it could be a 32 bit negative value
-      // and the dehoisted address computation happens in 64 bits
-      __ movsxlq(key_reg, key_reg);
-    }
-  }
-
   if (instr->hydrogen()->RequiresHoleCheck()) {
     int offset = FixedDoubleArray::kHeaderSize - kHeapObjectTag +
         sizeof(kHoleNanLower32);
@@ -3040,20 +3058,6 @@ void LCodeGen::DoLoadKeyedFixedArray(LLoadKeyed* instr) {
   HLoadKeyed* hinstr = instr->hydrogen();
   Register result = ToRegister(instr->result());
   LOperand* key = instr->key();
-  if (!key->IsConstantOperand()) {
-    Register key_reg = ToRegister(key);
-    // Even though the HLoad/StoreKeyedFastElement instructions force
-    // the input representation for the key to be an integer, the input
-    // gets replaced during bound check elimination with the index
-    // argument to the bounds check, which can be tagged, so that
-    // case must be handled here, too.
-    if (hinstr->IsDehoisted()) {
-      // Sign extend key because it could be a 32 bit negative value
-      // and the dehoisted address computation happens in 64 bits
-      __ movsxlq(key_reg, key_reg);
-    }
-  }
-
   bool requires_hole_check = hinstr->RequiresHoleCheck();
   int offset = FixedArray::kHeaderSize - kHeapObjectTag;
   Representation representation = hinstr->representation();
@@ -3150,7 +3154,7 @@ void LCodeGen::DoArgumentsElements(LArgumentsElements* instr) {
   Register result = ToRegister(instr->result());
 
   if (instr->hydrogen()->from_inlined()) {
-    __ lea(result, Operand(rsp, -kFPOnStackSize + -kPCOnStackSize));
+    __ leap(result, Operand(rsp, -kFPOnStackSize + -kPCOnStackSize));
   } else {
     // Check for arguments adapter frame.
     Label done, adapted;
@@ -3181,9 +3185,9 @@ void LCodeGen::DoArgumentsLength(LArgumentsLength* instr) {
 
   // If no arguments adaptor frame the number of arguments is fixed.
   if (instr->elements()->IsRegister()) {
-    __ cmpq(rbp, ToRegister(instr->elements()));
+    __ cmpp(rbp, ToRegister(instr->elements()));
   } else {
-    __ cmpq(rbp, ToOperand(instr->elements()));
+    __ cmpp(rbp, ToOperand(instr->elements()));
   }
   __ movl(result, Immediate(scope()->num_parameters()));
   __ j(equal, &done, Label::kNear);
@@ -3263,7 +3267,7 @@ void LCodeGen::DoApplyArguments(LApplyArguments* instr) {
   // Copy the arguments to this function possibly from the
   // adaptor frame below it.
   const uint32_t kArgumentsLimit = 1 * KB;
-  __ cmpq(length, Immediate(kArgumentsLimit));
+  __ cmpp(length, Immediate(kArgumentsLimit));
   DeoptimizeIf(above, instr->environment());
 
   __ Push(receiver);
@@ -3326,7 +3330,7 @@ void LCodeGen::DoDeclareGlobals(LDeclareGlobals* instr) {
   __ Push(rsi);  // The context is the first argument.
   __ Push(instr->hydrogen()->pairs());
   __ Push(Smi::FromInt(instr->hydrogen()->flags()));
-  CallRuntime(Runtime::kDeclareGlobals, 3, instr);
+  CallRuntime(Runtime::kHiddenDeclareGlobals, 3, instr);
 }
 
 
@@ -3391,7 +3395,7 @@ void LCodeGen::DoCallWithDescriptor(LCallWithDescriptor* instr) {
     ASSERT(instr->target()->IsRegister());
     Register target = ToRegister(instr->target());
     generator.BeforeCall(__ CallSize(target));
-    __ addq(target, Immediate(Code::kHeaderSize - kHeapObjectTag));
+    __ addp(target, Immediate(Code::kHeaderSize - kHeapObjectTag));
     __ call(target);
   }
   generator.AfterCall();
@@ -3458,7 +3462,7 @@ void LCodeGen::DoDeferredMathAbsTaggedHeapNumber(LMathAbs* instr) {
   // Slow case: Call the runtime system to do the number allocation.
   __ bind(&slow);
   CallRuntimeFromDeferred(
-      Runtime::kAllocateHeapNumber, 0, instr, instr->context());
+      Runtime::kHiddenAllocateHeapNumber, 0, instr, instr->context());
   // Set the pointer to the new heap number in tmp.
   if (!tmp.is(rax)) __ movp(tmp, rax);
   // Restore input_reg after call to runtime.
@@ -3488,10 +3492,10 @@ void LCodeGen::EmitIntegerMathAbs(LMathAbs* instr) {
 
 void LCodeGen::EmitSmiMathAbs(LMathAbs* instr) {
   Register input_reg = ToRegister(instr->value());
-  __ testq(input_reg, input_reg);
+  __ testp(input_reg, input_reg);
   Label is_positive;
   __ j(not_sign, &is_positive, Label::kNear);
-  __ neg(input_reg);  // Sets flags.
+  __ negp(input_reg);  // Sets flags.
   DeoptimizeIf(negative, instr->environment());
   __ bind(&is_positive);
 }
@@ -3551,8 +3555,8 @@ void LCodeGen::DoMathFloor(LMathFloor* instr) {
     }
     __ roundsd(xmm_scratch, input_reg, Assembler::kRoundDown);
     __ cvttsd2si(output_reg, xmm_scratch);
-    __ cmpl(output_reg, Immediate(0x80000000));
-    DeoptimizeIf(equal, instr->environment());
+    __ cmpl(output_reg, Immediate(0x1));
+    DeoptimizeIf(overflow, instr->environment());
   } else {
     Label negative_sign, done;
     // Deoptimize on unordered.
@@ -3576,8 +3580,8 @@ void LCodeGen::DoMathFloor(LMathFloor* instr) {
     // Use truncating instruction (OK because input is positive).
     __ cvttsd2si(output_reg, input_reg);
     // Overflow is signalled with minint.
-    __ cmpl(output_reg, Immediate(0x80000000));
-    DeoptimizeIf(equal, instr->environment());
+    __ cmpl(output_reg, Immediate(0x1));
+    DeoptimizeIf(overflow, instr->environment());
     __ jmp(&done, Label::kNear);
 
     // Non-zero negative reaches here.
@@ -3614,9 +3618,9 @@ void LCodeGen::DoMathRound(LMathRound* instr) {
   __ addsd(xmm_scratch, input_reg);
   __ cvttsd2si(output_reg, xmm_scratch);
   // Overflow is signalled with minint.
-  __ cmpl(output_reg, Immediate(0x80000000));
+  __ cmpl(output_reg, Immediate(0x1));
   __ RecordComment("D2I conversion overflow");
-  DeoptimizeIf(equal, instr->environment());
+  DeoptimizeIf(overflow, instr->environment());
   __ jmp(&done, dist);
 
   __ bind(&below_one_half);
@@ -3631,9 +3635,9 @@ void LCodeGen::DoMathRound(LMathRound* instr) {
   __ subsd(input_temp, xmm_scratch);
   __ cvttsd2si(output_reg, input_temp);
   // Catch minint due to overflow, and to prevent overflow when compensating.
-  __ cmpl(output_reg, Immediate(0x80000000));
+  __ cmpl(output_reg, Immediate(0x1));
   __ RecordComment("D2I conversion overflow");
-  DeoptimizeIf(equal, instr->environment());
+  DeoptimizeIf(overflow, instr->environment());
 
   __ Cvtlsi2sd(xmm_scratch, output_reg);
   __ ucomisd(xmm_scratch, input_temp);
@@ -3763,13 +3767,13 @@ void LCodeGen::DoMathLog(LMathLog* instr) {
   __ jmp(&done, Label::kNear);
   __ bind(&positive);
   __ fldln2();
-  __ subq(rsp, Immediate(kDoubleSize));
+  __ subp(rsp, Immediate(kDoubleSize));
   __ movsd(Operand(rsp, 0), input_reg);
   __ fld_d(Operand(rsp, 0));
   __ fyl2x();
   __ fstp_d(Operand(rsp, 0));
   __ movsd(input_reg, Operand(rsp, 0));
-  __ addq(rsp, Immediate(kDoubleSize));
+  __ addp(rsp, Immediate(kDoubleSize));
   __ bind(&done);
 }
 
@@ -3856,7 +3860,7 @@ void LCodeGen::DoCallNewArray(LCallNewArray* instr) {
       // We might need a change here
       // look at the first argument
       __ movp(rcx, Operand(rsp, 0));
-      __ testq(rcx, rcx);
+      __ testp(rcx, rcx);
       __ j(zero, &packed_case, Label::kNear);
 
       ElementsKind holey_kind = GetHoleyElementsKind(kind);
@@ -3885,7 +3889,7 @@ void LCodeGen::DoCallRuntime(LCallRuntime* instr) {
 void LCodeGen::DoStoreCodeEntry(LStoreCodeEntry* instr) {
   Register function = ToRegister(instr->function());
   Register code_object = ToRegister(instr->code_object());
-  __ lea(code_object, FieldOperand(code_object, Code::kHeaderSize));
+  __ leap(code_object, FieldOperand(code_object, Code::kHeaderSize));
   __ movp(FieldOperand(function, JSFunction::kCodeEntryOffset), code_object);
 }
 
@@ -3895,10 +3899,10 @@ void LCodeGen::DoInnerAllocatedObject(LInnerAllocatedObject* instr) {
   Register base = ToRegister(instr->base_object());
   if (instr->offset()->IsConstantOperand()) {
     LConstantOperand* offset = LConstantOperand::cast(instr->offset());
-    __ lea(result, Operand(base, ToInteger32(offset)));
+    __ leap(result, Operand(base, ToInteger32(offset)));
   } else {
     Register offset = ToRegister(instr->offset());
-    __ lea(result, Operand(base, offset, times_1, 0));
+    __ leap(result, Operand(base, offset, times_1, 0));
   }
 }
 
@@ -3929,18 +3933,13 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
   SmiCheck check_needed = hinstr->value()->IsHeapObject()
                           ? OMIT_SMI_CHECK : INLINE_SMI_CHECK;
 
-  if (representation.IsSmi()) {
+  ASSERT(!(representation.IsSmi() &&
+           instr->value()->IsConstantOperand() &&
+           !IsInteger32Constant(LConstantOperand::cast(instr->value()))));
+  if (representation.IsHeapObject()) {
     if (instr->value()->IsConstantOperand()) {
       LConstantOperand* operand_value = LConstantOperand::cast(instr->value());
-      if (!IsInteger32Constant(operand_value) &&
-          !IsSmiConstant(operand_value)) {
-        DeoptimizeIf(no_condition, instr->environment());
-      }
-    }
-  } else if (representation.IsHeapObject()) {
-    if (instr->value()->IsConstantOperand()) {
-      LConstantOperand* operand_value = LConstantOperand::cast(instr->value());
-      if (IsInteger32Constant(operand_value)) {
+      if (chunk_->LookupConstant(operand_value)->HasSmiValue()) {
         DeoptimizeIf(no_condition, instr->environment());
       }
     } else {
@@ -4086,7 +4085,7 @@ void LCodeGen::DoBoundsCheck(LBoundsCheck* instr) {
     } else {
       Register reg2 = ToRegister(instr->index());
       if (representation.IsSmi()) {
-        __ cmpq(reg, reg2);
+        __ cmpp(reg, reg2);
       } else {
         __ cmpl(reg, reg2);
       }
@@ -4103,7 +4102,7 @@ void LCodeGen::DoBoundsCheck(LBoundsCheck* instr) {
       }
     } else {
       if (representation.IsSmi()) {
-        __ cmpq(length, ToRegister(instr->index()));
+        __ cmpp(length, ToRegister(instr->index()));
       } else {
         __ cmpl(length, ToRegister(instr->index()));
       }
@@ -4117,19 +4116,6 @@ void LCodeGen::DoBoundsCheck(LBoundsCheck* instr) {
 void LCodeGen::DoStoreKeyedExternalArray(LStoreKeyed* instr) {
   ElementsKind elements_kind = instr->elements_kind();
   LOperand* key = instr->key();
-  if (!key->IsConstantOperand()) {
-    Register key_reg = ToRegister(key);
-    // Even though the HLoad/StoreKeyedFastElement instructions force
-    // the input representation for the key to be an integer, the input
-    // gets replaced during bound check elimination with the index
-    // argument to the bounds check, which can be tagged, so that case
-    // must be handled here, too.
-    if (instr->hydrogen()->IsDehoisted()) {
-      // Sign extend key because it could be a 32 bit negative value
-      // and the dehoisted address computation happens in 64 bits
-      __ movsxlq(key_reg, key_reg);
-    }
-  }
   int base_offset = instr->is_fixed_typed_array()
     ? FixedTypedArrayBase::kDataOffset - kHeapObjectTag
     : 0;
@@ -4193,20 +4179,6 @@ void LCodeGen::DoStoreKeyedExternalArray(LStoreKeyed* instr) {
 void LCodeGen::DoStoreKeyedFixedDoubleArray(LStoreKeyed* instr) {
   XMMRegister value = ToDoubleRegister(instr->value());
   LOperand* key = instr->key();
-  if (!key->IsConstantOperand()) {
-    Register key_reg = ToRegister(key);
-    // Even though the HLoad/StoreKeyedFastElement instructions force
-    // the input representation for the key to be an integer, the
-    // input gets replaced during bound check elimination with the index
-    // argument to the bounds check, which can be tagged, so that case
-    // must be handled here, too.
-    if (instr->hydrogen()->IsDehoisted()) {
-      // Sign extend key because it could be a 32 bit negative value
-      // and the dehoisted address computation happens in 64 bits
-      __ movsxlq(key_reg, key_reg);
-    }
-  }
-
   if (instr->NeedsCanonicalization()) {
     Label have_value;
 
@@ -4234,20 +4206,6 @@ void LCodeGen::DoStoreKeyedFixedDoubleArray(LStoreKeyed* instr) {
 void LCodeGen::DoStoreKeyedFixedArray(LStoreKeyed* instr) {
   HStoreKeyed* hinstr = instr->hydrogen();
   LOperand* key = instr->key();
-  if (!key->IsConstantOperand()) {
-    Register key_reg = ToRegister(key);
-    // Even though the HLoad/StoreKeyedFastElement instructions force
-    // the input representation for the key to be an integer, the
-    // input gets replaced during bound check elimination with the index
-    // argument to the bounds check, which can be tagged, so that case
-    // must be handled here, too.
-    if (hinstr->IsDehoisted()) {
-      // Sign extend key because it could be a 32 bit negative value
-      // and the dehoisted address computation happens in 64 bits
-      __ movsxlq(key_reg, key_reg);
-    }
-  }
-
   int offset = FixedArray::kHeaderSize - kHeapObjectTag;
   Representation representation = hinstr->value()->representation();
 
@@ -4305,7 +4263,7 @@ void LCodeGen::DoStoreKeyedFixedArray(LStoreKeyed* instr) {
             ? OMIT_SMI_CHECK : INLINE_SMI_CHECK;
     // Compute address of modified element and store it into key register.
     Register key_reg(ToRegister(key));
-    __ lea(key_reg, operand);
+    __ leap(key_reg, operand);
     __ RecordWrite(elements,
                    key_reg,
                    value,
@@ -4444,7 +4402,7 @@ void LCodeGen::DoDeferredStringCharCodeAt(LStringCharCodeAt* instr) {
     __ Push(index);
   }
   CallRuntimeFromDeferred(
-      Runtime::kStringCharCodeAt, 2, instr, instr->context());
+      Runtime::kHiddenStringCharCodeAt, 2, instr, instr->context());
   __ AssertSmi(rax);
   __ SmiToInteger32(rax, rax);
   __ StoreToSafepointRegisterSlot(result, rax);
@@ -4590,11 +4548,11 @@ void LCodeGen::DoDeferredNumberTagU(LNumberTagU* instr) {
 
     // NumberTagU uses the context from the frame, rather than
     // the environment's HContext or HInlinedContext value.
-    // They only call Runtime::kAllocateHeapNumber.
+    // They only call Runtime::kHiddenAllocateHeapNumber.
     // The corresponding HChange instructions are added in a phase that does
     // not have easy access to the local context.
     __ movp(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
-    __ CallRuntimeSaveDoubles(Runtime::kAllocateHeapNumber);
+    __ CallRuntimeSaveDoubles(Runtime::kHiddenAllocateHeapNumber);
     RecordSafepointWithRegisters(
         instr->pointer_map(), 0, Safepoint::kNoLazyDeopt);
     __ StoreToSafepointRegisterSlot(reg, rax);
@@ -4646,11 +4604,11 @@ void LCodeGen::DoDeferredNumberTagD(LNumberTagD* instr) {
     PushSafepointRegistersScope scope(this);
     // NumberTagD uses the context from the frame, rather than
     // the environment's HContext or HInlinedContext value.
-    // They only call Runtime::kAllocateHeapNumber.
+    // They only call Runtime::kHiddenAllocateHeapNumber.
     // The corresponding HChange instructions are added in a phase that does
     // not have easy access to the local context.
     __ movp(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
-    __ CallRuntimeSaveDoubles(Runtime::kAllocateHeapNumber);
+    __ CallRuntimeSaveDoubles(Runtime::kHiddenAllocateHeapNumber);
     RecordSafepointWithRegisters(
         instr->pointer_map(), 0, Safepoint::kNoLazyDeopt);
     __ movp(kScratchRegister, rax);
@@ -4665,8 +4623,8 @@ void LCodeGen::DoSmiTag(LSmiTag* instr) {
   Register output = ToRegister(instr->result());
   if (hchange->CheckFlag(HValue::kCanOverflow) &&
       hchange->value()->CheckFlag(HValue::kUint32)) {
-    __ testl(input, Immediate(0x80000000));
-    DeoptimizeIf(not_zero, instr->environment());
+    __ testl(input, input);
+    DeoptimizeIf(sign, instr->environment());
   }
   __ Integer32ToSmi(output, input);
   if (hchange->CheckFlag(HValue::kCanOverflow) &&
@@ -4972,7 +4930,7 @@ void LCodeGen::DoDeferredInstanceMigration(LCheckMaps* instr, Register object) {
     RecordSafepointWithRegisters(
         instr->pointer_map(), 1, Safepoint::kNoLazyDeopt);
 
-    __ testq(rax, Immediate(kSmiTagMask));
+    __ testp(rax, Immediate(kSmiTagMask));
   }
   DeoptimizeIf(zero, instr->environment());
 }
@@ -5061,7 +5019,7 @@ void LCodeGen::DoClampTToUint8(LClampTToUint8* instr) {
   // conversions.
   __ Cmp(input_reg, factory()->undefined_value());
   DeoptimizeIf(not_equal, instr->environment());
-  __ movp(input_reg, Immediate(0));
+  __ xorl(input_reg, input_reg);
   __ jmp(&done, Label::kNear);
 
   // Heap number
@@ -5202,7 +5160,7 @@ void LCodeGen::DoDeferredAllocate(LAllocate* instr) {
   __ Push(Smi::FromInt(flags));
 
   CallRuntimeFromDeferred(
-      Runtime::kAllocateInTargetSpace, 2, instr, instr->context());
+      Runtime::kHiddenAllocateInTargetSpace, 2, instr, instr->context());
   __ StoreToSafepointRegisterSlot(result, rax);
 }
 
@@ -5234,7 +5192,7 @@ void LCodeGen::DoRegExpLiteral(LRegExpLiteral* instr) {
   __ Push(Smi::FromInt(instr->hydrogen()->literal_index()));
   __ Push(instr->hydrogen()->pattern());
   __ Push(instr->hydrogen()->flags());
-  CallRuntime(Runtime::kMaterializeRegExpLiteral, 4, instr);
+  CallRuntime(Runtime::kHiddenMaterializeRegExpLiteral, 4, instr);
   __ movp(rbx, rax);
 
   __ bind(&materialized);
@@ -5246,7 +5204,7 @@ void LCodeGen::DoRegExpLiteral(LRegExpLiteral* instr) {
   __ bind(&runtime_allocate);
   __ Push(rbx);
   __ Push(Smi::FromInt(size));
-  CallRuntime(Runtime::kAllocateInNewSpace, 1, instr);
+  CallRuntime(Runtime::kHiddenAllocateInNewSpace, 1, instr);
   __ Pop(rbx);
 
   __ bind(&allocated);
@@ -5280,7 +5238,7 @@ void LCodeGen::DoFunctionLiteral(LFunctionLiteral* instr) {
     __ Push(instr->hydrogen()->shared_info());
     __ PushRoot(pretenure ? Heap::kTrueValueRootIndex :
                             Heap::kFalseValueRootIndex);
-    CallRuntime(Runtime::kNewClosure, 3, instr);
+    CallRuntime(Runtime::kHiddenNewClosure, 3, instr);
   }
 }
 
@@ -5439,7 +5397,7 @@ void LCodeGen::EnsureSpaceForLazyDeopt(int space_needed) {
 
 
 void LCodeGen::DoLazyBailout(LLazyBailout* instr) {
-  EnsureSpaceForLazyDeopt(Deoptimizer::patch_size());
+  last_lazy_deopt_pc_ = masm()->pc_offset();
   ASSERT(instr->HasEnvironment());
   LEnvironment* env = instr->environment();
   RegisterEnvironmentForDeoptimization(env, Safepoint::kLazyDeopt);
@@ -5475,7 +5433,7 @@ void LCodeGen::DoDummyUse(LDummyUse* instr) {
 void LCodeGen::DoDeferredStackCheck(LStackCheck* instr) {
   PushSafepointRegistersScope scope(this);
   __ movp(rsi, Operand(rbp, StandardFrameConstants::kContextOffset));
-  __ CallRuntimeSaveDoubles(Runtime::kStackGuard);
+  __ CallRuntimeSaveDoubles(Runtime::kHiddenStackGuard);
   RecordSafepointWithLazyDeopt(instr, RECORD_SAFEPOINT_WITH_REGISTERS, 0);
   ASSERT(instr->HasEnvironment());
   LEnvironment* env = instr->environment();
@@ -5511,10 +5469,7 @@ void LCodeGen::DoStackCheck(LStackCheck* instr) {
     CallCode(isolate()->builtins()->StackCheck(),
              RelocInfo::CODE_TARGET,
              instr);
-    EnsureSpaceForLazyDeopt(Deoptimizer::patch_size());
     __ bind(&done);
-    RegisterEnvironmentForDeoptimization(env, Safepoint::kLazyDeopt);
-    safepoints_.RecordLazyDeoptimizationIndex(env->deoptimization_index());
   } else {
     ASSERT(instr->hydrogen()->is_backwards_branch());
     // Perform stack overflow check if this goto needs it before jumping.
@@ -5555,7 +5510,7 @@ void LCodeGen::DoForInPrepareMap(LForInPrepareMap* instr) {
 
   Register null_value = rdi;
   __ LoadRoot(null_value, Heap::kNullValueRootIndex);
-  __ cmpq(rax, null_value);
+  __ cmpp(rax, null_value);
   DeoptimizeIf(equal, instr->environment());
 
   Condition cc = masm()->CheckSmi(rax);
@@ -5606,7 +5561,7 @@ void LCodeGen::DoForInCacheArray(LForInCacheArray* instr) {
 
 void LCodeGen::DoCheckMapValue(LCheckMapValue* instr) {
   Register object = ToRegister(instr->value());
-  __ cmpq(ToRegister(instr->map()),
+  __ cmpp(ToRegister(instr->map()),
           FieldOperand(object, HeapObject::kMapOffset));
   DeoptimizeIf(not_equal, instr->environment());
 }

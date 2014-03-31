@@ -102,7 +102,7 @@ class DebuggerAgent;
 #endif
 
 #if !defined(__arm__) && V8_TARGET_ARCH_ARM || \
-    !defined(__aarch64__) && V8_TARGET_ARCH_A64 || \
+    !defined(__aarch64__) && V8_TARGET_ARCH_ARM64 || \
     !defined(__mips__) && V8_TARGET_ARCH_MIPS
 class Redirection;
 class Simulator;
@@ -288,9 +288,6 @@ class ThreadLocalTop BASE_EMBEDDED {
   // Head of the list of live LookupResults.
   LookupResult* top_lookup_result_;
 
-  // Whether out of memory exceptions should be ignored.
-  bool ignore_out_of_memory_;
-
  private:
   void InitializeInternal();
 
@@ -310,7 +307,7 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 
 #if V8_TARGET_ARCH_ARM && !defined(__arm__) || \
-    V8_TARGET_ARCH_A64 && !defined(__aarch64__) || \
+    V8_TARGET_ARCH_ARM64 && !defined(__aarch64__) || \
     V8_TARGET_ARCH_MIPS && !defined(__mips__)
 
 #define ISOLATE_INIT_SIMULATOR_LIST(V)                                         \
@@ -408,7 +405,7 @@ class Isolate {
           stack_limit_(0),
           thread_state_(NULL),
 #if !defined(__arm__) && V8_TARGET_ARCH_ARM || \
-    !defined(__aarch64__) && V8_TARGET_ARCH_A64 || \
+    !defined(__aarch64__) && V8_TARGET_ARCH_ARM64 || \
     !defined(__mips__) && V8_TARGET_ARCH_MIPS
           simulator_(NULL),
 #endif
@@ -422,7 +419,7 @@ class Isolate {
     FIELD_ACCESSOR(ThreadState*, thread_state)
 
 #if !defined(__arm__) && V8_TARGET_ARCH_ARM || \
-    !defined(__aarch64__) && V8_TARGET_ARCH_A64 || \
+    !defined(__aarch64__) && V8_TARGET_ARCH_ARM64 || \
     !defined(__mips__) && V8_TARGET_ARCH_MIPS
     FIELD_ACCESSOR(Simulator*, simulator)
 #endif
@@ -438,7 +435,7 @@ class Isolate {
     ThreadState* thread_state_;
 
 #if !defined(__arm__) && V8_TARGET_ARCH_ARM || \
-    !defined(__aarch64__) && V8_TARGET_ARCH_A64 || \
+    !defined(__aarch64__) && V8_TARGET_ARCH_ARM64 || \
     !defined(__mips__) && V8_TARGET_ARCH_MIPS
     Simulator* simulator_;
 #endif
@@ -641,8 +638,7 @@ class Isolate {
   bool IsExternallyCaught();
 
   bool is_catchable_by_javascript(MaybeObject* exception) {
-    return (!exception->IsOutOfMemory()) &&
-        (exception != heap()->termination_exception());
+    return exception != heap()->termination_exception();
   }
 
   // Serializer.
@@ -721,12 +717,6 @@ class Isolate {
       int frame_limit,
       StackTrace::StackTraceOptions options);
 
-  // Tells whether the current context has experienced an out of memory
-  // exception.
-  bool is_out_of_memory();
-
-  THREAD_LOCAL_TOP_ACCESSOR(bool,  ignore_out_of_memory)
-
   void PrintCurrentStackTrace(FILE* out);
   void PrintStack(StringStream* accumulator);
   void PrintStack(FILE* out);
@@ -789,6 +779,7 @@ class Isolate {
   // Return pending location if any or unfilled structure.
   MessageLocation GetMessageLocation();
   Failure* ThrowIllegalOperation();
+  Failure* ThrowInvalidStringLength();
 
   // Promote a scheduled exception to pending. Asserts has_scheduled_exception.
   Failure* PromoteScheduledException();
@@ -1124,6 +1115,9 @@ class Isolate {
     }
     return id;
   }
+
+  // Get (and lazily initialize) the registry for per-isolate symbols.
+  Handle<JSObject> GetSymbolRegistry();
 
  private:
   Isolate();
@@ -1473,17 +1467,6 @@ class PostponeInterruptsScope BASE_EMBEDDED {
   Isolate* isolate_;
 };
 
-
-// Tells whether the native context is marked with out of memory.
-inline bool Context::has_out_of_memory() {
-  return native_context()->out_of_memory()->IsTrue();
-}
-
-
-// Mark the native context with out of memory.
-inline void Context::mark_out_of_memory() {
-  native_context()->set_out_of_memory(GetIsolate()->heap()->true_value());
-}
 
 class CodeTracer V8_FINAL : public Malloced {
  public:
