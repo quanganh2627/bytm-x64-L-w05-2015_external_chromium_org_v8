@@ -1,4 +1,4 @@
-// Copyright 2013 the V8 project authors. All rights reserved.
+// Copyright 2014 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -25,25 +25,10 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Internal object we got from native code should not be writable,
-// configurable or enumerable. One can still change its public properties, but
-// we don't use them to do actual work.
+// This test passes if it does not crash in debug mode
 
-var format = new Intl.DateTimeFormat([]);
-
-// Direct write should fail.
-format.formatter = {'zzz':'some random object'};
-
-assertFalse(format.formatter.hasOwnProperty('zzz'));
-
-// Try redefining the property.
-var didThrow = false;
-try {
-  Object.defineProperty(format, 'formatter', {value: undefined});
-} catch(e) {
-  didThrow = true;
-}
-assertTrue(didThrow);
-
-// Try deleting the property.
-assertFalse(delete format.formatter);
+arr = ['a', 'b', 'c', 'd'];
+Object.defineProperty(arr.__proto__, '0', { get: function(){} });
+Object.defineProperty(arr, '2', {get: function(){} });
+Object.observe(arr, function() {});
+arr.length = 2;

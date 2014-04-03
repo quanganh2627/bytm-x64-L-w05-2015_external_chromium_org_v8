@@ -1205,11 +1205,64 @@ void LCodeGen::DoFlooringDivByConstI(LFlooringDivByConstI* instr) {
 }
 
 
+// TODO(svenpanne) Refactor this to avoid code duplication with DoDivI.
+void LCodeGen::DoFlooringDivI(LFlooringDivI* instr) {
+  HBinaryOperation* hdiv = instr->hydrogen();
+  Register dividend = ToRegister(instr->dividend());
+  Register divisor = ToRegister(instr->divisor());
+  Register remainder = ToRegister(instr->temp());
+  Register result = ToRegister(instr->result());
+  ASSERT(dividend.is(rax));
+  ASSERT(remainder.is(rdx));
+  ASSERT(result.is(rax));
+  ASSERT(!divisor.is(rax));
+  ASSERT(!divisor.is(rdx));
+
+  // Check for x / 0.
+  if (hdiv->CheckFlag(HValue::kCanBeDivByZero)) {
+    __ testl(divisor, divisor);
+    DeoptimizeIf(zero, instr->environment());
+  }
+
+  // Check for (0 / -x) that will produce negative zero.
+  if (hdiv->CheckFlag(HValue::kBailoutOnMinusZero)) {
+    Label dividend_not_zero;
+    __ testl(dividend, dividend);
+    __ j(not_zero, &dividend_not_zero, Label::kNear);
+    __ testl(divisor, divisor);
+    DeoptimizeIf(sign, instr->environment());
+    __ bind(&dividend_not_zero);
+  }
+
+  // Check for (kMinInt / -1).
+  if (hdiv->CheckFlag(HValue::kCanOverflow)) {
+    Label dividend_not_min_int;
+    __ cmpl(dividend, Immediate(kMinInt));
+    __ j(not_zero, &dividend_not_min_int, Label::kNear);
+    __ cmpl(divisor, Immediate(-1));
+    DeoptimizeIf(zero, instr->environment());
+    __ bind(&dividend_not_min_int);
+  }
+
+  // Sign extend to rdx (= remainder).
+  __ cdq();
+  __ idivl(divisor);
+
+  Label done;
+  __ testl(remainder, remainder);
+  __ j(zero, &done, Label::kNear);
+  __ xorl(remainder, divisor);
+  __ sarl(remainder, Immediate(31));
+  __ addl(result, remainder);
+  __ bind(&done);
+}
+
+
 void LCodeGen::DoDivByPowerOf2I(LDivByPowerOf2I* instr) {
   Register dividend = ToRegister(instr->dividend());
   int32_t divisor = instr->divisor();
   Register result = ToRegister(instr->result());
-  ASSERT(divisor == kMinInt || (divisor != 0 && IsPowerOf2(Abs(divisor))));
+  ASSERT(divisor == kMinInt || IsPowerOf2(Abs(divisor)));
   ASSERT(!result.is(dividend));
 
   // Check for (0 / -x) that will produce negative zero.
@@ -1272,15 +1325,15 @@ void LCodeGen::DoDivByConstI(LDivByConstI* instr) {
 }
 
 
+// TODO(svenpanne) Refactor this to avoid code duplication with DoFlooringDivI.
 void LCodeGen::DoDivI(LDivI* instr) {
   HBinaryOperation* hdiv = instr->hydrogen();
-  Register dividend = ToRegister(instr->left());
-  Register divisor = ToRegister(instr->right());
+  Register dividend = ToRegister(instr->dividend());
+  Register divisor = ToRegister(instr->divisor());
   Register remainder = ToRegister(instr->temp());
-  Register result = ToRegister(instr->result());
   ASSERT(dividend.is(rax));
   ASSERT(remainder.is(rdx));
-  ASSERT(result.is(rax));
+  ASSERT(ToRegister(instr->result()).is(rax));
   ASSERT(!divisor.is(rax));
   ASSERT(!divisor.is(rdx));
 
@@ -1314,15 +1367,7 @@ void LCodeGen::DoDivI(LDivI* instr) {
   __ cdq();
   __ idivl(divisor);
 
-  if (hdiv->IsMathFloorOfDiv()) {
-    Label done;
-    __ testl(remainder, remainder);
-    __ j(zero, &done, Label::kNear);
-    __ xorl(remainder, divisor);
-    __ sarl(remainder, Immediate(31));
-    __ addl(result, remainder);
-    __ bind(&done);
-  } else if (!hdiv->CheckFlag(HValue::kAllUsesTruncatingToInt32)) {
+  if (!hdiv->CheckFlag(HValue::kAllUsesTruncatingToInt32)) {
     // Deoptimize if remainder is not 0.
     __ testl(remainder, remainder);
     DeoptimizeIf(not_zero, instr->environment());
@@ -1559,7 +1604,7 @@ void LCodeGen::DoShiftI(LShiftI* instr) {
       case Token::SHL:
         if (shift_count != 0) {
           if (instr->hydrogen_value()->representation().IsSmi()) {
-            __ shl(ToRegister(left), Immediate(shift_count));
+            __ shlp(ToRegister(left), Immediate(shift_count));
           } else {
             __ shll(ToRegister(left), Immediate(shift_count));
           }
@@ -1775,6 +1820,7 @@ void LCodeGen::DoAddI(LAddI* instr) {
 
   if (LAddI::UseLea(instr->hydrogen()) && !left->Equals(instr->result())) {
     if (right->IsConstantOperand()) {
+      ASSERT(!target_rep.IsSmi());  // No support for smi-immediates.
       int32_t offset = ToInteger32(LConstantOperand::cast(right));
       if (is_p) {
         __ leap(ToRegister(instr->result()),
@@ -1793,6 +1839,7 @@ void LCodeGen::DoAddI(LAddI* instr) {
     }
   } else {
     if (right->IsConstantOperand()) {
+      ASSERT(!target_rep.IsSmi());  // No support for smi-immediates.
       if (is_p) {
         __ addp(ToRegister(left),
                 Immediate(ToInteger32(LConstantOperand::cast(right))));
@@ -2706,7 +2753,7 @@ void LCodeGen::DoReturn(LReturn* instr) {
     __ SmiToInteger32(reg, reg);
     Register return_addr_reg = reg.is(rcx) ? rbx : rcx;
     __ PopReturnAddressTo(return_addr_reg);
-    __ shl(reg, Immediate(kPointerSizeLog2));
+    __ shlp(reg, Immediate(kPointerSizeLog2));
     __ addp(rsp, reg);
     __ jmp(return_addr_reg);
   }
@@ -3470,8 +3517,8 @@ void LCodeGen::DoDeferredMathAbsTaggedHeapNumber(LMathAbs* instr) {
 
   __ bind(&allocated);
   __ movq(tmp2, FieldOperand(input_reg, HeapNumber::kValueOffset));
-  __ shl(tmp2, Immediate(1));
-  __ shr(tmp2, Immediate(1));
+  __ shlq(tmp2, Immediate(1));
+  __ shrq(tmp2, Immediate(1));
   __ movq(FieldOperand(tmp, HeapNumber::kValueOffset), tmp2);
   __ StoreToSafepointRegisterSlot(input_reg, tmp);
 
@@ -4318,17 +4365,14 @@ void LCodeGen::DoTransitionElementsKind(LTransitionElementsKind* instr) {
     __ RecordWriteField(object_reg, HeapObject::kMapOffset, new_map_reg,
                         ToRegister(instr->temp()), kDontSaveFPRegs);
   } else {
+    ASSERT(object_reg.is(rax));
     ASSERT(ToRegister(instr->context()).is(rsi));
     PushSafepointRegistersScope scope(this);
-    if (!object_reg.is(rax)) {
-      __ movp(rax, object_reg);
-    }
     __ Move(rbx, to_map);
     bool is_js_array = from_map->instance_type() == JS_ARRAY_TYPE;
     TransitionElementsKindStub stub(from_kind, to_kind, is_js_array);
     __ CallStub(&stub);
-    RecordSafepointWithRegisters(
-        instr->pointer_map(), 0, Safepoint::kNoLazyDeopt);
+    RecordSafepointWithLazyDeopt(instr, RECORD_SAFEPOINT_WITH_REGISTERS, 0);
   }
   __ bind(&not_applicable);
 }
@@ -5042,7 +5086,7 @@ void LCodeGen::DoDoubleBits(LDoubleBits* instr) {
   Register result_reg = ToRegister(instr->result());
   if (instr->hydrogen()->bits() == HDoubleBits::HIGH) {
     __ movq(result_reg, value_reg);
-    __ shr(result_reg, Immediate(32));
+    __ shrq(result_reg, Immediate(32));
   } else {
     __ movd(result_reg, value_reg);
   }
@@ -5114,7 +5158,7 @@ void LCodeGen::DoAllocate(LAllocate* instr) {
       __ movl(temp, Immediate((size / kPointerSize) - 1));
     } else {
       temp = ToRegister(instr->size());
-      __ sar(temp, Immediate(kPointerSizeLog2));
+      __ sarp(temp, Immediate(kPointerSizeLog2));
       __ decl(temp);
     }
     Label loop;
@@ -5567,11 +5611,55 @@ void LCodeGen::DoCheckMapValue(LCheckMapValue* instr) {
 }
 
 
+void LCodeGen::DoDeferredLoadMutableDouble(LLoadFieldByIndex* instr,
+                                           Register object,
+                                           Register index) {
+  PushSafepointRegistersScope scope(this);
+  __ Push(object);
+  __ Push(index);
+  __ xorp(rsi, rsi);
+  __ CallRuntimeSaveDoubles(Runtime::kLoadMutableDouble);
+  RecordSafepointWithRegisters(
+      instr->pointer_map(), 2, Safepoint::kNoLazyDeopt);
+  __ StoreToSafepointRegisterSlot(object, rax);
+}
+
+
 void LCodeGen::DoLoadFieldByIndex(LLoadFieldByIndex* instr) {
+  class DeferredLoadMutableDouble V8_FINAL : public LDeferredCode {
+   public:
+    DeferredLoadMutableDouble(LCodeGen* codegen,
+                              LLoadFieldByIndex* instr,
+                              Register object,
+                              Register index)
+        : LDeferredCode(codegen),
+          instr_(instr),
+          object_(object),
+          index_(index) {
+    }
+    virtual void Generate() V8_OVERRIDE {
+      codegen()->DoDeferredLoadMutableDouble(instr_, object_, index_);
+    }
+    virtual LInstruction* instr() V8_OVERRIDE { return instr_; }
+   private:
+    LLoadFieldByIndex* instr_;
+    Register object_;
+    Register index_;
+  };
+
   Register object = ToRegister(instr->object());
   Register index = ToRegister(instr->index());
 
+  DeferredLoadMutableDouble* deferred;
+  deferred = new(zone()) DeferredLoadMutableDouble(this, instr, object, index);
+
   Label out_of_object, done;
+  __ Move(kScratchRegister, Smi::FromInt(1));
+  __ testp(index, kScratchRegister);
+  __ j(not_zero, deferred->entry());
+
+  __ sarp(index, Immediate(1));
+
   __ SmiToInteger32(index, index);
   __ cmpl(index, Immediate(0));
   __ j(less, &out_of_object, Label::kNear);
@@ -5589,6 +5677,7 @@ void LCodeGen::DoLoadFieldByIndex(LLoadFieldByIndex* instr) {
                                index,
                                times_pointer_size,
                                FixedArray::kHeaderSize - kPointerSize));
+  __ bind(deferred->exit());
   __ bind(&done);
 }
 

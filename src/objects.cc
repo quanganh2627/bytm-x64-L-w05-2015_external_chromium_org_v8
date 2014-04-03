@@ -487,14 +487,18 @@ MaybeObject* JSProxy::GetPropertyWithHandler(Object* receiver_raw,
 }
 
 
-Handle<Object> Object::GetProperty(Handle<Object> object,
-                                   Handle<Name> name) {
-  // TODO(rossberg): The index test should not be here but in the GetProperty
-  // method (or somewhere else entirely). Needs more global clean-up.
+Handle<Object> Object::GetPropertyOrElement(Handle<Object> object,
+                                            Handle<Name> name) {
   uint32_t index;
   Isolate* isolate = name->GetIsolate();
   if (name->AsArrayIndex(&index)) return GetElement(isolate, object, index);
-  CALL_HEAP_FUNCTION(isolate, object->GetProperty(*name), Object);
+  return GetProperty(object, name);
+}
+
+
+Handle<Object> Object::GetProperty(Handle<Object> object,
+                                   Handle<Name> name) {
+  CALL_HEAP_FUNCTION(name->GetIsolate(), object->GetProperty(*name), Object);
 }
 
 
@@ -1280,34 +1284,39 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   // In either case we resort to a short external string instead, omitting
   // the field caching the address of the backing store.  When we encounter
   // short external strings in generated code, we need to bailout to runtime.
+  Map* new_map;
   if (size < ExternalString::kSize ||
       heap->old_pointer_space()->Contains(this)) {
-    this->set_map_no_write_barrier(
-        is_internalized
-            ? (is_ascii
-                ? heap->
-                    short_external_internalized_string_with_one_byte_data_map()
-                : heap->short_external_internalized_string_map())
-            : (is_ascii
-                ? heap->short_external_string_with_one_byte_data_map()
-                : heap->short_external_string_map()));
+    new_map = is_internalized
+        ? (is_ascii
+            ? heap->
+                short_external_internalized_string_with_one_byte_data_map()
+            : heap->short_external_internalized_string_map())
+        : (is_ascii
+            ? heap->short_external_string_with_one_byte_data_map()
+            : heap->short_external_string_map());
   } else {
-    this->set_map_no_write_barrier(
-        is_internalized
-            ? (is_ascii
-                ? heap->external_internalized_string_with_one_byte_data_map()
-                : heap->external_internalized_string_map())
-            : (is_ascii
-                ? heap->external_string_with_one_byte_data_map()
-                : heap->external_string_map()));
+    new_map = is_internalized
+        ? (is_ascii
+            ? heap->external_internalized_string_with_one_byte_data_map()
+            : heap->external_internalized_string_map())
+        : (is_ascii
+            ? heap->external_string_with_one_byte_data_map()
+            : heap->external_string_map());
   }
+
+  // Byte size of the external String object.
+  int new_size = this->SizeFromMap(new_map);
+  heap->CreateFillerObjectAt(this->address() + new_size, size - new_size);
+
+  // We are storing the new map using release store after creating a filler for
+  // the left-over space to avoid races with the sweeper thread.
+  this->synchronized_set_map(new_map);
+
   ExternalTwoByteString* self = ExternalTwoByteString::cast(this);
   self->set_resource(resource);
   if (is_internalized) self->Hash();  // Force regeneration of the hash value.
 
-  // Fill the remainder of the string with dead wood.
-  int new_size = this->Size();  // Byte size of the external String object.
-  heap->CreateFillerObjectAt(this->address() + new_size, size - new_size);
   heap->AdjustLiveBytes(this->address(), new_size - size, Heap::FROM_MUTATOR);
   return true;
 }
@@ -1347,23 +1356,30 @@ bool String::MakeExternal(v8::String::ExternalAsciiStringResource* resource) {
   // In either case we resort to a short external string instead, omitting
   // the field caching the address of the backing store.  When we encounter
   // short external strings in generated code, we need to bailout to runtime.
+  Map* new_map;
   if (size < ExternalString::kSize ||
       heap->old_pointer_space()->Contains(this)) {
-    this->set_map_no_write_barrier(
-        is_internalized ? heap->short_external_ascii_internalized_string_map()
-                        : heap->short_external_ascii_string_map());
+    new_map = is_internalized
+        ? heap->short_external_ascii_internalized_string_map()
+        : heap->short_external_ascii_string_map();
   } else {
-    this->set_map_no_write_barrier(
-        is_internalized ? heap->external_ascii_internalized_string_map()
-                        : heap->external_ascii_string_map());
+    new_map = is_internalized
+        ? heap->external_ascii_internalized_string_map()
+        : heap->external_ascii_string_map();
   }
+
+  // Byte size of the external String object.
+  int new_size = this->SizeFromMap(new_map);
+  heap->CreateFillerObjectAt(this->address() + new_size, size - new_size);
+
+  // We are storing the new map using release store after creating a filler for
+  // the left-over space to avoid races with the sweeper thread.
+  this->synchronized_set_map(new_map);
+
   ExternalAsciiString* self = ExternalAsciiString::cast(this);
   self->set_resource(resource);
   if (is_internalized) self->Hash();  // Force regeneration of the hash value.
 
-  // Fill the remainder of the string with dead wood.
-  int new_size = this->Size();  // Byte size of the external String object.
-  heap->CreateFillerObjectAt(this->address() + new_size, size - new_size);
   heap->AdjustLiveBytes(this->address(), new_size - size, Heap::FROM_MUTATOR);
   return true;
 }
@@ -2297,7 +2313,9 @@ static void RightTrimFixedArray(Heap* heap, FixedArray* elms, int to_trim) {
   // we still do it.
   heap->CreateFillerObjectAt(new_end, size_delta);
 
-  elms->set_length(len - to_trim);
+  // We are storing the new length using release store after creating a filler
+  // for the left-over space to avoid races with the sweeper thread.
+  elms->synchronized_set_length(len - to_trim);
 
   heap->AdjustLiveBytes(elms->address(), -size_delta, mode);
 
@@ -2372,7 +2390,9 @@ void JSObject::MigrateToMap(Handle<JSObject> object, Handle<Map> new_map) {
   // converted to doubles.
   if (!old_map->InstancesNeedRewriting(
           *new_map, number_of_fields, inobject, unused)) {
-    object->set_map(*new_map);
+    // Writing the new map here does not require synchronization since it does
+    // not change the actual object size.
+    object->synchronized_set_map(*new_map);
     return;
   }
 
@@ -2442,6 +2462,11 @@ void JSObject::MigrateToMap(Handle<JSObject> object, Handle<Map> new_map) {
   int instance_size_delta = old_map->instance_size() - new_instance_size;
   ASSERT(instance_size_delta >= 0);
   Address address = object->address() + new_instance_size;
+
+  // The trimming is performed on a newly allocated object, which is on a
+  // fresly allocated page or on an already swept page. Hence, the sweeper
+  // thread can not get confused with the filler creation. No synchronization
+  // needed.
   isolate->heap()->CreateFillerObjectAt(address, instance_size_delta);
 
   // If there are properties in the new backing store, trim it to the correct
@@ -2451,6 +2476,10 @@ void JSObject::MigrateToMap(Handle<JSObject> object, Handle<Map> new_map) {
     object->set_properties(*array);
   }
 
+  // The trimming is performed on a newly allocated object, which is on a
+  // fresly allocated page or on an already swept page. Hence, the sweeper
+  // thread can not get confused with the filler creation. No synchronization
+  // needed.
   object->set_map(*new_map);
 }
 
@@ -2722,8 +2751,8 @@ Handle<Map> Map::GeneralizeRepresentation(Handle<Map> old_map,
   }
 
   Handle<DescriptorArray> new_descriptors = DescriptorArray::Merge(
-      updated_descriptors, verbatim, valid, descriptors, modify_index,
-      store_mode, old_descriptors);
+      updated, verbatim, valid, descriptors, modify_index,
+      store_mode, old_map);
   ASSERT(store_mode == ALLOW_AS_CONSTANT ||
          new_descriptors->GetDetails(modify_index).type() == FIELD);
 
@@ -3602,9 +3631,8 @@ Handle<Object> JSProxy::SetPropertyViaPrototypesWithHandler(
   Handle<String> configurable_name =
       isolate->factory()->InternalizeOneByteString(
           STATIC_ASCII_VECTOR("configurable_"));
-  Handle<Object> configurable(
-      v8::internal::GetProperty(isolate, desc, configurable_name));
-  ASSERT(!isolate->has_pending_exception());
+  Handle<Object> configurable = Object::GetProperty(desc, configurable_name);
+  ASSERT(!configurable.is_null());
   ASSERT(configurable->IsTrue() || configurable->IsFalse());
   if (configurable->IsFalse()) {
     Handle<String> trap =
@@ -3622,17 +3650,15 @@ Handle<Object> JSProxy::SetPropertyViaPrototypesWithHandler(
   Handle<String> hasWritable_name =
       isolate->factory()->InternalizeOneByteString(
           STATIC_ASCII_VECTOR("hasWritable_"));
-  Handle<Object> hasWritable(
-      v8::internal::GetProperty(isolate, desc, hasWritable_name));
-  ASSERT(!isolate->has_pending_exception());
+  Handle<Object> hasWritable = Object::GetProperty(desc, hasWritable_name);
+  ASSERT(!hasWritable.is_null());
   ASSERT(hasWritable->IsTrue() || hasWritable->IsFalse());
   if (hasWritable->IsTrue()) {
     Handle<String> writable_name =
         isolate->factory()->InternalizeOneByteString(
             STATIC_ASCII_VECTOR("writable_"));
-    Handle<Object> writable(
-        v8::internal::GetProperty(isolate, desc, writable_name));
-    ASSERT(!isolate->has_pending_exception());
+    Handle<Object> writable = Object::GetProperty(desc, writable_name);
+    ASSERT(!writable.is_null());
     ASSERT(writable->IsTrue() || writable->IsFalse());
     *done = writable->IsFalse();
     if (!*done) return isolate->factory()->the_hole_value();
@@ -3647,8 +3673,8 @@ Handle<Object> JSProxy::SetPropertyViaPrototypesWithHandler(
   // We have an AccessorDescriptor.
   Handle<String> set_name = isolate->factory()->InternalizeOneByteString(
       STATIC_ASCII_VECTOR("set_"));
-  Handle<Object> setter(v8::internal::GetProperty(isolate, desc, set_name));
-  ASSERT(!isolate->has_pending_exception());
+  Handle<Object> setter = Object::GetProperty(desc, set_name);
+  ASSERT(!setter.is_null());
   if (!setter->IsUndefined()) {
     // TODO(rossberg): nicer would be to cast to some JSCallable here...
     return SetPropertyWithDefinedSetter(
@@ -3726,21 +3752,21 @@ PropertyAttributes JSProxy::GetPropertyAttributeWithHandler(
   // Convert result to PropertyAttributes.
   Handle<String> enum_n = isolate->factory()->InternalizeOneByteString(
       STATIC_ASCII_VECTOR("enumerable_"));
-  Handle<Object> enumerable(v8::internal::GetProperty(isolate, desc, enum_n));
-  if (isolate->has_pending_exception()) return NONE;
+  Handle<Object> enumerable = Object::GetProperty(desc, enum_n);
+  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, enumerable, NONE);
   Handle<String> conf_n = isolate->factory()->InternalizeOneByteString(
       STATIC_ASCII_VECTOR("configurable_"));
-  Handle<Object> configurable(v8::internal::GetProperty(isolate, desc, conf_n));
-  if (isolate->has_pending_exception()) return NONE;
+  Handle<Object> configurable = Object::GetProperty(desc, conf_n);
+  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, configurable, NONE);
   Handle<String> writ_n = isolate->factory()->InternalizeOneByteString(
       STATIC_ASCII_VECTOR("writable_"));
-  Handle<Object> writable(v8::internal::GetProperty(isolate, desc, writ_n));
-  if (isolate->has_pending_exception()) return NONE;
+  Handle<Object> writable = Object::GetProperty(desc, writ_n);
+  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, writable, NONE);
   if (!writable->BooleanValue()) {
     Handle<String> set_n = isolate->factory()->InternalizeOneByteString(
         STATIC_ASCII_VECTOR("set_"));
-    Handle<Object> setter(v8::internal::GetProperty(isolate, desc, set_n));
-    if (isolate->has_pending_exception()) return NONE;
+    Handle<Object> setter = Object::GetProperty(desc, set_n);
+    RETURN_IF_EMPTY_HANDLE_VALUE(isolate, setter, NONE);
     writable = isolate->factory()->ToBoolean(!setter->IsUndefined());
   }
 
@@ -3803,8 +3829,8 @@ MUST_USE_RESULT Handle<Object> JSProxy::CallTrap(const char* name,
   Handle<Object> handler(this->handler(), isolate);
 
   Handle<String> trap_name = isolate->factory()->InternalizeUtf8String(name);
-  Handle<Object> trap(v8::internal::GetProperty(isolate, handler, trap_name));
-  if (isolate->has_pending_exception()) return trap;
+  Handle<Object> trap = Object::GetPropertyOrElement(handler, trap_name);
+  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, trap, Handle<Object>());
 
   if (trap->IsUndefined()) {
     if (derived.is_null()) {
@@ -4070,7 +4096,7 @@ Handle<Object> JSObject::SetPropertyForResult(Handle<JSObject> object,
   bool is_observed = object->map()->is_observed() &&
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup->IsDataProperty()) {
-    old_value = Object::GetProperty(object, name);
+    old_value = Object::GetPropertyOrElement(object, name);
     CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
   }
 
@@ -4116,7 +4142,7 @@ Handle<Object> JSObject::SetPropertyForResult(Handle<JSObject> object,
       LookupResult new_lookup(isolate);
       object->LocalLookup(*name, &new_lookup, true);
       if (new_lookup.IsDataProperty()) {
-        Handle<Object> new_value = Object::GetProperty(object, name);
+        Handle<Object> new_value = Object::GetPropertyOrElement(object, name);
         CHECK_NOT_EMPTY_HANDLE(isolate, new_value);
         if (!new_value->SameValue(*old_value)) {
           EnqueueChangeRecord(object, "update", name, old_value);
@@ -4195,7 +4221,7 @@ Handle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup.IsProperty()) {
     if (lookup.IsDataProperty()) {
-      old_value = Object::GetProperty(object, name);
+      old_value = Object::GetPropertyOrElement(object, name);
       CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
     }
     old_attributes = lookup.GetAttributes();
@@ -4241,7 +4267,7 @@ Handle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
       object->LocalLookup(*name, &new_lookup, true);
       bool value_changed = false;
       if (new_lookup.IsDataProperty()) {
-        Handle<Object> new_value = Object::GetProperty(object, name);
+        Handle<Object> new_value = Object::GetPropertyOrElement(object, name);
         CHECK_NOT_EMPTY_HANDLE(isolate, new_value);
         value_changed = !old_value->SameValue(*new_value);
       }
@@ -4644,7 +4670,10 @@ void JSObject::NormalizeProperties(Handle<JSObject> object,
                         -instance_size_delta,
                         Heap::FROM_MUTATOR);
 
-  object->set_map(*new_map);
+  // We are storing the new map using release store after creating a filler for
+  // the left-over space to avoid races with the sweeper thread.
+  object->synchronized_set_map(*new_map);
+
   map->NotifyLeafMapLayoutChange();
 
   object->set_properties(*dictionary);
@@ -4668,6 +4697,13 @@ void JSObject::TransformToFastProperties(Handle<JSObject> object,
       object->GetIsolate(),
       object->property_dictionary()->TransformPropertiesToFastFor(
           *object, unused_property_fields));
+}
+
+
+void JSObject::ResetElements(Handle<JSObject> object) {
+  CALL_HEAP_FUNCTION_VOID(
+      object->GetIsolate(),
+      object->ResetElements());
 }
 
 
@@ -5231,7 +5267,7 @@ Handle<Object> JSObject::DeleteProperty(Handle<JSObject> object,
   bool is_observed = object->map()->is_observed() &&
                      *name != isolate->heap()->hidden_string();
   if (is_observed && lookup.IsDataProperty()) {
-    old_value = Object::GetProperty(object, name);
+    old_value = Object::GetPropertyOrElement(object, name);
     CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
   }
   Handle<Object> result;
@@ -5637,6 +5673,15 @@ Handle<JSObject> JSObject::Copy(Handle<JSObject> object) {
   Isolate* isolate = object->GetIsolate();
   CALL_HEAP_FUNCTION(isolate,
                      isolate->heap()->CopyJSObject(*object), JSObject);
+}
+
+
+Handle<Object> JSObject::FastPropertyAt(Handle<JSObject> object,
+                                        Representation representation,
+                                        int index) {
+  Isolate* isolate = object->GetIsolate();
+  CALL_HEAP_FUNCTION(isolate,
+                     object->FastPropertyAt(representation, index), Object);
 }
 
 
@@ -6339,7 +6384,7 @@ void JSObject::DefineAccessor(Handle<JSObject> object,
       object->LocalLookup(*name, &lookup, true);
       preexists = lookup.IsProperty();
       if (preexists && lookup.IsDataProperty()) {
-        old_value = Object::GetProperty(object, name);
+        old_value = Object::GetPropertyOrElement(object, name);
         CHECK_NOT_EMPTY_HANDLE(isolate, old_value);
       }
     }
@@ -7968,97 +8013,89 @@ void DescriptorArray::CopyFrom(int dst_index,
 }
 
 
-Handle<DescriptorArray> DescriptorArray::Merge(Handle<DescriptorArray> desc,
+// Creates a new descriptor array by merging the descriptor array of |right_map|
+// into the (at least partly) updated descriptor array of |left_map|.
+// The method merges two descriptor array in three parts. Both descriptor arrays
+// are identical up to |verbatim|. They also overlap in keys up to |valid|.
+// Between |verbatim| and |valid|, the resulting descriptor type as well as the
+// representation are generalized from both |left_map| and |right_map|. Beyond
+// |valid|, the descriptors are copied verbatim from |right_map| up to
+// |new_size|.
+// In case of incompatible types, the type and representation of |right_map| is
+// used.
+Handle<DescriptorArray> DescriptorArray::Merge(Handle<Map> left_map,
                                                int verbatim,
                                                int valid,
                                                int new_size,
                                                int modify_index,
                                                StoreMode store_mode,
-                                               Handle<DescriptorArray> other) {
-  CALL_HEAP_FUNCTION(desc->GetIsolate(),
-                     desc->Merge(verbatim, valid, new_size, modify_index,
-                                 store_mode, *other),
-                     DescriptorArray);
-}
-
-
-// Generalize the |other| descriptor array by merging it into the (at least
-// partly) updated |this| descriptor array.
-// The method merges two descriptor array in three parts. Both descriptor arrays
-// are identical up to |verbatim|. They also overlap in keys up to |valid|.
-// Between |verbatim| and |valid|, the resulting descriptor type as well as the
-// representation are generalized from both |this| and |other|. Beyond |valid|,
-// the descriptors are copied verbatim from |other| up to |new_size|.
-// In case of incompatible types, the type and representation of |other| is
-// used.
-MaybeObject* DescriptorArray::Merge(int verbatim,
-                                    int valid,
-                                    int new_size,
-                                    int modify_index,
-                                    StoreMode store_mode,
-                                    DescriptorArray* other) {
+                                               Handle<Map> right_map) {
   ASSERT(verbatim <= valid);
   ASSERT(valid <= new_size);
 
-  DescriptorArray* result;
   // Allocate a new descriptor array large enough to hold the required
   // descriptors, with minimally the exact same size as this descriptor array.
-  MaybeObject* maybe_descriptors = DescriptorArray::Allocate(
-      GetIsolate(), new_size,
-      Max(new_size, other->number_of_descriptors()) - new_size);
-  if (!maybe_descriptors->To(&result)) return maybe_descriptors;
-  ASSERT(result->length() > length() ||
+  Factory* factory = left_map->GetIsolate()->factory();
+  Handle<DescriptorArray> left(left_map->instance_descriptors());
+  Handle<DescriptorArray> right(right_map->instance_descriptors());
+  Handle<DescriptorArray> result = factory->NewDescriptorArray(
+      new_size, Max(new_size, right->number_of_descriptors()) - new_size);
+  ASSERT(result->length() > left->length() ||
          result->NumberOfSlackDescriptors() > 0 ||
-         result->number_of_descriptors() == other->number_of_descriptors());
+         result->number_of_descriptors() == right->number_of_descriptors());
   ASSERT(result->number_of_descriptors() == new_size);
-
-  DescriptorArray::WhitenessWitness witness(result);
 
   int descriptor;
 
   // 0 -> |verbatim|
   int current_offset = 0;
   for (descriptor = 0; descriptor < verbatim; descriptor++) {
-    if (GetDetails(descriptor).type() == FIELD) current_offset++;
-    result->CopyFrom(descriptor, other, descriptor, witness);
+    if (left->GetDetails(descriptor).type() == FIELD) current_offset++;
+    Descriptor d(right->GetKey(descriptor),
+                 right->GetValue(descriptor),
+                 right->GetDetails(descriptor));
+    result->Set(descriptor, &d);
   }
 
   // |verbatim| -> |valid|
   for (; descriptor < valid; descriptor++) {
-    Name* key = GetKey(descriptor);
-    PropertyDetails details = GetDetails(descriptor);
-    PropertyDetails other_details = other->GetDetails(descriptor);
-
-    if (details.type() == FIELD || other_details.type() == FIELD ||
+    PropertyDetails left_details = left->GetDetails(descriptor);
+    PropertyDetails right_details = right->GetDetails(descriptor);
+    if (left_details.type() == FIELD || right_details.type() == FIELD ||
         (store_mode == FORCE_FIELD && descriptor == modify_index) ||
-        (details.type() == CONSTANT &&
-         other_details.type() == CONSTANT &&
-         GetValue(descriptor) != other->GetValue(descriptor))) {
-      Representation representation =
-          details.representation().generalize(other_details.representation());
-      FieldDescriptor d(key,
+        (left_details.type() == CONSTANT &&
+         right_details.type() == CONSTANT &&
+         left->GetValue(descriptor) != right->GetValue(descriptor))) {
+      Representation representation = left_details.representation().generalize(
+          right_details.representation());
+      FieldDescriptor d(left->GetKey(descriptor),
                         current_offset++,
-                        other_details.attributes(),
+                        right_details.attributes(),
                         representation);
-      result->Set(descriptor, &d, witness);
+      result->Set(descriptor, &d);
     } else {
-      result->CopyFrom(descriptor, other, descriptor, witness);
+      Descriptor d(right->GetKey(descriptor),
+                   right->GetValue(descriptor),
+                   right_details);
+      result->Set(descriptor, &d);
     }
   }
 
   // |valid| -> |new_size|
   for (; descriptor < new_size; descriptor++) {
-    PropertyDetails details = other->GetDetails(descriptor);
-    if (details.type() == FIELD ||
+    PropertyDetails right_details = right->GetDetails(descriptor);
+    if (right_details.type() == FIELD ||
         (store_mode == FORCE_FIELD && descriptor == modify_index)) {
-      Name* key = other->GetKey(descriptor);
-      FieldDescriptor d(key,
+      FieldDescriptor d(right->GetKey(descriptor),
                         current_offset++,
-                        details.attributes(),
-                        details.representation());
-      result->Set(descriptor, &d, witness);
+                        right_details.attributes(),
+                        right_details.representation());
+      result->Set(descriptor, &d);
     } else {
-      result->CopyFrom(descriptor, other, descriptor, witness);
+      Descriptor d(right->GetKey(descriptor),
+                   right->GetValue(descriptor),
+                   right_details);
+      result->Set(descriptor, &d);
     }
   }
 
@@ -9156,7 +9193,6 @@ Handle<String> SeqString::Truncate(Handle<SeqString> string, int new_length) {
   }
 
   int delta = old_size - new_size;
-  string->set_length(new_length);
 
   Address start_of_string = string->address();
   ASSERT_OBJECT_ALIGNED(start_of_string);
@@ -9174,6 +9210,10 @@ Handle<String> SeqString::Truncate(Handle<SeqString> string, int new_length) {
     heap->CreateFillerObjectAt(start_of_string + new_size, delta);
   }
   heap->AdjustLiveBytes(start_of_string, -delta, Heap::FROM_MUTATOR);
+
+  // We are storing the new length using release store after creating a filler
+  // for the left-over space to avoid races with the sweeper thread.
+  string->synchronized_set_length(new_length);
 
   if (new_length == 0) return heap->isolate()->factory()->empty_string();
   return string;
@@ -11181,7 +11221,7 @@ Handle<FixedArray> JSObject::SetFastElementsCapacityAndLength(
         ? GetElementsTransitionMap(object, new_elements_kind)
         : handle(object->map());
     object->ValidateElements();
-    object->set_map_and_elements(*new_map, *new_elements);
+    JSObject::SetMapAndElements(object, new_map, new_elements);
 
     // Transition through the allocation site as well if present.
     JSObject::UpdateAllocationSite(object, new_elements_kind);
@@ -11227,7 +11267,7 @@ void JSObject::SetFastDoubleElementsCapacityAndLength(Handle<JSObject> object,
   accessor->CopyElements(object, elems, elements_kind);
 
   object->ValidateElements();
-  object->set_map_and_elements(*new_map, *elems);
+  JSObject::SetMapAndElements(object, new_map, elems);
 
   if (FLAG_trace_elements_transitions) {
     PrintElementsTransition(stdout, object, elements_kind, old_elements,
@@ -11376,6 +11416,9 @@ Handle<Object> JSArray::SetElementsLength(Handle<JSArray> array,
   BeginPerformSplice(array);
 
   for (int i = 0; i < indices.length(); ++i) {
+    // For deletions where the property was an accessor, old_values[i]
+    // will be the hole, which instructs EnqueueChangeRecord to elide
+    // the "oldValue" property.
     JSObject::EnqueueChangeRecord(
         array, "delete", isolate->factory()->Uint32ToString(indices[i]),
         old_values[i]);
@@ -11392,6 +11435,9 @@ Handle<Object> JSArray::SetElementsLength(Handle<JSArray> array,
   Handle<JSArray> deleted = isolate->factory()->NewJSArray(0);
   if (delete_count > 0) {
     for (int i = indices.length() - 1; i >= 0; i--) {
+      // Skip deletions where the property was an accessor, leaving holes
+      // in the array of old values.
+      if (old_values[i]->IsTheHole()) continue;
       JSObject::SetElement(deleted, indices[i] - index, old_values[i], NONE,
                            SLOPPY);
     }
@@ -12410,7 +12456,8 @@ Handle<Object> JSObject::SetElement(Handle<JSObject> object,
                                     SetPropertyMode set_mode) {
   Isolate* isolate = object->GetIsolate();
 
-  if (object->HasExternalArrayElements()) {
+  if (object->HasExternalArrayElements() ||
+      object->HasFixedTypedArrayElements()) {
     if (!value->IsNumber() && !value->IsUndefined()) {
       bool has_exception;
       Handle<Object> number =
@@ -13825,9 +13872,6 @@ class InternalizedStringKey : public HashTableKey {
   }
 
   MaybeObject* AsObject(Heap* heap) {
-    // Attempt to flatten the string, so that internalized strings will most
-    // often be flat strings.
-    string_ = string_->TryFlattenGetString();
     // Internalize the string if possible.
     Map* map = heap->InternalizedStringMapForString(string_);
     if (map != NULL) {
@@ -13867,7 +13911,7 @@ MaybeObject* HashTable<Shape, Key>::Allocate(Heap* heap,
                                              int at_least_space_for,
                                              MinimumCapacity capacity_option,
                                              PretenureFlag pretenure) {
-  ASSERT(!capacity_option || IS_POWER_OF_TWO(at_least_space_for));
+  ASSERT(!capacity_option || IsPowerOf2(at_least_space_for));
   int capacity = (capacity_option == USE_CUSTOM_MINIMUM_CAPACITY)
                      ? at_least_space_for
                      : ComputeCapacity(at_least_space_for);
@@ -14360,7 +14404,7 @@ Handle<Object> JSObject::PrepareElementsForSort(Handle<JSObject> object,
     dict->CopyValuesTo(*fast_elements);
     object->ValidateElements();
 
-    object->set_map_and_elements(*new_map, *fast_elements);
+    JSObject::SetMapAndElements(object, new_map, fast_elements);
   } else if (object->HasExternalArrayElements() ||
              object->HasFixedTypedArrayElements()) {
     // Typed arrays cannot have holes or undefined elements.
@@ -16354,7 +16398,7 @@ Handle<JSArrayBuffer> JSTypedArray::MaterializeArrayBuffer(
   buffer->set_weak_first_view(*typed_array);
   ASSERT(typed_array->weak_next() == isolate->heap()->undefined_value());
   typed_array->set_buffer(*buffer);
-  typed_array->set_map_and_elements(*new_map, *new_elements);
+  JSObject::SetMapAndElements(typed_array, new_map, new_elements);
 
   return buffer;
 }

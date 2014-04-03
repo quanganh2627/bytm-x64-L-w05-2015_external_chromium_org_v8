@@ -104,9 +104,10 @@ class ScriptDataImpl : public ScriptData {
   int GetSymbolIdentifier();
   bool SanityCheck();
 
-  Scanner::Location MessageLocation();
-  const char* BuildMessage();
-  Vector<const char*> BuildArgs();
+  Scanner::Location MessageLocation() const;
+  bool IsReferenceError() const;
+  const char* BuildMessage() const;
+  Vector<const char*> BuildArgs() const;
 
   int symbol_count() {
     return (store_.length() > PreparseDataConstants::kHeaderSize)
@@ -127,8 +128,8 @@ class ScriptDataImpl : public ScriptData {
   int function_index_;
   bool owns_store_;
 
-  unsigned Read(int position);
-  unsigned* ReadAddress(int position);
+  unsigned Read(int position) const;
+  unsigned* ReadAddress(int position) const;
   // Reads a number from the current symbols
   int ReadNumber(byte** source);
 
@@ -441,16 +442,14 @@ class ParserTraits {
   template<typename FunctionState>
   static void SetUpFunctionState(FunctionState* function_state, Zone* zone) {
     Isolate* isolate = zone->isolate();
-    function_state->isolate_ = isolate;
     function_state->saved_ast_node_id_ = isolate->ast_node_id();
     isolate->set_ast_node_id(BailoutId::FirstUsable().ToInt());
   }
 
   template<typename FunctionState>
-  static void TearDownFunctionState(FunctionState* function_state) {
+  static void TearDownFunctionState(FunctionState* function_state, Zone* zone) {
     if (function_state->outer_function_state_ != NULL) {
-      function_state->isolate_->set_ast_node_id(
-          function_state->saved_ast_node_id_);
+      zone->isolate()->set_ast_node_id(function_state->saved_ast_node_id_);
     }
   }
 

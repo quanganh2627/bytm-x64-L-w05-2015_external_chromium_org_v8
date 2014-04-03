@@ -133,6 +133,7 @@ class Heap;
 class HeapObject;
 class IC;
 class InterceptorInfo;
+class Isolate;
 class JSReceiver;
 class JSArray;
 class JSFunction;
@@ -563,5 +564,7 @@ enum MinusZeroMode {
 };
 
 } }  // namespace v8::internal
+
+namespace i = v8::internal;
 
 #endif  // V8_V8GLOBALS_H_

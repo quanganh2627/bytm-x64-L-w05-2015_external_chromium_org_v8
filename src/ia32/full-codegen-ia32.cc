@@ -106,12 +106,14 @@ static void EmitStackCheck(MacroAssembler* masm_,
                            Register scratch = esp) {
     Label ok;
     Isolate* isolate = masm_->isolate();
-    ExternalReference stack_limit =
-        ExternalReference::address_of_stack_limit(isolate);
     ASSERT(scratch.is(esp) == (pointers == 0));
+    ExternalReference stack_limit;
     if (pointers != 0) {
       __ mov(scratch, esp);
       __ sub(scratch, Immediate(pointers * kPointerSize));
+      stack_limit = ExternalReference::address_of_real_stack_limit(isolate);
+    } else {
+      stack_limit = ExternalReference::address_of_stack_limit(isolate);
     }
     __ cmp(scratch, Operand::StaticVariable(stack_limit));
     __ j(above_equal, &ok, Label::kNear);
@@ -3539,7 +3541,7 @@ void FullCodeGenerator::EmitMathPow(CallRuntime* expr) {
     MathPowStub stub(MathPowStub::ON_STACK);
     __ CallStub(&stub);
   } else {
-    __ CallRuntime(Runtime::kMath_pow, 2);
+    __ CallRuntime(Runtime::kHiddenMathPowSlow, 2);
   }
   context()->Plug(eax);
 }
@@ -3722,26 +3724,6 @@ void FullCodeGenerator::EmitStringCompare(CallRuntime* expr) {
 
   StringCompareStub stub;
   __ CallStub(&stub);
-  context()->Plug(eax);
-}
-
-
-void FullCodeGenerator::EmitMathLog(CallRuntime* expr) {
-  // Load the argument on the stack and call the runtime function.
-  ZoneList<Expression*>* args = expr->arguments();
-  ASSERT(args->length() == 1);
-  VisitForStackValue(args->at(0));
-  __ CallRuntime(Runtime::kMath_log, 1);
-  context()->Plug(eax);
-}
-
-
-void FullCodeGenerator::EmitMathSqrt(CallRuntime* expr) {
-  // Load the argument on the stack and call the runtime function.
-  ZoneList<Expression*>* args = expr->arguments();
-  ASSERT(args->length() == 1);
-  VisitForStackValue(args->at(0));
-  __ CallRuntime(Runtime::kMath_sqrt, 1);
   context()->Plug(eax);
 }
 

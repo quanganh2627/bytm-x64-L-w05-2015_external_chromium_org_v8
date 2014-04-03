@@ -533,7 +533,7 @@ i::Object** V8::GlobalizeReference(i::Isolate* isolate, i::Object** obj) {
   LOG_API(isolate, "Persistent::New");
   i::Handle<i::Object> result = isolate->global_handles()->Create(*obj);
 #ifdef DEBUG
-  (*obj)->Verify();
+  (*obj)->ObjectVerify();
 #endif  // DEBUG
   return result.location();
 }
@@ -542,7 +542,7 @@ i::Object** V8::GlobalizeReference(i::Isolate* isolate, i::Object** obj) {
 i::Object** V8::CopyPersistent(i::Object** obj) {
   i::Handle<i::Object> result = i::GlobalHandles::CopyGlobal(obj);
 #ifdef DEBUG
-  (*obj)->Verify();
+  (*obj)->ObjectVerify();
 #endif  // DEBUG
   return result.location();
 }
@@ -1941,7 +1941,7 @@ v8::Local<Value> v8::TryCatch::StackTrace() const {
     i::Handle<i::JSObject> obj(i::JSObject::cast(raw_obj), isolate_);
     i::Handle<i::String> name = isolate_->factory()->stack_string();
     if (!i::JSReceiver::HasProperty(obj, name)) return v8::Local<Value>();
-    i::Handle<i::Object> value = i::GetProperty(isolate_, obj, name);
+    i::Handle<i::Object> value = i::Object::GetProperty(obj, name);
     if (value.is_null()) return v8::Local<Value>();
     return v8::Utils::ToLocal(scope.CloseAndEscape(value));
   } else {
@@ -3143,7 +3143,8 @@ Local<Value> v8::Object::Get(v8::Handle<Value> key) {
   i::Handle<i::Object> self = Utils::OpenHandle(this);
   i::Handle<i::Object> key_obj = Utils::OpenHandle(*key);
   EXCEPTION_PREAMBLE(isolate);
-  i::Handle<i::Object> result = i::GetProperty(isolate, self, key_obj);
+  i::Handle<i::Object> result =
+      i::Runtime::GetObjectProperty(isolate, self, key_obj);
   has_pending_exception = result.is_null();
   EXCEPTION_BAILOUT_CHECK(isolate, Local<Value>());
   return Utils::ToLocal(result);
@@ -3596,8 +3597,7 @@ void v8::Object::TurnOnAccessCheck() {
   // as optimized code does not always handle access checks.
   i::Deoptimizer::DeoptimizeGlobalObject(*obj);
 
-  i::Handle<i::Map> new_map =
-      isolate->factory()->CopyMap(i::Handle<i::Map>(obj->map()));
+  i::Handle<i::Map> new_map = i::Map::Copy(i::Handle<i::Map>(obj->map()));
   new_map->set_is_access_check_needed(true);
   obj->set_map(*new_map);
 }
@@ -3735,8 +3735,7 @@ void PrepareExternalArrayElements(i::Handle<i::JSObject> object,
           object,
           GetElementsKindFromExternalArrayType(array_type));
 
-  object->set_map(*external_array_map);
-  object->set_elements(*array);
+  i::JSObject::SetMapAndElements(object, external_array_map, array);
 }
 
 }  // namespace
@@ -5710,6 +5709,7 @@ double v8::Date::ValueOf() const {
 
 void v8::Date::DateTimeConfigurationChangeNotification(Isolate* isolate) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  if (!i_isolate->IsInitialized()) return;
   ON_BAILOUT(i_isolate, "v8::Date::DateTimeConfigurationChangeNotification()",
              return);
   LOG_API(i_isolate, "Date::DateTimeConfigurationChangeNotification");
@@ -6099,7 +6099,7 @@ i::Handle<i::JSTypedArray> NewTypedArray(
           static_cast<uint8_t*>(buffer->backing_store()) + byte_offset);
   i::Handle<i::Map> map =
       i::JSObject::GetElementsTransitionMap(obj, elements_kind);
-  obj->set_map_and_elements(*map, *elements);
+  i::JSObject::SetMapAndElements(obj, map, elements);
   return obj;
 }
 
@@ -6156,8 +6156,10 @@ Local<Symbol> v8::Symbol::For(Isolate* isolate, Local<String> name) {
   i::Handle<i::JSObject> registry = i_isolate->GetSymbolRegistry();
   i::Handle<i::String> part = i_isolate->factory()->for_string();
   i::Handle<i::JSObject> symbols =
-      i::Handle<i::JSObject>::cast(i::JSObject::GetProperty(registry, part));
-  i::Handle<i::Object> symbol = i::JSObject::GetProperty(symbols, i_name);
+      i::Handle<i::JSObject>::cast(
+          i::Object::GetPropertyOrElement(registry, part));
+  i::Handle<i::Object> symbol =
+      i::Object::GetPropertyOrElement(symbols, i_name);
   if (!symbol->IsSymbol()) {
     ASSERT(symbol->IsUndefined());
     symbol = i_isolate->factory()->NewSymbol();
@@ -6174,8 +6176,10 @@ Local<Symbol> v8::Symbol::ForApi(Isolate* isolate, Local<String> name) {
   i::Handle<i::JSObject> registry = i_isolate->GetSymbolRegistry();
   i::Handle<i::String> part = i_isolate->factory()->for_api_string();
   i::Handle<i::JSObject> symbols =
-      i::Handle<i::JSObject>::cast(i::JSObject::GetProperty(registry, part));
-  i::Handle<i::Object> symbol = i::JSObject::GetProperty(symbols, i_name);
+      i::Handle<i::JSObject>::cast(
+          i::Object::GetPropertyOrElement(registry, part));
+  i::Handle<i::Object> symbol =
+      i::Object::GetPropertyOrElement(symbols, i_name);
   if (!symbol->IsSymbol()) {
     ASSERT(symbol->IsUndefined());
     symbol = i_isolate->factory()->NewSymbol();
@@ -6204,8 +6208,10 @@ Local<Private> v8::Private::ForApi(Isolate* isolate, Local<String> name) {
   i::Handle<i::JSObject> registry = i_isolate->GetSymbolRegistry();
   i::Handle<i::String> part = i_isolate->factory()->private_api_string();
   i::Handle<i::JSObject> privates =
-      i::Handle<i::JSObject>::cast(i::JSObject::GetProperty(registry, part));
-  i::Handle<i::Object> symbol = i::JSObject::GetProperty(privates, i_name);
+      i::Handle<i::JSObject>::cast(
+          i::Object::GetPropertyOrElement(registry, part));
+  i::Handle<i::Object> symbol =
+      i::Object::GetPropertyOrElement(privates, i_name);
   if (!symbol->IsSymbol()) {
     ASSERT(symbol->IsUndefined());
     symbol = i_isolate->factory()->NewPrivateSymbol();
@@ -6955,7 +6961,8 @@ Local<Value> Debug::GetMirror(v8::Handle<v8::Value> obj) {
   i::Handle<i::JSObject> debug(isolate_debug->debug_context()->global_object());
   i::Handle<i::String> name = isolate->factory()->InternalizeOneByteString(
       STATIC_ASCII_VECTOR("MakeMirror"));
-  i::Handle<i::Object> fun_obj = i::GetProperty(isolate, debug, name);
+  i::Handle<i::Object> fun_obj = i::Object::GetProperty(debug, name);
+  ASSERT(!fun_obj.is_null());
   i::Handle<i::JSFunction> fun = i::Handle<i::JSFunction>::cast(fun_obj);
   v8::Handle<v8::Function> v8_fun = Utils::ToLocal(fun);
   const int kArgc = 1;

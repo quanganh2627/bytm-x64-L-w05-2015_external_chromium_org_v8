@@ -118,10 +118,14 @@ static void EmitStackCheck(MacroAssembler* masm_,
     Isolate* isolate = masm_->isolate();
   Label ok;
   ASSERT(scratch.is(sp) == (pointers == 0));
+  Heap::RootListIndex index;
   if (pointers != 0) {
     __ sub(scratch, sp, Operand(pointers * kPointerSize));
+    index = Heap::kRealStackLimitRootIndex;
+  } else {
+    index = Heap::kStackLimitRootIndex;
   }
-  __ LoadRoot(stack_limit_scratch, Heap::kStackLimitRootIndex);
+  __ LoadRoot(stack_limit_scratch, index);
   __ cmp(scratch, Operand(stack_limit_scratch));
   __ b(hs, &ok);
   PredictableCodeSizeScope predictable(masm_, 2 * Assembler::kInstrSize);
@@ -3755,26 +3759,6 @@ void FullCodeGenerator::EmitStringCompare(CallRuntime* expr) {
 
   StringCompareStub stub;
   __ CallStub(&stub);
-  context()->Plug(r0);
-}
-
-
-void FullCodeGenerator::EmitMathLog(CallRuntime* expr) {
-  // Load the argument on the stack and call the runtime function.
-  ZoneList<Expression*>* args = expr->arguments();
-  ASSERT(args->length() == 1);
-  VisitForStackValue(args->at(0));
-  __ CallRuntime(Runtime::kMath_log, 1);
-  context()->Plug(r0);
-}
-
-
-void FullCodeGenerator::EmitMathSqrt(CallRuntime* expr) {
-  // Load the argument on the stack and call the runtime function.
-  ZoneList<Expression*>* args = expr->arguments();
-  ASSERT(args->length() == 1);
-  VisitForStackValue(args->at(0));
-  __ CallRuntime(Runtime::kMath_sqrt, 1);
   context()->Plug(r0);
 }
 

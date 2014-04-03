@@ -1428,7 +1428,7 @@ void MathPowStub::Generate(MacroAssembler* masm) {
   if (exponent_type_ == ON_STACK) {
     // The arguments are still on the stack.
     __ bind(&call_runtime);
-    __ TailCallRuntime(Runtime::kMath_pow_cfunction, 2, 1);
+    __ TailCallRuntime(Runtime::kHiddenMathPow, 2, 1);
 
     // The stub is called from non-optimized code, which expects the result
     // as heap number in exponent.
@@ -1648,7 +1648,7 @@ void CEntryStub::Generate(MacroAssembler* masm) {
   __ sub(r6, r6, Operand(kPointerSize));
 
   // Enter the exit frame that transitions from JavaScript to C++.
-  FrameAndConstantPoolScope scope(masm, StackFrame::MANUAL);
+  FrameScope scope(masm, StackFrame::MANUAL);
   __ EnterExitFrame(save_doubles_);
 
   // Set up argc and the builtin function in callee-saved registers.
@@ -1684,6 +1684,12 @@ void CEntryStub::Generate(MacroAssembler* masm) {
                &throw_termination_exception,
                true,
                true);
+
+  { FrameScope scope(masm, StackFrame::MANUAL);
+    __ PrepareCallCFunction(0, r0);
+    __ CallCFunction(
+        ExternalReference::out_of_memory_function(masm->isolate()), 0, 0);
+  }
 
   __ bind(&throw_termination_exception);
   __ ThrowUncatchable(r0);
@@ -5371,7 +5377,7 @@ void CallApiFunctionStub::Generate(MacroAssembler* masm) {
   // it's not controlled by GC.
   const int kApiStackSpace = 4;
 
-  FrameAndConstantPoolScope frame_scope(masm, StackFrame::MANUAL);
+  FrameScope frame_scope(masm, StackFrame::MANUAL);
   __ EnterExitFrame(false, kApiStackSpace);
 
   ASSERT(!api_function_address.is(r0) && !scratch.is(r0));
@@ -5431,7 +5437,7 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
   __ add(r1, r0, Operand(1 * kPointerSize));  // r1 = PCA
 
   const int kApiStackSpace = 1;
-  FrameAndConstantPoolScope frame_scope(masm, StackFrame::MANUAL);
+  FrameScope frame_scope(masm, StackFrame::MANUAL);
   __ EnterExitFrame(false, kApiStackSpace);
 
   // Create PropertyAccessorInfo instance on the stack above the exit frame with

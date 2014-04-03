@@ -1,44 +1,12 @@
-// Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Copyright 2014 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-#include "v8.h"
+#include "bootstrapper.h"
 
 #include "accessors.h"
-#include "api.h"
-#include "bootstrapper.h"
-#include "compiler.h"
-#include "debug.h"
-#include "execution.h"
-#include "global-handles.h"
 #include "isolate-inl.h"
-#include "macro-assembler.h"
 #include "natives.h"
-#include "objects-visiting.h"
-#include "platform.h"
 #include "snapshot.h"
 #include "trig-table.h"
 #include "extensions/externalize-string-extension.h"
@@ -50,7 +18,6 @@
 
 namespace v8 {
 namespace internal {
-
 
 NativesExternalStringResource::NativesExternalStringResource(
     Bootstrapper* bootstrapper,
@@ -361,9 +328,8 @@ Handle<Context> Bootstrapper::CreateEnvironment(
 
 static void SetObjectPrototype(Handle<JSObject> object, Handle<Object> proto) {
   // object.__proto__ = proto;
-  Factory* factory = object->GetIsolate()->factory();
   Handle<Map> old_to_map = Handle<Map>(object->map());
-  Handle<Map> new_to_map = factory->CopyMap(old_to_map);
+  Handle<Map> new_to_map = Map::Copy(old_to_map);
   new_to_map->set_prototype(*proto);
   object->set_map(*new_to_map);
 }
@@ -1050,7 +1016,7 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
     initial_map->set_visitor_id(StaticVisitorBase::GetVisitorId(*initial_map));
 
     // RegExp prototype object is itself a RegExp.
-    Handle<Map> proto_map = factory->CopyMap(initial_map);
+    Handle<Map> proto_map = Map::Copy(initial_map);
     proto_map->set_prototype(native_context()->initial_object_prototype());
     Handle<JSObject> proto = factory->NewJSObjectFromMap(proto_map);
     proto->InObjectPropertyAtPut(JSRegExp::kSourceFieldIndex,
@@ -1183,7 +1149,7 @@ void Genesis::InitializeGlobal(Handle<GlobalObject> inner_global,
 
     Handle<Map> old_map(
         native_context()->sloppy_arguments_boilerplate()->map());
-    Handle<Map> new_map = factory->CopyMap(old_map);
+    Handle<Map> new_map = Map::Copy(old_map);
     new_map->set_pre_allocated_property_fields(2);
     Handle<JSObject> result = factory->NewJSObjectFromMap(new_map);
     // Set elements kind after allocating the object because
@@ -1392,15 +1358,15 @@ void Genesis::InitializeExperimentalGlobal() {
     // Create maps for generator functions and their prototypes.  Store those
     // maps in the native context.
     Handle<Map> function_map(native_context()->sloppy_function_map());
-    Handle<Map> generator_function_map = factory()->CopyMap(function_map);
+    Handle<Map> generator_function_map = Map::Copy(function_map);
     generator_function_map->set_prototype(*generator_function_prototype);
     native_context()->set_sloppy_generator_function_map(
         *generator_function_map);
 
     Handle<Map> strict_mode_function_map(
         native_context()->strict_function_map());
-    Handle<Map> strict_mode_generator_function_map = factory()->CopyMap(
-        strict_mode_function_map);
+    Handle<Map> strict_mode_generator_function_map =
+        Map::Copy(strict_mode_function_map);
     strict_mode_generator_function_map->set_prototype(
         *generator_function_prototype);
     native_context()->set_strict_generator_function_map(
@@ -1645,7 +1611,7 @@ Handle<JSFunction> Genesis::InstallInternalArray(
   array_function->shared()->DontAdaptArguments();
 
   Handle<Map> original_map(array_function->initial_map());
-  Handle<Map> initial_map = factory()->CopyMap(original_map);
+  Handle<Map> initial_map = Map::Copy(original_map);
   initial_map->set_elements_kind(elements_kind);
   array_function->set_initial_map(*initial_map);
 
@@ -1938,8 +1904,8 @@ bool Genesis::InstallNatives() {
   // Install Function.prototype.call and apply.
   { Handle<String> key = factory()->function_class_string();
     Handle<JSFunction> function =
-        Handle<JSFunction>::cast(
-            GetProperty(isolate(), isolate()->global_object(), key));
+        Handle<JSFunction>::cast(Object::GetProperty(
+            isolate()->global_object(), key));
     Handle<JSObject> proto =
         Handle<JSObject>(JSObject::cast(function->instance_prototype()));
 
@@ -2033,7 +1999,7 @@ bool Genesis::InstallNatives() {
   }
 
 #ifdef VERIFY_HEAP
-  builtins->Verify();
+  builtins->ObjectVerify();
 #endif
 
   return true;
@@ -2078,8 +2044,8 @@ static Handle<JSObject> ResolveBuiltinIdHolder(
   Handle<GlobalObject> global(native_context->global_object());
   const char* period_pos = strchr(holder_expr, '.');
   if (period_pos == NULL) {
-    return Handle<JSObject>::cast(GetProperty(
-        isolate, global, factory->InternalizeUtf8String(holder_expr)));
+    return Handle<JSObject>::cast(Object::GetPropertyOrElement(
+        global, factory->InternalizeUtf8String(holder_expr)));
   }
   ASSERT_EQ(".prototype", period_pos);
   Vector<const char> property(holder_expr,
@@ -2087,7 +2053,7 @@ static Handle<JSObject> ResolveBuiltinIdHolder(
   Handle<String> property_string = factory->InternalizeUtf8String(property);
   ASSERT(!property_string.is_null());
   Handle<JSFunction> function = Handle<JSFunction>::cast(
-      GetProperty(isolate, global, property_string));
+      Object::GetProperty(global, property_string));
   return Handle<JSObject>(JSObject::cast(function->prototype()));
 }
 
@@ -2557,7 +2523,7 @@ void Genesis::TransferObject(Handle<JSObject> from, Handle<JSObject> to) {
 
   // Transfer the prototype (new map is needed).
   Handle<Map> old_to_map = Handle<Map>(to->map());
-  Handle<Map> new_to_map = factory()->CopyMap(old_to_map);
+  Handle<Map> new_to_map = Map::Copy(old_to_map);
   new_to_map->set_prototype(from->map()->prototype());
   to->set_map(*new_to_map);
 }

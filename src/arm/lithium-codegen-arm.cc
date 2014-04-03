@@ -1293,7 +1293,7 @@ void LCodeGen::DoDivByPowerOf2I(LDivByPowerOf2I* instr) {
   Register dividend = ToRegister(instr->dividend());
   int32_t divisor = instr->divisor();
   Register result = ToRegister(instr->result());
-  ASSERT(divisor == kMinInt || (divisor != 0 && IsPowerOf2(Abs(divisor))));
+  ASSERT(divisor == kMinInt || IsPowerOf2(Abs(divisor)));
   ASSERT(!result.is(dividend));
 
   // Check for (0 / -x) that will produce negative zero.
@@ -1363,15 +1363,16 @@ void LCodeGen::DoDivByConstI(LDivByConstI* instr) {
 }
 
 
+// TODO(svenpanne) Refactor this to avoid code duplication with DoFlooringDivI.
 void LCodeGen::DoDivI(LDivI* instr) {
   HBinaryOperation* hdiv = instr->hydrogen();
-  Register left = ToRegister(instr->left());
-  Register right = ToRegister(instr->right());
+  Register dividend = ToRegister(instr->dividend());
+  Register divisor = ToRegister(instr->divisor());
   Register result = ToRegister(instr->result());
 
   // Check for x / 0.
   if (hdiv->CheckFlag(HValue::kCanBeDivByZero)) {
-    __ cmp(right, Operand::Zero());
+    __ cmp(divisor, Operand::Zero());
     DeoptimizeIf(eq, instr->environment());
   }
 
@@ -1380,10 +1381,10 @@ void LCodeGen::DoDivI(LDivI* instr) {
     Label positive;
     if (!instr->hydrogen_value()->CheckFlag(HValue::kCanBeDivByZero)) {
       // Do the test only if it hadn't be done above.
-      __ cmp(right, Operand::Zero());
+      __ cmp(divisor, Operand::Zero());
     }
     __ b(pl, &positive);
-    __ cmp(left, Operand::Zero());
+    __ cmp(dividend, Operand::Zero());
     DeoptimizeIf(eq, instr->environment());
     __ bind(&positive);
   }
@@ -1394,39 +1395,30 @@ void LCodeGen::DoDivI(LDivI* instr) {
        !hdiv->CheckFlag(HValue::kAllUsesTruncatingToInt32))) {
     // We don't need to check for overflow when truncating with sdiv
     // support because, on ARM, sdiv kMinInt, -1 -> kMinInt.
-    __ cmp(left, Operand(kMinInt));
-    __ cmp(right, Operand(-1), eq);
+    __ cmp(dividend, Operand(kMinInt));
+    __ cmp(divisor, Operand(-1), eq);
     DeoptimizeIf(eq, instr->environment());
   }
 
   if (CpuFeatures::IsSupported(SUDIV)) {
     CpuFeatureScope scope(masm(), SUDIV);
-    __ sdiv(result, left, right);
+    __ sdiv(result, dividend, divisor);
   } else {
     DoubleRegister vleft = ToDoubleRegister(instr->temp());
     DoubleRegister vright = double_scratch0();
-    __ vmov(double_scratch0().low(), left);
+    __ vmov(double_scratch0().low(), dividend);
     __ vcvt_f64_s32(vleft, double_scratch0().low());
-    __ vmov(double_scratch0().low(), right);
+    __ vmov(double_scratch0().low(), divisor);
     __ vcvt_f64_s32(vright, double_scratch0().low());
     __ vdiv(vleft, vleft, vright);  // vleft now contains the result.
     __ vcvt_s32_f64(double_scratch0().low(), vleft);
     __ vmov(result, double_scratch0().low());
   }
 
-  if (hdiv->IsMathFloorOfDiv()) {
-    Label done;
-    Register remainder = scratch0();
-    __ mls(remainder, result, right, left);
-    __ cmp(remainder, Operand::Zero());
-    __ b(eq, &done);
-    __ eor(remainder, remainder, Operand(right));
-    __ add(result, result, Operand(remainder, ASR, 31));
-    __ bind(&done);
-  } else if (!hdiv->CheckFlag(HValue::kAllUsesTruncatingToInt32)) {
+  if (!hdiv->CheckFlag(HValue::kAllUsesTruncatingToInt32)) {
     // Compute remainder and deopt if it's not zero.
     Register remainder = scratch0();
-    __ mls(remainder, result, right, left);
+    __ mls(remainder, result, divisor, dividend);
     __ cmp(remainder, Operand::Zero());
     DeoptimizeIf(ne, instr->environment());
   }
@@ -1534,6 +1526,69 @@ void LCodeGen::DoFlooringDivByConstI(LFlooringDivByConstI* instr) {
   __ TruncatingDiv(result, temp, Abs(divisor));
   if (divisor < 0) __ rsb(result, result, Operand::Zero());
   __ sub(result, result, Operand(1));
+  __ bind(&done);
+}
+
+
+// TODO(svenpanne) Refactor this to avoid code duplication with DoDivI.
+void LCodeGen::DoFlooringDivI(LFlooringDivI* instr) {
+  HBinaryOperation* hdiv = instr->hydrogen();
+  Register left = ToRegister(instr->dividend());
+  Register right = ToRegister(instr->divisor());
+  Register result = ToRegister(instr->result());
+
+  // Check for x / 0.
+  if (hdiv->CheckFlag(HValue::kCanBeDivByZero)) {
+    __ cmp(right, Operand::Zero());
+    DeoptimizeIf(eq, instr->environment());
+  }
+
+  // Check for (0 / -x) that will produce negative zero.
+  if (hdiv->CheckFlag(HValue::kBailoutOnMinusZero)) {
+    Label positive;
+    if (!instr->hydrogen_value()->CheckFlag(HValue::kCanBeDivByZero)) {
+      // Do the test only if it hadn't be done above.
+      __ cmp(right, Operand::Zero());
+    }
+    __ b(pl, &positive);
+    __ cmp(left, Operand::Zero());
+    DeoptimizeIf(eq, instr->environment());
+    __ bind(&positive);
+  }
+
+  // Check for (kMinInt / -1).
+  if (hdiv->CheckFlag(HValue::kCanOverflow) &&
+      (!CpuFeatures::IsSupported(SUDIV) ||
+       !hdiv->CheckFlag(HValue::kAllUsesTruncatingToInt32))) {
+    // We don't need to check for overflow when truncating with sdiv
+    // support because, on ARM, sdiv kMinInt, -1 -> kMinInt.
+    __ cmp(left, Operand(kMinInt));
+    __ cmp(right, Operand(-1), eq);
+    DeoptimizeIf(eq, instr->environment());
+  }
+
+  if (CpuFeatures::IsSupported(SUDIV)) {
+    CpuFeatureScope scope(masm(), SUDIV);
+    __ sdiv(result, left, right);
+  } else {
+    DoubleRegister vleft = ToDoubleRegister(instr->temp());
+    DoubleRegister vright = double_scratch0();
+    __ vmov(double_scratch0().low(), left);
+    __ vcvt_f64_s32(vleft, double_scratch0().low());
+    __ vmov(double_scratch0().low(), right);
+    __ vcvt_f64_s32(vright, double_scratch0().low());
+    __ vdiv(vleft, vleft, vright);  // vleft now contains the result.
+    __ vcvt_s32_f64(double_scratch0().low(), vleft);
+    __ vmov(result, double_scratch0().low());
+  }
+
+  Label done;
+  Register remainder = scratch0();
+  __ mls(remainder, result, right, left);
+  __ cmp(remainder, Operand::Zero());
+  __ b(eq, &done);
+  __ eor(remainder, remainder, Operand(right));
+  __ add(result, result, Operand(remainder, ASR, 31));
   __ bind(&done);
 }
 
@@ -3309,7 +3364,8 @@ MemOperand LCodeGen::PrepareKeyedOperand(Register key,
       __ add(scratch0(), scratch0(), Operand(key, LSL, shift_size));
     } else {
       ASSERT_EQ(-1, shift_size);
-      __ add(scratch0(), scratch0(), Operand(key, LSR, 1));
+      // key can be negative, so using ASR here.
+      __ add(scratch0(), scratch0(), Operand(key, ASR, 1));
     }
     return MemOperand(base, scratch0());
   }
@@ -4381,15 +4437,15 @@ void LCodeGen::DoTransitionElementsKind(LTransitionElementsKind* instr) {
                         scratch, GetLinkRegisterState(), kDontSaveFPRegs);
   } else {
     ASSERT(ToRegister(instr->context()).is(cp));
+    ASSERT(object_reg.is(r0));
     PushSafepointRegistersScope scope(
         this, Safepoint::kWithRegistersAndDoubles);
-    __ Move(r0, object_reg);
     __ Move(r1, to_map);
     bool is_js_array = from_map->instance_type() == JS_ARRAY_TYPE;
     TransitionElementsKindStub stub(from_kind, to_kind, is_js_array);
     __ CallStub(&stub);
     RecordSafepointWithRegistersAndDoubles(
-        instr->pointer_map(), 0, Safepoint::kNoLazyDeopt);
+        instr->pointer_map(), 0, Safepoint::kLazyDeopt);
   }
   __ bind(&not_applicable);
 }
@@ -5716,13 +5772,61 @@ void LCodeGen::DoCheckMapValue(LCheckMapValue* instr) {
 }
 
 
+void LCodeGen::DoDeferredLoadMutableDouble(LLoadFieldByIndex* instr,
+                                           Register result,
+                                           Register object,
+                                           Register index) {
+  PushSafepointRegistersScope scope(this, Safepoint::kWithRegisters);
+  __ Push(object);
+  __ Push(index);
+  __ mov(cp, Operand::Zero());
+  __ CallRuntimeSaveDoubles(Runtime::kLoadMutableDouble);
+  RecordSafepointWithRegisters(
+      instr->pointer_map(), 2, Safepoint::kNoLazyDeopt);
+  __ StoreToSafepointRegisterSlot(r0, result);
+}
+
+
 void LCodeGen::DoLoadFieldByIndex(LLoadFieldByIndex* instr) {
+  class DeferredLoadMutableDouble V8_FINAL : public LDeferredCode {
+   public:
+    DeferredLoadMutableDouble(LCodeGen* codegen,
+                              LLoadFieldByIndex* instr,
+                              Register result,
+                              Register object,
+                              Register index)
+        : LDeferredCode(codegen),
+          instr_(instr),
+          result_(result),
+          object_(object),
+          index_(index) {
+    }
+    virtual void Generate() V8_OVERRIDE {
+      codegen()->DoDeferredLoadMutableDouble(instr_, result_, object_, index_);
+    }
+    virtual LInstruction* instr() V8_OVERRIDE { return instr_; }
+   private:
+    LLoadFieldByIndex* instr_;
+    Register result_;
+    Register object_;
+    Register index_;
+  };
+
   Register object = ToRegister(instr->object());
   Register index = ToRegister(instr->index());
   Register result = ToRegister(instr->result());
   Register scratch = scratch0();
 
+  DeferredLoadMutableDouble* deferred;
+  deferred = new(zone()) DeferredLoadMutableDouble(
+      this, instr, result, object, index);
+
   Label out_of_object, done;
+
+  __ tst(index, Operand(Smi::FromInt(1)));
+  __ b(ne, deferred->entry());
+  __ mov(index, Operand(index, ASR, 1));
+
   __ cmp(index, Operand::Zero());
   __ b(lt, &out_of_object);
 
@@ -5738,6 +5842,7 @@ void LCodeGen::DoLoadFieldByIndex(LLoadFieldByIndex* instr) {
   __ sub(scratch, result, Operand::PointerOffsetFromSmiKey(index));
   __ ldr(result, FieldMemOperand(scratch,
                                  FixedArray::kHeaderSize - kPointerSize));
+  __ bind(deferred->exit());
   __ bind(&done);
 }
 
