@@ -3,17 +3,18 @@
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-LOCAL_MODULE := v8_tools_gyp_v8_nosnapshot_x64_host_gyp
+LOCAL_MODULE := v8_tools_gyp_v8_nosnapshot_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
-gyp_intermediate_dir := $(call local-intermediates-dir)
-gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared)
+LOCAL_MODULE_TARGET_ARCH := $(TARGET_$(GYP_VAR_PREFIX)ARCH)
+gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_VAR_PREFIX))
+gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_host_gyp,true)/js2c.stamp \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_host_gyp,true)/generate_trig_table.stamp
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/js2c.stamp \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/generate_trig_table.stamp
 
 GYP_GENERATED_OUTPUTS :=
 
@@ -203,10 +204,10 @@ LOCAL_SHARED_LIBRARIES :=
 
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
-gyp_all_modules: v8_tools_gyp_v8_nosnapshot_x64_host_gyp
+gyp_all_modules: v8_tools_gyp_v8_nosnapshot_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 # Alias gyp target name.
 .PHONY: v8_nosnapshot.x64
-v8_nosnapshot.x64: v8_tools_gyp_v8_nosnapshot_x64_host_gyp
+v8_nosnapshot.x64: v8_tools_gyp_v8_nosnapshot_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 include $(BUILD_HOST_STATIC_LIBRARY)
