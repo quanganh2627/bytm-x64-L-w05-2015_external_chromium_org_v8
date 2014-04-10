@@ -109,6 +109,16 @@ Handle<ObjectHashSet> Factory::NewObjectHashSet(int at_least_space_for) {
 }
 
 
+Handle<OrderedHashSet> Factory::NewOrderedHashSet() {
+  return OrderedHashSet::Allocate(isolate(), 4);
+}
+
+
+Handle<OrderedHashMap> Factory::NewOrderedHashMap() {
+  return OrderedHashMap::Allocate(isolate(), 4);
+}
+
+
 Handle<ObjectHashTable> Factory::NewObjectHashTable(
     int at_least_space_for,
     MinimumCapacity capacity_option) {
@@ -255,8 +265,8 @@ Handle<String> Factory::NewStringFromTwoByte(Vector<const uc16> string,
 }
 
 
-Handle<SeqOneByteString> Factory::NewRawOneByteString(int length,
-                                                      PretenureFlag pretenure) {
+MaybeHandle<SeqOneByteString> Factory::NewRawOneByteString(
+    int length, PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(
       isolate(),
       isolate()->heap()->AllocateRawOneByteString(length, pretenure),
@@ -264,8 +274,8 @@ Handle<SeqOneByteString> Factory::NewRawOneByteString(int length,
 }
 
 
-Handle<SeqTwoByteString> Factory::NewRawTwoByteString(int length,
-                                                      PretenureFlag pretenure) {
+MaybeHandle<SeqTwoByteString> Factory::NewRawTwoByteString(
+    int length, PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(
       isolate(),
       isolate()->heap()->AllocateRawTwoByteString(length, pretenure),
@@ -298,13 +308,15 @@ static inline Handle<String> MakeOrFindTwoCharacterString(Isolate* isolate,
   if (static_cast<unsigned>(c1 | c2) <= String::kMaxOneByteCharCodeU) {
     // We can do this.
     ASSERT(IsPowerOf2(String::kMaxOneByteCharCodeU + 1));  // because of this.
-    Handle<SeqOneByteString> str = isolate->factory()->NewRawOneByteString(2);
+    Handle<SeqOneByteString> str =
+        isolate->factory()->NewRawOneByteString(2).ToHandleChecked();
     uint8_t* dest = str->GetChars();
     dest[0] = static_cast<uint8_t>(c1);
     dest[1] = static_cast<uint8_t>(c2);
     return str;
   } else {
-    Handle<SeqTwoByteString> str = isolate->factory()->NewRawTwoByteString(2);
+    Handle<SeqTwoByteString> str =
+        isolate->factory()->NewRawTwoByteString(2).ToHandleChecked();
     uc16* dest = str->GetChars();
     dest[0] = c1;
     dest[1] = c2;
@@ -334,8 +346,8 @@ Handle<ConsString> Factory::NewRawConsString(String::Encoding encoding) {
 }
 
 
-Handle<String> Factory::NewConsString(Handle<String> left,
-                                      Handle<String> right) {
+MaybeHandle<String> Factory::NewConsString(Handle<String> left,
+                                           Handle<String> right) {
   int left_length = left->length();
   if (left_length == 0) return right;
   int right_length = right->length();
@@ -352,8 +364,8 @@ Handle<String> Factory::NewConsString(Handle<String> left,
   // Make sure that an out of memory exception is thrown if the length
   // of the new cons string is too large.
   if (length > String::kMaxLength || length < 0) {
-    isolate()->ThrowInvalidStringLength();
-    return Handle<String>::null();
+    return isolate()->Throw<String>(
+        isolate()->factory()->NewInvalidStringLengthError());
   }
 
   bool left_is_one_byte = left->IsOneByteRepresentation();
@@ -380,7 +392,8 @@ Handle<String> Factory::NewConsString(Handle<String> left,
 
     STATIC_ASSERT(ConsString::kMinLength <= String::kMaxLength);
     if (is_one_byte) {
-      Handle<SeqOneByteString> result = NewRawOneByteString(length);
+      Handle<SeqOneByteString> result =
+          NewRawOneByteString(length).ToHandleChecked();
       DisallowHeapAllocation no_gc;
       uint8_t* dest = result->GetChars();
       // Copy left part.
@@ -397,8 +410,10 @@ Handle<String> Factory::NewConsString(Handle<String> left,
     }
 
     return (is_one_byte_data_in_two_byte_string)
-        ? ConcatStringContent<uint8_t>(NewRawOneByteString(length), left, right)
-        : ConcatStringContent<uc16>(NewRawTwoByteString(length), left, right);
+        ? ConcatStringContent<uint8_t>(
+            NewRawOneByteString(length).ToHandleChecked(), left, right)
+        : ConcatStringContent<uc16>(
+            NewRawTwoByteString(length).ToHandleChecked(), left, right);
   }
 
   Handle<ConsString> result = NewRawConsString(
@@ -422,10 +437,10 @@ Handle<String> Factory::NewFlatConcatString(Handle<String> first,
   int total_length = first->length() + second->length();
   if (first->IsOneByteRepresentation() && second->IsOneByteRepresentation()) {
     return ConcatStringContent<uint8_t>(
-        NewRawOneByteString(total_length), first, second);
+        NewRawOneByteString(total_length).ToHandleChecked(), first, second);
   } else {
     return ConcatStringContent<uc16>(
-        NewRawTwoByteString(total_length), first, second);
+        NewRawTwoByteString(total_length).ToHandleChecked(), first, second);
   }
 }
 
@@ -463,15 +478,15 @@ Handle<String> Factory::NewProperSubString(Handle<String> str,
 
   if (!FLAG_string_slices || length < SlicedString::kMinLength) {
     if (str->IsOneByteRepresentation()) {
-      Handle<SeqOneByteString> result = NewRawOneByteString(length);
-      ASSERT(!result.is_null());
+      Handle<SeqOneByteString> result =
+          NewRawOneByteString(length).ToHandleChecked();
       uint8_t* dest = result->GetChars();
       DisallowHeapAllocation no_gc;
       String::WriteToFlat(*str, dest, begin, end);
       return result;
     } else {
-      Handle<SeqTwoByteString> result = NewRawTwoByteString(length);
-      ASSERT(!result.is_null());
+      Handle<SeqTwoByteString> result =
+          NewRawTwoByteString(length).ToHandleChecked();
       uc16* dest = result->GetChars();
       DisallowHeapAllocation no_gc;
       String::WriteToFlat(*str, dest, begin, end);
@@ -518,7 +533,7 @@ Handle<String> Factory::NewProperSubString(Handle<String> str,
 }
 
 
-Handle<String> Factory::NewExternalStringFromAscii(
+MaybeHandle<String> Factory::NewExternalStringFromAscii(
     const ExternalAsciiString::Resource* resource) {
   CALL_HEAP_FUNCTION(
       isolate(),
@@ -527,7 +542,7 @@ Handle<String> Factory::NewExternalStringFromAscii(
 }
 
 
-Handle<String> Factory::NewExternalStringFromTwoByte(
+MaybeHandle<String> Factory::NewExternalStringFromTwoByte(
     const ExternalTwoByteString::Resource* resource) {
   CALL_HEAP_FUNCTION(
       isolate(),
@@ -806,42 +821,10 @@ Handle<JSObject> Factory::NewFunctionPrototype(Handle<JSFunction> function) {
     JSObject::SetLocalPropertyIgnoreAttributes(prototype,
                                                constructor_string(),
                                                function,
-                                               DONT_ENUM);
+                                               DONT_ENUM).Assert();
   }
 
   return prototype;
-}
-
-
-Handle<Map> Factory::CopyWithPreallocatedFieldDescriptors(Handle<Map> src) {
-  CALL_HEAP_FUNCTION(
-      isolate(), src->CopyWithPreallocatedFieldDescriptors(), Map);
-}
-
-
-Handle<Map> Factory::CopyMap(Handle<Map> src,
-                             int extra_inobject_properties) {
-  Handle<Map> copy = CopyWithPreallocatedFieldDescriptors(src);
-  // Check that we do not overflow the instance size when adding the
-  // extra inobject properties.
-  int instance_size_delta = extra_inobject_properties * kPointerSize;
-  int max_instance_size_delta =
-      JSObject::kMaxInstanceSize - copy->instance_size();
-  int max_extra_properties = max_instance_size_delta >> kPointerSizeLog2;
-  if (extra_inobject_properties > max_extra_properties) {
-    // If the instance size overflows, we allocate as many properties
-    // as we can as inobject properties.
-    instance_size_delta = max_instance_size_delta;
-    extra_inobject_properties = max_extra_properties;
-  }
-  // Adjust the map with the extra inobject properties.
-  int inobject_properties =
-      copy->inobject_properties() + extra_inobject_properties;
-  copy->set_inobject_properties(inobject_properties);
-  copy->set_unused_property_fields(inobject_properties);
-  copy->set_instance_size(copy->instance_size() + instance_size_delta);
-  copy->set_visitor_id(StaticVisitorBase::GetVisitorId(*copy));
-  return copy;
 }
 
 
@@ -1397,13 +1380,19 @@ Handle<JSObject> Factory::NewJSObjectFromMap(
 
 
 Handle<JSArray> Factory::NewJSArray(ElementsKind elements_kind,
+                                    PretenureFlag pretenure) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->AllocateJSArray(elements_kind,
+                                                        pretenure),
+                     JSArray);
+}
+
+
+Handle<JSArray> Factory::NewJSArray(ElementsKind elements_kind,
                                     int length,
                                     int capacity,
                                     ArrayStorageAllocationMode mode,
                                     PretenureFlag pretenure) {
-  if (capacity != 0) {
-    elements_kind = GetHoleyElementsKind(elements_kind);
-  }
   CALL_HEAP_FUNCTION(isolate(),
                      isolate()->heap()->AllocateJSArrayAndStorage(
                          elements_kind,
@@ -1420,13 +1409,13 @@ Handle<JSArray> Factory::NewJSArrayWithElements(Handle<FixedArrayBase> elements,
                                                 int length,
                                                 PretenureFlag pretenure) {
   ASSERT(length <= elements->length());
-  CALL_HEAP_FUNCTION(
-      isolate(),
-      isolate()->heap()->AllocateJSArrayWithElements(*elements,
-                                                     elements_kind,
-                                                     length,
-                                                     pretenure),
-      JSArray);
+  Handle<JSArray> array =
+      isolate()->factory()->NewJSArray(elements_kind, pretenure);
+
+  array->set_elements(*elements);
+  array->set_length(Smi::FromInt(length));
+  JSObject::ValidateElements(array);
+  return array;
 }
 
 
@@ -1911,11 +1900,10 @@ Handle<Map> Factory::ObjectLiteralMapFromCache(Handle<Context> context,
   Handle<Object> result = Handle<Object>(cache->Lookup(*keys), isolate());
   if (result->IsMap()) return Handle<Map>::cast(result);
   // Create a new map and add it to the cache.
-  Handle<Map> map =
-      CopyMap(Handle<Map>(context->object_function()->initial_map()),
-              keys->length());
+  Handle<Map> map = Map::Create(
+      handle(context->object_function()), keys->length());
   AddToMapCache(context, keys, map);
-  return Handle<Map>(map);
+  return map;
 }
 
 

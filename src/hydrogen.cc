@@ -1794,7 +1794,8 @@ HValue* HGraphBuilder::BuildAddStringLengths(HValue* left_length,
                                              HValue* right_length) {
   // Compute the combined string length and check against max string length.
   HValue* length = AddUncasted<HAdd>(left_length, right_length);
-  HValue* max_length = Add<HConstant>(String::kMaxLength);
+  // Check that length <= kMaxLength <=> length < MaxLength + 1.
+  HValue* max_length = Add<HConstant>(String::kMaxLength + 1);
   Add<HBoundsCheck>(length, max_length);
   return length;
 }
@@ -5212,11 +5213,12 @@ void HOptimizedGraphBuilder::VisitArrayLiteral(ArrayLiteral* expr) {
   Handle<JSObject> boilerplate_object;
   if (literals_cell->IsUndefined()) {
     uninitialized = true;
-    Handle<Object> raw_boilerplate = Runtime::CreateArrayLiteralBoilerplate(
-        isolate(), literals, expr->constant_elements());
-    if (raw_boilerplate.is_null()) {
-      return Bailout(kArrayBoilerplateCreationFailed);
-    }
+    Handle<Object> raw_boilerplate;
+    ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+        isolate(), raw_boilerplate,
+        Runtime::CreateArrayLiteralBoilerplate(
+            isolate(), literals, expr->constant_elements()),
+        Bailout(kArrayBoilerplateCreationFailed));
 
     boilerplate_object = Handle<JSObject>::cast(raw_boilerplate);
     AllocationSiteCreationContext creation_context(isolate());

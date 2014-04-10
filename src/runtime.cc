@@ -209,19 +209,17 @@ static Handle<Map> ComputeObjectLiteralMap(
     return isolate->factory()->ObjectLiteralMapFromCache(context, keys);
   }
   *is_result_from_cache = false;
-  return isolate->factory()->CopyMap(
-      Handle<Map>(context->object_function()->initial_map()),
-      number_of_properties);
+  return Map::Create(handle(context->object_function()), number_of_properties);
 }
 
 
-static Handle<Object> CreateLiteralBoilerplate(
+MUST_USE_RESULT static MaybeHandle<Object> CreateLiteralBoilerplate(
     Isolate* isolate,
     Handle<FixedArray> literals,
     Handle<FixedArray> constant_properties);
 
 
-static Handle<Object> CreateObjectLiteralBoilerplate(
+MUST_USE_RESULT static MaybeHandle<Object> CreateObjectLiteralBoilerplate(
     Isolate* isolate,
     Handle<FixedArray> literals,
     Handle<FixedArray> constant_properties,
@@ -276,27 +274,29 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
       // The value contains the constant_properties of a
       // simple object or array literal.
       Handle<FixedArray> array = Handle<FixedArray>::cast(value);
-      value = CreateLiteralBoilerplate(isolate, literals, array);
-      if (value.is_null()) return value;
+      ASSIGN_RETURN_ON_EXCEPTION(
+          isolate, value,
+          CreateLiteralBoilerplate(isolate, literals, array),
+          Object);
     }
-    Handle<Object> result;
+    MaybeHandle<Object> maybe_result;
     uint32_t element_index = 0;
     StoreMode mode = value->IsJSObject() ? FORCE_FIELD : ALLOW_AS_CONSTANT;
     if (key->IsInternalizedString()) {
       if (Handle<String>::cast(key)->AsArrayIndex(&element_index)) {
         // Array index as string (uint32).
-        result = JSObject::SetOwnElement(
+        maybe_result = JSObject::SetOwnElement(
             boilerplate, element_index, value, SLOPPY);
       } else {
         Handle<String> name(String::cast(*key));
         ASSERT(!name->AsArrayIndex(&element_index));
-        result = JSObject::SetLocalPropertyIgnoreAttributes(
+        maybe_result = JSObject::SetLocalPropertyIgnoreAttributes(
             boilerplate, name, value, NONE,
             Object::OPTIMAL_REPRESENTATION, mode);
       }
     } else if (key->ToArrayIndex(&element_index)) {
       // Array index (uint32).
-      result = JSObject::SetOwnElement(
+      maybe_result = JSObject::SetOwnElement(
           boilerplate, element_index, value, SLOPPY);
     } else {
       // Non-uint32 number.
@@ -307,7 +307,7 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
       const char* str = DoubleToCString(num, buffer);
       Handle<String> name =
           isolate->factory()->NewStringFromAscii(CStrVector(str));
-      result = JSObject::SetLocalPropertyIgnoreAttributes(
+      maybe_result = JSObject::SetLocalPropertyIgnoreAttributes(
           boilerplate, name, value, NONE,
           Object::OPTIMAL_REPRESENTATION, mode);
     }
@@ -315,7 +315,7 @@ static Handle<Object> CreateObjectLiteralBoilerplate(
     // exception, the exception is converted to an empty handle in
     // the handle based operations.  In that case, we need to
     // convert back to an exception.
-    if (result.is_null()) return result;
+    RETURN_ON_EXCEPTION(isolate, maybe_result, Object);
   }
 
   // Transform to fast properties if necessary. For object literals with
@@ -349,7 +349,7 @@ MaybeObject* TransitionElements(Handle<Object> object,
 static const int kSmiLiteralMinimumLength = 1024;
 
 
-Handle<Object> Runtime::CreateArrayLiteralBoilerplate(
+MaybeHandle<Object> Runtime::CreateArrayLiteralBoilerplate(
     Isolate* isolate,
     Handle<FixedArray> literals,
     Handle<FixedArray> elements) {
@@ -408,9 +408,11 @@ Handle<Object> Runtime::CreateArrayLiteralBoilerplate(
           // The value contains the constant_properties of a
           // simple object or array literal.
           Handle<FixedArray> fa(FixedArray::cast(fixed_array_values->get(i)));
-          Handle<Object> result =
-              CreateLiteralBoilerplate(isolate, literals, fa);
-          if (result.is_null()) return result;
+          Handle<Object> result;
+          ASSIGN_RETURN_ON_EXCEPTION(
+              isolate, result,
+              CreateLiteralBoilerplate(isolate, literals, fa),
+              Object);
           fixed_array_values_copy->set(i, *result);
         }
       }
@@ -434,12 +436,12 @@ Handle<Object> Runtime::CreateArrayLiteralBoilerplate(
     }
   }
 
-  object->ValidateElements();
+  JSObject::ValidateElements(object);
   return object;
 }
 
 
-static Handle<Object> CreateLiteralBoilerplate(
+MUST_USE_RESULT static MaybeHandle<Object> CreateLiteralBoilerplate(
     Isolate* isolate,
     Handle<FixedArray> literals,
     Handle<FixedArray> array) {
@@ -463,7 +465,7 @@ static Handle<Object> CreateLiteralBoilerplate(
           isolate, literals, elements);
     default:
       UNREACHABLE();
-      return Handle<Object>::null();
+      return MaybeHandle<Object>();
   }
 }
 
@@ -483,13 +485,15 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_CreateObjectLiteral) {
   Handle<AllocationSite> site;
   Handle<JSObject> boilerplate;
   if (*literal_site == isolate->heap()->undefined_value()) {
-    Handle<Object> raw_boilerplate = CreateObjectLiteralBoilerplate(
-        isolate,
-        literals,
-        constant_properties,
-        should_have_fast_elements,
-        has_function_literal);
-    RETURN_IF_EMPTY_HANDLE(isolate, raw_boilerplate);
+    Handle<Object> raw_boilerplate;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, raw_boilerplate,
+        CreateObjectLiteralBoilerplate(
+            isolate,
+            literals,
+            constant_properties,
+            should_have_fast_elements,
+            has_function_literal));
     boilerplate = Handle<JSObject>::cast(raw_boilerplate);
 
     AllocationSiteCreationContext creation_context(isolate);
@@ -515,7 +519,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_CreateObjectLiteral) {
 }
 
 
-static Handle<AllocationSite> GetLiteralAllocationSite(
+MUST_USE_RESULT static MaybeHandle<AllocationSite> GetLiteralAllocationSite(
     Isolate* isolate,
     Handle<FixedArray> literals,
     int literals_index,
@@ -525,9 +529,11 @@ static Handle<AllocationSite> GetLiteralAllocationSite(
   Handle<AllocationSite> site;
   if (*literal_site == isolate->heap()->undefined_value()) {
     ASSERT(*elements != isolate->heap()->empty_fixed_array());
-    Handle<Object> boilerplate =
-        Runtime::CreateArrayLiteralBoilerplate(isolate, literals, elements);
-    if (boilerplate.is_null()) return Handle<AllocationSite>::null();
+    Handle<Object> boilerplate;
+    ASSIGN_RETURN_ON_EXCEPTION(
+        isolate, boilerplate,
+        Runtime::CreateArrayLiteralBoilerplate(isolate, literals, elements),
+        AllocationSite);
 
     AllocationSiteCreationContext creation_context(isolate);
     site = creation_context.EnterNewScope();
@@ -551,9 +557,10 @@ static MaybeObject* CreateArrayLiteralImpl(Isolate* isolate,
                                            int literals_index,
                                            Handle<FixedArray> elements,
                                            int flags) {
-  Handle<AllocationSite> site = GetLiteralAllocationSite(isolate, literals,
-      literals_index, elements);
-  RETURN_IF_EMPTY_HANDLE(isolate, site);
+  Handle<AllocationSite> site;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, site,
+      GetLiteralAllocationSite(isolate, literals, literals_index, elements));
 
   bool enable_mementos = (flags & ArrayLiteral::kDisableMementos) == 0;
   Handle<JSObject> boilerplate(JSObject::cast(site->transition_info()));
@@ -634,7 +641,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_CreateGlobalPrivateSymbol) {
     ASSERT(symbol->IsUndefined());
     symbol = isolate->factory()->NewPrivateSymbol();
     Handle<Symbol>::cast(symbol)->set_name(*name);
-    JSObject::SetProperty(privates, name, symbol, NONE, STRICT);
+    JSObject::SetProperty(privates, name, symbol, NONE, STRICT).Assert();
   }
   return *symbol;
 }
@@ -1919,14 +1926,15 @@ static Handle<Object> GetOwnProperty(Isolate* isolate,
     return factory->undefined_value();
   }
   ASSERT(!isolate->has_scheduled_exception());
-  AccessorPair* raw_accessors = obj->GetLocalPropertyAccessorPair(*name);
-  Handle<AccessorPair> accessors(raw_accessors, isolate);
+  Handle<AccessorPair> accessors;
+  bool has_accessors =
+      JSObject::GetLocalPropertyAccessorPair(obj, name).ToHandle(&accessors);
   Handle<FixedArray> elms = isolate->factory()->NewFixedArray(DESCRIPTOR_SIZE);
   elms->set(ENUMERABLE_INDEX, heap->ToBoolean((attrs & DONT_ENUM) == 0));
   elms->set(CONFIGURABLE_INDEX, heap->ToBoolean((attrs & DONT_DELETE) == 0));
-  elms->set(IS_ACCESSOR_INDEX, heap->ToBoolean(raw_accessors != NULL));
+  elms->set(IS_ACCESSOR_INDEX, heap->ToBoolean(has_accessors));
 
-  if (raw_accessors == NULL) {
+  if (!has_accessors) {
     elms->set(WRITABLE_INDEX, heap->ToBoolean((attrs & READ_ONLY) == 0));
     // Runtime::GetObjectProperty does access check.
     Handle<Object> value = Runtime::GetObjectProperty(isolate, obj, name);
@@ -2117,15 +2125,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetAccessorProperty) {
 }
 
 
-static Failure* ThrowRedeclarationError(Isolate* isolate,
-                                        const char* type,
-                                        Handle<String> name) {
+static Failure* ThrowRedeclarationError(Isolate* isolate, Handle<String> name) {
   HandleScope scope(isolate);
-  Handle<Object> type_handle =
-      isolate->factory()->NewStringFromAscii(CStrVector(type));
-  Handle<Object> args[2] = { type_handle, name };
-  Handle<Object> error =
-      isolate->factory()->NewTypeError("redeclaration", HandleVector(args, 2));
+  Handle<Object> args[1] = { name };
+  Handle<Object> error = isolate->factory()->NewTypeError(
+      "var_redeclaration", HandleVector(args, 1));
   return isolate->Throw(*error);
 }
 
@@ -2202,7 +2206,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_DeclareGlobals) {
       if (lookup.IsFound() && lookup.IsDontDelete()) {
         if (lookup.IsReadOnly() || lookup.IsDontEnum() ||
             lookup.IsPropertyCallbacks()) {
-          return ThrowRedeclarationError(isolate, "function", name);
+          return ThrowRedeclarationError(isolate, name);
         }
         // If the existing property is not configurable, keep its attributes.
         attr = lookup.GetAttributes();
@@ -2213,7 +2217,8 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_DeclareGlobals) {
               global, name, value, static_cast<PropertyAttributes>(attr)));
     } else {
       // Do a [[Put]] on the existing (own) property.
-      RETURN_IF_EMPTY_HANDLE(isolate,
+      RETURN_FAILURE_ON_EXCEPTION(
+          isolate,
           JSObject::SetProperty(
               global, name, value, static_cast<PropertyAttributes>(attr),
               strict_mode));
@@ -2254,8 +2259,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_DeclareContextSlot) {
     if (((attributes & READ_ONLY) != 0) || (mode == READ_ONLY)) {
       // Functions are not read-only.
       ASSERT(mode != READ_ONLY || initial_value->IsTheHole());
-      const char* type = ((attributes & READ_ONLY) != 0) ? "const" : "var";
-      return ThrowRedeclarationError(isolate, type, name);
+      return ThrowRedeclarationError(isolate, name);
     }
 
     // Initialize it if necessary.
@@ -2270,7 +2274,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_DeclareContextSlot) {
         // Slow case: The property is in the context extension object of a
         // function context or the global object of a native context.
         Handle<JSObject> object = Handle<JSObject>::cast(holder);
-        RETURN_IF_EMPTY_HANDLE(
+        RETURN_FAILURE_ON_EXCEPTION(
             isolate,
             JSReceiver::SetProperty(object, name, initial_value, mode, SLOPPY));
       }
@@ -2309,7 +2313,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_DeclareContextSlot) {
       LookupResult lookup(isolate);
       object->Lookup(*name, &lookup);
       if (lookup.IsPropertyCallbacks()) {
-        return ThrowRedeclarationError(isolate, "const", name);
+        return ThrowRedeclarationError(isolate, name);
       }
     }
     if (object->IsJSGlobalObject()) {
@@ -2317,7 +2321,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_DeclareContextSlot) {
       RETURN_IF_EMPTY_HANDLE(isolate,
          JSObject::SetLocalPropertyIgnoreAttributes(object, name, value, mode));
     } else {
-      RETURN_IF_EMPTY_HANDLE(isolate,
+      RETURN_FAILURE_ON_EXCEPTION(isolate,
          JSReceiver::SetProperty(object, name, value, mode, SLOPPY));
     }
   }
@@ -2362,9 +2366,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeVarGlobal) {
       // Found an interceptor that's not read only.
       if (assign) {
         CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
-        Handle<Object> result = JSObject::SetPropertyForResult(
-            holder, &lookup, name, value, attributes, strict_mode);
-        RETURN_IF_EMPTY_HANDLE(isolate, result);
+        Handle<Object> result;
+        ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+            isolate, result,
+            JSObject::SetPropertyForResult(
+                holder, &lookup, name, value, attributes, strict_mode));
         return *result;
       } else {
         return isolate->heap()->undefined_value();
@@ -2375,9 +2381,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_InitializeVarGlobal) {
   if (assign) {
     CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
     Handle<GlobalObject> global(isolate->context()->global_object());
-    Handle<Object> result = JSReceiver::SetProperty(
-        global, name, value, attributes, strict_mode);
-    RETURN_IF_EMPTY_HANDLE(isolate, result);
+    Handle<Object> result;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, result,
+        JSReceiver::SetProperty(global, name, value, attributes, strict_mode));
     return *result;
   }
   return isolate->heap()->undefined_value();
@@ -2428,7 +2435,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_InitializeConstGlobal) {
     // property through an interceptor and only do it if it's
     // uninitialized, e.g. the hole. Nirk...
     // Passing sloppy mode because the property is writable.
-    RETURN_IF_EMPTY_HANDLE(
+    RETURN_FAILURE_ON_EXCEPTION(
         isolate,
         JSReceiver::SetProperty(global, name, value, attributes, SLOPPY));
     return *value;
@@ -2498,7 +2505,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_InitializeConstContextSlot) {
     Handle<JSObject> global = Handle<JSObject>(
         isolate->context()->global_object());
     // Strict mode not needed (const disallowed in strict mode).
-    RETURN_IF_EMPTY_HANDLE(
+    RETURN_FAILURE_ON_EXCEPTION(
         isolate,
         JSReceiver::SetProperty(global, name, value, NONE, SLOPPY));
     return *value;
@@ -2549,7 +2556,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_InitializeConstContextSlot) {
     // read-only property.
     if ((attributes & READ_ONLY) == 0) {
       // Strict mode not needed (const disallowed in strict mode).
-      RETURN_IF_EMPTY_HANDLE(
+      RETURN_FAILURE_ON_EXCEPTION(
           isolate,
           JSReceiver::SetProperty(object, name, value, attributes, SLOPPY));
     }
@@ -2711,7 +2718,7 @@ static Handle<JSFunction> InstallBuiltin(Isolate* isolate,
                                       code,
                                       false);
   optimized->shared()->DontAdaptArguments();
-  JSReceiver::SetProperty(holder, key, optimized, NONE, STRICT);
+  JSReceiver::SetProperty(holder, key, optimized, NONE, STRICT).Assert();
   return optimized;
 }
 
@@ -3238,8 +3245,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ObjectFreeze) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 1);
   CONVERT_ARG_HANDLE_CHECKED(JSObject, object, 0);
-  Handle<Object> result = JSObject::Freeze(object);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result, JSObject::Freeze(object));
   return *result;
 }
 
@@ -3441,15 +3448,20 @@ class ReplacementStringBuilder {
   }
 
 
-  Handle<String> ToString() {
+  MaybeHandle<String> ToString() {
+    Isolate* isolate = heap_->isolate();
     if (array_builder_.length() == 0) {
-      return heap_->isolate()->factory()->empty_string();
+      return isolate->factory()->empty_string();
     }
 
     Handle<String> joined_string;
     if (is_ascii_) {
-      Handle<SeqOneByteString> seq = NewRawOneByteString(character_count_);
-      RETURN_IF_EMPTY_HANDLE_VALUE(heap_->isolate(), seq, Handle<String>());
+      Handle<SeqOneByteString> seq;
+      ASSIGN_RETURN_ON_EXCEPTION(
+          isolate, seq,
+          isolate->factory()->NewRawOneByteString(character_count_),
+          String);
+
       DisallowHeapAllocation no_gc;
       uint8_t* char_buffer = seq->GetChars();
       StringBuilderConcatHelper(*subject_,
@@ -3459,8 +3471,12 @@ class ReplacementStringBuilder {
       joined_string = Handle<String>::cast(seq);
     } else {
       // Non-ASCII.
-      Handle<SeqTwoByteString> seq = NewRawTwoByteString(character_count_);
-      RETURN_IF_EMPTY_HANDLE_VALUE(heap_->isolate(), seq, Handle<String>());
+      Handle<SeqTwoByteString> seq;
+      ASSIGN_RETURN_ON_EXCEPTION(
+          isolate, seq,
+          isolate->factory()->NewRawTwoByteString(character_count_),
+          String);
+
       DisallowHeapAllocation no_gc;
       uc16* char_buffer = seq->GetChars();
       StringBuilderConcatHelper(*subject_,
@@ -3483,16 +3499,6 @@ class ReplacementStringBuilder {
   }
 
  private:
-  Handle<SeqOneByteString> NewRawOneByteString(int length) {
-    return heap_->isolate()->factory()->NewRawOneByteString(length);
-  }
-
-
-  Handle<SeqTwoByteString> NewRawTwoByteString(int length) {
-    return heap_->isolate()->factory()->NewRawTwoByteString(length);
-  }
-
-
   void AddElement(Object* element) {
     ASSERT(element->IsSmi() || element->IsString());
     ASSERT(array_builder_.capacity() > array_builder_.length());
@@ -3971,14 +3977,15 @@ MUST_USE_RESULT static MaybeObject* StringReplaceGlobalAtomRegExpWithString(
   int subject_pos = 0;
   int result_pos = 0;
 
-  Handle<String> result_seq;
+  MaybeHandle<SeqString> maybe_res;
   if (ResultSeqString::kHasAsciiEncoding) {
-    result_seq = isolate->factory()->NewRawOneByteString(result_len);
+    maybe_res = isolate->factory()->NewRawOneByteString(result_len);
   } else {
-    result_seq = isolate->factory()->NewRawTwoByteString(result_len);
+    maybe_res = isolate->factory()->NewRawTwoByteString(result_len);
   }
-  RETURN_IF_EMPTY_HANDLE(isolate, result_seq);
-  Handle<ResultSeqString> result = Handle<ResultSeqString>::cast(result_seq);
+  Handle<SeqString> untyped_res;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, untyped_res, maybe_res);
+  Handle<ResultSeqString> result = Handle<ResultSeqString>::cast(untyped_res);
 
   for (int i = 0; i < matches; i++) {
     // Copy non-matched subject content.
@@ -4107,8 +4114,8 @@ MUST_USE_RESULT static MaybeObject* StringReplaceGlobalRegExpWithString(
                                capture_count,
                                global_cache.LastSuccessfulMatch());
 
-  Handle<String> result = builder.ToString();
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<String> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, result, builder.ToString());
   return *result;
 }
 
@@ -4153,12 +4160,11 @@ MUST_USE_RESULT static MaybeObject* StringReplaceGlobalRegExpWithEmptyString(
   Handle<ResultSeqString> answer;
   if (ResultSeqString::kHasAsciiEncoding) {
     answer = Handle<ResultSeqString>::cast(
-        isolate->factory()->NewRawOneByteString(new_length));
+        isolate->factory()->NewRawOneByteString(new_length).ToHandleChecked());
   } else {
     answer = Handle<ResultSeqString>::cast(
-        isolate->factory()->NewRawTwoByteString(new_length));
+        isolate->factory()->NewRawTwoByteString(new_length).ToHandleChecked());
   }
-  ASSERT(!answer.is_null());
 
   int prev = 0;
   int position = 0;
@@ -4243,35 +4249,34 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringReplaceGlobalRegExpWithString) {
 }
 
 
-Handle<String> StringReplaceOneCharWithString(Isolate* isolate,
-                                              Handle<String> subject,
-                                              Handle<String> search,
-                                              Handle<String> replace,
-                                              bool* found,
-                                              int recursion_limit) {
-  if (recursion_limit == 0) return Handle<String>::null();
+// This may return an empty MaybeHandle if an exception is thrown or
+// we abort due to reaching the recursion limit.
+MaybeHandle<String> StringReplaceOneCharWithString(Isolate* isolate,
+                                                   Handle<String> subject,
+                                                   Handle<String> search,
+                                                   Handle<String> replace,
+                                                   bool* found,
+                                                   int recursion_limit) {
+  if (recursion_limit == 0) return MaybeHandle<String>();
+  recursion_limit--;
   if (subject->IsConsString()) {
     ConsString* cons = ConsString::cast(*subject);
     Handle<String> first = Handle<String>(cons->first());
     Handle<String> second = Handle<String>(cons->second());
-    Handle<String> new_first =
-        StringReplaceOneCharWithString(isolate,
-                                       first,
-                                       search,
-                                       replace,
-                                       found,
-                                       recursion_limit - 1);
-    if (new_first.is_null()) return new_first;
+    Handle<String> new_first;
+    if (!StringReplaceOneCharWithString(
+            isolate, first, search, replace, found, recursion_limit)
+            .ToHandle(&new_first)) {
+      return MaybeHandle<String>();
+    }
     if (*found) return isolate->factory()->NewConsString(new_first, second);
 
-    Handle<String> new_second =
-        StringReplaceOneCharWithString(isolate,
-                                       second,
-                                       search,
-                                       replace,
-                                       found,
-                                       recursion_limit - 1);
-    if (new_second.is_null()) return new_second;
+    Handle<String> new_second;
+    if (!StringReplaceOneCharWithString(
+            isolate, second, search, replace, found, recursion_limit)
+            .ToHandle(&new_second)) {
+      return MaybeHandle<String>();
+    }
     if (*found) return isolate->factory()->NewConsString(first, new_second);
 
     return subject;
@@ -4280,8 +4285,11 @@ Handle<String> StringReplaceOneCharWithString(Isolate* isolate,
     if (index == -1) return subject;
     *found = true;
     Handle<String> first = isolate->factory()->NewSubString(subject, 0, index);
-    Handle<String> cons1 = isolate->factory()->NewConsString(first, replace);
-    RETURN_IF_EMPTY_HANDLE_VALUE(isolate, cons1, Handle<String>());
+    Handle<String> cons1;
+    ASSIGN_RETURN_ON_EXCEPTION(
+        isolate, cons1,
+        isolate->factory()->NewConsString(first, replace),
+        String);
     Handle<String> second =
         isolate->factory()->NewSubString(subject, index + 1, subject->length());
     return isolate->factory()->NewConsString(cons1, second);
@@ -4300,20 +4308,20 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringReplaceOneCharWithString) {
   // retry with a flattened subject string.
   const int kRecursionLimit = 0x1000;
   bool found = false;
-  Handle<String> result = StringReplaceOneCharWithString(isolate,
-                                                         subject,
-                                                         search,
-                                                         replace,
-                                                         &found,
-                                                         kRecursionLimit);
-  if (!result.is_null()) return *result;
+  Handle<String> result;
+  if (StringReplaceOneCharWithString(
+          isolate, subject, search, replace, &found, kRecursionLimit)
+          .ToHandle(&result)) {
+    return *result;
+  }
   if (isolate->has_pending_exception()) return Failure::Exception();
-  return *StringReplaceOneCharWithString(isolate,
-                                         FlattenGetString(subject),
-                                         search,
-                                         replace,
-                                         &found,
-                                         kRecursionLimit);
+
+  subject = FlattenGetString(subject);
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      StringReplaceOneCharWithString(
+          isolate, subject, search, replace, &found, kRecursionLimit));
+  return *result;
 }
 
 
@@ -5171,14 +5179,15 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DefineOrRedefineDataProperty) {
     // TODO(mstarzinger): So far this only works if property attributes don't
     // change, this should be fixed once we cleanup the underlying code.
     if (callback->IsForeign() && lookup.GetAttributes() == attr) {
-      Handle<Object> result_object =
+      Handle<Object> result_object;
+      ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+          isolate, result_object,
           JSObject::SetPropertyWithCallback(js_object,
                                             callback,
                                             name,
                                             obj_value,
                                             handle(lookup.holder()),
-                                            STRICT);
-      RETURN_IF_EMPTY_HANDLE(isolate, result_object);
+                                            STRICT));
       return *result_object;
     }
   }
@@ -5200,17 +5209,18 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DefineOrRedefineDataProperty) {
     JSObject::NormalizeProperties(js_object, CLEAR_INOBJECT_PROPERTIES, 0);
     // Use IgnoreAttributes version since a readonly property may be
     // overridden and SetProperty does not allow this.
-    Handle<Object> result = JSObject::SetLocalPropertyIgnoreAttributes(
-        js_object, name, obj_value, attr);
-    RETURN_IF_EMPTY_HANDLE(isolate, result);
+    Handle<Object> result;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, result,
+        JSObject::SetLocalPropertyIgnoreAttributes(
+            js_object, name, obj_value, attr));
     return *result;
   }
 
-  Handle<Object> result = Runtime::ForceSetObjectProperty(isolate, js_object,
-                                                          name,
-                                                          obj_value,
-                                                          attr);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      Runtime::ForceSetObjectProperty(js_object, name, obj_value, attr));
   return *result;
 }
 
@@ -5223,34 +5233,34 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetDataProperty) {
   CONVERT_ARG_HANDLE_CHECKED(Name, key, 1);
   LookupResult lookup(isolate);
   object->LookupRealNamedProperty(*key, &lookup);
-  if (!lookup.IsFound()) return isolate->heap()->undefined_value();
-  switch (lookup.type()) {
-    case NORMAL:
-      return lookup.holder()->GetNormalizedProperty(&lookup);
-    case FIELD:
-      return lookup.holder()->FastPropertyAt(
-          lookup.representation(),
-          lookup.GetFieldIndex().field_index());
-    case CONSTANT:
-      return lookup.GetConstant();
-    case CALLBACKS:
-    case HANDLER:
-    case INTERCEPTOR:
-    case TRANSITION:
-      return isolate->heap()->undefined_value();
-    case NONEXISTENT:
-      UNREACHABLE();
+  if (lookup.IsFound() && !lookup.IsTransition()) {
+    switch (lookup.type()) {
+      case NORMAL:
+        return lookup.holder()->GetNormalizedProperty(&lookup);
+      case FIELD:
+        return lookup.holder()->FastPropertyAt(
+            lookup.representation(),
+            lookup.GetFieldIndex().field_index());
+      case CONSTANT:
+        return lookup.GetConstant();
+      case CALLBACKS:
+      case HANDLER:
+      case INTERCEPTOR:
+        break;
+      case NONEXISTENT:
+        UNREACHABLE();
+    }
   }
   return isolate->heap()->undefined_value();
 }
 
 
-Handle<Object> Runtime::SetObjectProperty(Isolate* isolate,
-                                          Handle<Object> object,
-                                          Handle<Object> key,
-                                          Handle<Object> value,
-                                          PropertyAttributes attr,
-                                          StrictMode strict_mode) {
+MaybeHandle<Object> Runtime::SetObjectProperty(Isolate* isolate,
+                                               Handle<Object> object,
+                                               Handle<Object> key,
+                                               Handle<Object> value,
+                                               PropertyAttributes attr,
+                                               StrictMode strict_mode) {
   SetPropertyMode set_mode = attr == NONE ? SET_PROPERTY : DEFINE_PROPERTY;
 
   if (object->IsUndefined() || object->IsNull()) {
@@ -5292,7 +5302,7 @@ Handle<Object> Runtime::SetObjectProperty(Isolate* isolate,
       return value;
     }
 
-    js_object->ValidateElements();
+    JSObject::ValidateElements(js_object);
     if (js_object->HasExternalArrayElements() ||
         js_object->HasFixedTypedArrayElements()) {
       if (!value->IsNumber() && !value->IsUndefined()) {
@@ -5307,7 +5317,7 @@ Handle<Object> Runtime::SetObjectProperty(Isolate* isolate,
                                                  strict_mode,
                                                  true,
                                                  set_mode);
-    js_object->ValidateElements();
+    JSObject::ValidateElements(js_object);
     return result.is_null() ? result : value;
   }
 
@@ -5349,11 +5359,11 @@ Handle<Object> Runtime::SetObjectProperty(Isolate* isolate,
 }
 
 
-Handle<Object> Runtime::ForceSetObjectProperty(Isolate* isolate,
-                                               Handle<JSObject> js_object,
-                                               Handle<Object> key,
-                                               Handle<Object> value,
-                                               PropertyAttributes attr) {
+MaybeHandle<Object> Runtime::ForceSetObjectProperty(Handle<JSObject> js_object,
+                                                    Handle<Object> key,
+                                                    Handle<Object> value,
+                                                    PropertyAttributes attr) {
+  Isolate* isolate = js_object->GetIsolate();
   // Check if the given key is an array index.
   uint32_t index;
   if (key->ToArrayIndex(&index)) {
@@ -5478,11 +5488,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetProperty) {
     strict_mode = strict_mode_arg;
   }
 
-  Handle<Object> result = Runtime::SetObjectProperty(isolate, object, key,
-                                                     value,
-                                                     attributes,
-                                                     strict_mode);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      Runtime::SetObjectProperty(
+          isolate, object, key, value, attributes, strict_mode));
   return *result;
 }
 
@@ -5641,9 +5651,11 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_IgnoreAttributesAndSetProperty) {
         (unchecked_value & ~(READ_ONLY | DONT_ENUM | DONT_DELETE)) == 0);
     attributes = static_cast<PropertyAttributes>(unchecked_value);
   }
-  Handle<Object> result = JSObject::SetLocalPropertyIgnoreAttributes(
-      object, name, value, attributes);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      JSObject::SetLocalPropertyIgnoreAttributes(
+          object, name, value, attributes));
   return *result;
 }
 
@@ -6288,10 +6300,12 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_URIEscape) {
   CONVERT_ARG_HANDLE_CHECKED(String, source, 0);
   Handle<String> string = FlattenGetString(source);
   ASSERT(string->IsFlat());
-  Handle<String> result = string->IsOneByteRepresentationUnderneath()
-      ? URIEscape::Escape<uint8_t>(isolate, source)
-      : URIEscape::Escape<uc16>(isolate, source);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<String> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      string->IsOneByteRepresentationUnderneath()
+            ? URIEscape::Escape<uint8_t>(isolate, source)
+            : URIEscape::Escape<uc16>(isolate, source));
   return *result;
 }
 
@@ -6302,9 +6316,13 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_URIUnescape) {
   CONVERT_ARG_HANDLE_CHECKED(String, source, 0);
   Handle<String> string = FlattenGetString(source);
   ASSERT(string->IsFlat());
-  return string->IsOneByteRepresentationUnderneath()
-      ? *URIUnescape::Unescape<uint8_t>(isolate, source)
-      : *URIUnescape::Unescape<uc16>(isolate, source);
+  Handle<String> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      string->IsOneByteRepresentationUnderneath()
+            ? URIUnescape::Unescape<uint8_t>(isolate, source)
+            : URIUnescape::Unescape<uc16>(isolate, source));
+  return *result;
 }
 
 
@@ -6602,9 +6620,9 @@ MUST_USE_RESULT static MaybeObject* ConvertCase(
   // might break in the future if we implement more context and locale
   // dependent upper/lower conversions.
   if (s->IsOneByteRepresentationUnderneath()) {
+    // Same length as input.
     Handle<SeqOneByteString> result =
-        isolate->factory()->NewRawOneByteString(length);
-    ASSERT(!result.is_null());  // Same length as input.
+        isolate->factory()->NewRawOneByteString(length).ToHandleChecked();
     DisallowHeapAllocation no_gc;
     String::FlatContent flat_content = s->GetFlatContent();
     ASSERT(flat_content.IsFlat());
@@ -6618,13 +6636,12 @@ MUST_USE_RESULT static MaybeObject* ConvertCase(
     if (is_ascii)  return has_changed_character ? *result : *s;
   }
 
-  Handle<SeqString> result;
+  Handle<SeqString> result;  // Same length as input.
   if (s->IsOneByteRepresentation()) {
-    result = isolate->factory()->NewRawOneByteString(length);
+    result = isolate->factory()->NewRawOneByteString(length).ToHandleChecked();
   } else {
-    result = isolate->factory()->NewRawTwoByteString(length);
+    result = isolate->factory()->NewRawTwoByteString(length).ToHandleChecked();
   }
-  ASSERT(!result.is_null());  // Same length as input.
 
   MaybeObject* maybe = ConvertCaseHelper(isolate, *s, *result, length, mapping);
   Object* answer;
@@ -6634,12 +6651,13 @@ MUST_USE_RESULT static MaybeObject* ConvertCase(
   ASSERT(answer->IsSmi());
   length = Smi::cast(answer)->value();
   if (s->IsOneByteRepresentation() && length > 0) {
-    result = isolate->factory()->NewRawOneByteString(length);
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, result, isolate->factory()->NewRawOneByteString(length));
   } else {
     if (length < 0) length = -length;
-    result = isolate->factory()->NewRawTwoByteString(length);
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, result, isolate->factory()->NewRawTwoByteString(length));
   }
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
   return ConvertCaseHelper(isolate, *s, *result, length, mapping);
 }
 
@@ -7074,8 +7092,9 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_StringAdd) {
   CONVERT_ARG_HANDLE_CHECKED(String, str1, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, str2, 1);
   isolate->counters()->string_add_runtime()->Increment();
-  Handle<String> result = isolate->factory()->NewConsString(str1, str2);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<String> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result, isolate->factory()->NewConsString(str1, str2));
   return *result;
 }
 
@@ -7273,9 +7292,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_StringBuilderJoin) {
     length += increment;
   }
 
-  Handle<SeqTwoByteString> answer =
-      isolate->factory()->NewRawTwoByteString(length);
-  RETURN_IF_EMPTY_HANDLE(isolate, answer);
+  Handle<SeqTwoByteString> answer;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, answer,
+      isolate->factory()->NewRawTwoByteString(length));
 
   DisallowHeapAllocation no_gc;
 
@@ -8235,7 +8255,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_FunctionBindArguments) {
   Handle<Object> new_length(args.at<Object>(3));
   PropertyAttributes attr =
       static_cast<PropertyAttributes>(DONT_DELETE | DONT_ENUM | READ_ONLY);
-  ForceSetProperty(bound_function, length_string, new_length, attr);
+  Runtime::ForceSetObjectProperty(
+      bound_function, length_string, new_length, attr).Assert();
   return *bound_function;
 }
 
@@ -9170,7 +9191,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_DeclareModules) {
         case MODULE: {
           Object* referenced_context = Context::cast(host_context)->get(index);
           Handle<JSModule> value(Context::cast(referenced_context)->module());
-          JSReceiver::SetProperty(module, name, value, FROZEN, STRICT);
+          JSReceiver::SetProperty(module, name, value, FROZEN, STRICT).Assert();
           break;
         }
         case INTERNAL:
@@ -9457,7 +9478,7 @@ RUNTIME_FUNCTION(MaybeObject*, RuntimeHidden_StoreContextSlot) {
   // Set the property if it's not read only or doesn't yet exist.
   if ((attributes & READ_ONLY) == 0 ||
       (JSReceiver::GetLocalPropertyAttribute(object, name) == ABSENT)) {
-    RETURN_IF_EMPTY_HANDLE(
+    RETURN_FAILURE_ON_EXCEPTION(
         isolate,
         JSReceiver::SetProperty(object, name, value, NONE, strict_mode));
   } else if (strict_mode == STRICT && (attributes & READ_ONLY) != 0) {
@@ -9767,16 +9788,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ParseJson) {
   source = Handle<String>(FlattenGetString(source));
   // Optimized fast case where we only have ASCII characters.
   Handle<Object> result;
-  if (source->IsSeqOneByteString()) {
-    result = JsonParser<true>::Parse(source);
-  } else {
-    result = JsonParser<false>::Parse(source);
-  }
-  if (result.is_null()) {
-    // Syntax error or stack overflow in scanner.
-    ASSERT(isolate->has_pending_exception());
-    return Failure::Exception();
-  }
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      source->IsSeqOneByteString() ? JsonParser<true>::Parse(source)
+                                   : JsonParser<false>::Parse(source));
   return *result;
 }
 
@@ -10643,8 +10658,8 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_MoveArrayContents) {
   ASSERT(args.length() == 2);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, from, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, to, 1);
-  from->ValidateElements();
-  to->ValidateElements();
+  JSObject::ValidateElements(from);
+  JSObject::ValidateElements(to);
 
   Handle<FixedArrayBase> new_elements(from->elements());
   ElementsKind from_kind = from->GetElementsKind();
@@ -10655,7 +10670,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_MoveArrayContents) {
   JSObject::ResetElements(from);
   from->set_length(Smi::FromInt(0));
 
-  to->ValidateElements();
+  JSObject::ValidateElements(to);
   return *to;
 }
 
@@ -10702,7 +10717,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetArrayKeys) {
           isolate->factory()->NewFixedArray(
               current->NumberOfLocalElements(NONE));
       current->GetLocalElementKeys(*current_keys, NONE);
-      keys = UnionOfKeys(keys, current_keys);
+      keys = FixedArray::UnionOfKeys(keys, current_keys);
     }
     // Erase any keys >= length.
     // TODO(adamk): Remove this step when the contract of %GetArrayKeys
@@ -10787,6 +10802,7 @@ static MaybeObject* DebugLookupResultValue(Heap* heap,
                                            LookupResult* result,
                                            bool* caught_exception) {
   Object* value;
+  if (result->IsTransition()) return heap->undefined_value();
   switch (result->type()) {
     case NORMAL:
       value = result->holder()->GetNormalizedProperty(result);
@@ -10813,24 +10829,22 @@ static MaybeObject* DebugLookupResultValue(Heap* heap,
       if (structure->IsForeign() || structure->IsAccessorInfo()) {
         Isolate* isolate = heap->isolate();
         HandleScope scope(isolate);
-        Handle<Object> value = JSObject::GetPropertyWithCallback(
+        MaybeHandle<Object> maybe_value = JSObject::GetPropertyWithCallback(
             handle(result->holder(), isolate),
             handle(receiver, isolate),
             handle(structure, isolate),
             handle(name, isolate));
-        if (value.is_null()) {
-          MaybeObject* exception = heap->isolate()->pending_exception();
-          heap->isolate()->clear_pending_exception();
-          if (caught_exception != NULL) *caught_exception = true;
-          return exception;
-        }
-        return *value;
+        Handle<Object> value;
+        if (maybe_value.ToHandle(&value)) return *value;
+        MaybeObject* exception = heap->isolate()->pending_exception();
+        heap->isolate()->clear_pending_exception();
+        if (caught_exception != NULL) *caught_exception = true;
+        return exception;
       } else {
         return heap->undefined_value();
       }
     }
     case INTERCEPTOR:
-    case TRANSITION:
       return heap->undefined_value();
     case HANDLER:
     case NONEXISTENT:
@@ -11008,9 +11022,10 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugNamedInterceptorPropertyValue) {
   CONVERT_ARG_HANDLE_CHECKED(Name, name, 1);
 
   PropertyAttributes attributes;
-  Handle<Object> result =
-      JSObject::GetPropertyWithInterceptor(obj, obj, name, &attributes);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      JSObject::GetPropertyWithInterceptor(obj, obj, name, &attributes));
   return *result;
 }
 
@@ -11448,7 +11463,8 @@ static bool ParameterIsShadowedByContextLocal(Handle<ScopeInfo> info,
 
 // Create a plain JSObject which materializes the local scope for the specified
 // frame.
-static Handle<JSObject> MaterializeStackLocalsWithFrameInspector(
+MUST_USE_RESULT
+static MaybeHandle<JSObject> MaterializeStackLocalsWithFrameInspector(
     Isolate* isolate,
     Handle<JSObject> target,
     Handle<JSFunction> function,
@@ -11469,10 +11485,10 @@ static Handle<JSObject> MaterializeStackLocalsWithFrameInspector(
     ASSERT(!value->IsTheHole());
     Handle<String> name(scope_info->ParameterName(i));
 
-    RETURN_IF_EMPTY_HANDLE_VALUE(
+    RETURN_ON_EXCEPTION(
         isolate,
         Runtime::SetObjectProperty(isolate, target, name, value, NONE, SLOPPY),
-        Handle<JSObject>());
+        JSObject);
   }
 
   // Second fill all stack locals.
@@ -11481,10 +11497,10 @@ static Handle<JSObject> MaterializeStackLocalsWithFrameInspector(
     Handle<Object> value(frame_inspector->GetExpression(i), isolate);
     if (value->IsTheHole()) continue;
 
-    RETURN_IF_EMPTY_HANDLE_VALUE(
+    RETURN_ON_EXCEPTION(
         isolate,
         Runtime::SetObjectProperty(isolate, target, name, value, NONE, SLOPPY),
-        Handle<JSObject>());
+        JSObject);
   }
 
   return target;
@@ -11529,10 +11545,11 @@ static void UpdateStackLocalsFromMaterializedObject(Isolate* isolate,
 }
 
 
-static Handle<JSObject> MaterializeLocalContext(Isolate* isolate,
-                                                Handle<JSObject> target,
-                                                Handle<JSFunction> function,
-                                                JavaScriptFrame* frame) {
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeLocalContext(
+    Isolate* isolate,
+    Handle<JSObject> target,
+    Handle<JSFunction> function,
+    JavaScriptFrame* frame) {
   HandleScope scope(isolate);
   Handle<SharedFunctionInfo> shared(function->shared());
   Handle<ScopeInfo> scope_info(shared->scope_info());
@@ -11544,7 +11561,7 @@ static Handle<JSObject> MaterializeLocalContext(Isolate* isolate,
   Handle<Context> function_context(frame_context->declaration_context());
   if (!ScopeInfo::CopyContextLocalsToScopeObject(
           scope_info, function_context, target)) {
-    return Handle<JSObject>();
+    return MaybeHandle<JSObject>();
   }
 
   // Finally copy any properties from the function context extension.
@@ -11562,7 +11579,7 @@ static Handle<JSObject> MaterializeLocalContext(Isolate* isolate,
         // Names of variables introduced by eval are strings.
         ASSERT(keys->get(i)->IsString());
         Handle<String> key(String::cast(keys->get(i)));
-        RETURN_IF_EMPTY_HANDLE_VALUE(
+        RETURN_ON_EXCEPTION(
             isolate,
             Runtime::SetObjectProperty(isolate,
                                        target,
@@ -11570,7 +11587,7 @@ static Handle<JSObject> MaterializeLocalContext(Isolate* isolate,
                                        Object::GetPropertyOrElement(ext, key),
                                        NONE,
                                        SLOPPY),
-            Handle<JSObject>());
+            JSObject);
       }
     }
   }
@@ -11579,7 +11596,7 @@ static Handle<JSObject> MaterializeLocalContext(Isolate* isolate,
 }
 
 
-static Handle<JSObject> MaterializeLocalScope(
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeLocalScope(
     Isolate* isolate,
     JavaScriptFrame* frame,
     int inlined_jsframe_index) {
@@ -11588,9 +11605,11 @@ static Handle<JSObject> MaterializeLocalScope(
 
   Handle<JSObject> local_scope =
       isolate->factory()->NewJSObject(isolate->object_function());
-  local_scope = MaterializeStackLocalsWithFrameInspector(
-                    isolate, local_scope, function, &frame_inspector);
-  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, local_scope, Handle<JSObject>());
+  ASSIGN_RETURN_ON_EXCEPTION(
+      isolate, local_scope,
+      MaterializeStackLocalsWithFrameInspector(
+          isolate, local_scope, function, &frame_inspector),
+      JSObject);
 
   return MaterializeLocalContext(isolate, local_scope, function, frame);
 }
@@ -11670,7 +11689,7 @@ static bool SetLocalVariableValue(Isolate* isolate,
           // We don't expect this to do anything except replacing
           // property value.
           Runtime::SetObjectProperty(isolate, ext, variable_name, new_value,
-                                     NONE, SLOPPY);
+                                     NONE, SLOPPY).Assert();
           return true;
         }
       }
@@ -11683,8 +11702,9 @@ static bool SetLocalVariableValue(Isolate* isolate,
 
 // Create a plain JSObject which materializes the closure content for the
 // context.
-static Handle<JSObject> MaterializeClosure(Isolate* isolate,
-                                           Handle<Context> context) {
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeClosure(
+    Isolate* isolate,
+    Handle<Context> context) {
   ASSERT(context->IsFunctionContext());
 
   Handle<SharedFunctionInfo> shared(context->closure()->shared());
@@ -11698,7 +11718,7 @@ static Handle<JSObject> MaterializeClosure(Isolate* isolate,
   // Fill all context locals to the context extension.
   if (!ScopeInfo::CopyContextLocalsToScopeObject(
           scope_info, context, closure_scope)) {
-    return Handle<JSObject>();
+    return MaybeHandle<JSObject>();
   }
 
   // Finally copy any properties from the function context extension. This will
@@ -11714,12 +11734,12 @@ static Handle<JSObject> MaterializeClosure(Isolate* isolate,
       // Names of variables introduced by eval are strings.
       ASSERT(keys->get(i)->IsString());
       Handle<String> key(String::cast(keys->get(i)));
-       RETURN_IF_EMPTY_HANDLE_VALUE(
+       RETURN_ON_EXCEPTION(
           isolate,
           Runtime::SetObjectProperty(isolate, closure_scope, key,
                                      Object::GetPropertyOrElement(ext, key),
                                      NONE, SLOPPY),
-          Handle<JSObject>());
+          JSObject);
     }
   }
 
@@ -11750,7 +11770,7 @@ static bool SetClosureVariableValue(Isolate* isolate,
     if (JSReceiver::HasProperty(ext, variable_name)) {
       // We don't expect this to do anything except replacing property value.
       Runtime::SetObjectProperty(isolate, ext, variable_name, new_value,
-                                 NONE, SLOPPY);
+                                 NONE, SLOPPY).Assert();
       return true;
     }
   }
@@ -11761,19 +11781,20 @@ static bool SetClosureVariableValue(Isolate* isolate,
 
 // Create a plain JSObject which materializes the scope for the specified
 // catch context.
-static Handle<JSObject> MaterializeCatchScope(Isolate* isolate,
-                                              Handle<Context> context) {
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeCatchScope(
+    Isolate* isolate,
+    Handle<Context> context) {
   ASSERT(context->IsCatchContext());
   Handle<String> name(String::cast(context->extension()));
   Handle<Object> thrown_object(context->get(Context::THROWN_OBJECT_INDEX),
                                isolate);
   Handle<JSObject> catch_scope =
       isolate->factory()->NewJSObject(isolate->object_function());
-  RETURN_IF_EMPTY_HANDLE_VALUE(
+  RETURN_ON_EXCEPTION(
       isolate,
       Runtime::SetObjectProperty(isolate, catch_scope, name, thrown_object,
                                  NONE, SLOPPY),
-      Handle<JSObject>());
+      JSObject);
   return catch_scope;
 }
 
@@ -11794,7 +11815,7 @@ static bool SetCatchVariableValue(Isolate* isolate,
 
 // Create a plain JSObject which materializes the block scope for the specified
 // block context.
-static Handle<JSObject> MaterializeBlockScope(
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeBlockScope(
     Isolate* isolate,
     Handle<Context> context) {
   ASSERT(context->IsBlockContext());
@@ -11808,7 +11829,7 @@ static Handle<JSObject> MaterializeBlockScope(
   // Fill all context locals.
   if (!ScopeInfo::CopyContextLocalsToScopeObject(
           scope_info, context, block_scope)) {
-    return Handle<JSObject>();
+    return MaybeHandle<JSObject>();
   }
 
   return block_scope;
@@ -11817,7 +11838,7 @@ static Handle<JSObject> MaterializeBlockScope(
 
 // Create a plain JSObject which materializes the module scope for the specified
 // module context.
-static Handle<JSObject> MaterializeModuleScope(
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeModuleScope(
     Isolate* isolate,
     Handle<Context> context) {
   ASSERT(context->IsModuleContext());
@@ -11831,7 +11852,7 @@ static Handle<JSObject> MaterializeModuleScope(
   // Fill all context locals.
   if (!ScopeInfo::CopyContextLocalsToScopeObject(
           scope_info, context, module_scope)) {
-    return Handle<JSObject>();
+    return MaybeHandle<JSObject>();
   }
 
   return module_scope;
@@ -12041,7 +12062,7 @@ class ScopeIterator {
   }
 
   // Return the JavaScript object with the content of the current scope.
-  Handle<JSObject> ScopeObject() {
+  MaybeHandle<JSObject> ScopeObject() {
     ASSERT(!failed_);
     switch (Type()) {
       case ScopeIterator::ScopeTypeGlobal:
@@ -12318,7 +12339,8 @@ static const int kScopeDetailsObjectIndex = 1;
 static const int kScopeDetailsSize = 2;
 
 
-static Handle<JSObject> MaterializeScopeDetails(Isolate* isolate,
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeScopeDetails(
+    Isolate* isolate,
     ScopeIterator* it) {
   // Calculate the size of the result.
   int details_size = kScopeDetailsSize;
@@ -12326,8 +12348,9 @@ static Handle<JSObject> MaterializeScopeDetails(Isolate* isolate,
 
   // Fill in scope details.
   details->set(kScopeDetailsTypeIndex, Smi::FromInt(it->Type()));
-  Handle<JSObject> scope_object = it->ScopeObject();
-  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, scope_object, Handle<JSObject>());
+  Handle<JSObject> scope_object;
+  ASSIGN_RETURN_ON_EXCEPTION(
+      isolate, scope_object, it->ScopeObject(), JSObject);
   details->set(kScopeDetailsObjectIndex, *scope_object);
 
   return isolate->factory()->NewJSArrayWithElements(details);
@@ -12371,8 +12394,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetScopeDetails) {
   if (it.Done()) {
     return isolate->heap()->undefined_value();
   }
-  Handle<JSObject> details = MaterializeScopeDetails(isolate, &it);
-  RETURN_IF_EMPTY_HANDLE(isolate, details);
+  Handle<JSObject> details;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, details, MaterializeScopeDetails(isolate, &it));
   return *details;
 }
 
@@ -12413,8 +12437,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetAllScopesDetails) {
   List<Handle<JSObject> > result(4);
   ScopeIterator it(isolate, frame, inlined_jsframe_index, ignore_nested_scopes);
   for (; !it.Done(); it.Next()) {
-    Handle<JSObject> details = MaterializeScopeDetails(isolate, &it);
-    RETURN_IF_EMPTY_HANDLE(isolate, details);
+    Handle<JSObject> details;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, details, MaterializeScopeDetails(isolate, &it));
     result.Add(details);
   }
 
@@ -12461,7 +12486,9 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_GetFunctionScopeDetails) {
     return isolate->heap()->undefined_value();
   }
 
-  Handle<JSObject> details = MaterializeScopeDetails(isolate, &it);
+  Handle<JSObject> details;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, details, MaterializeScopeDetails(isolate, &it));
   RETURN_IF_EMPTY_HANDLE(isolate, details);
   return *details;
 }
@@ -12841,7 +12868,7 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_ClearStepping) {
 
 // Helper function to find or create the arguments object for
 // Runtime_DebugEvaluate.
-static Handle<JSObject> MaterializeArgumentsObject(
+MUST_USE_RESULT static MaybeHandle<JSObject> MaterializeArgumentsObject(
     Isolate* isolate,
     Handle<JSObject> target,
     Handle<JSFunction> function) {
@@ -12856,11 +12883,12 @@ static Handle<JSObject> MaterializeArgumentsObject(
   // FunctionGetArguments can't throw an exception.
   Handle<JSObject> arguments = Handle<JSObject>::cast(
       Accessors::FunctionGetArguments(function));
-  Runtime::SetObjectProperty(isolate, target,
-                             isolate->factory()->arguments_string(),
-                             arguments,
-                             ::NONE,
-                             SLOPPY);
+  Handle<String> arguments_str = isolate->factory()->arguments_string();
+  RETURN_ON_EXCEPTION(
+      isolate,
+      Runtime::SetObjectProperty(
+          isolate, target, arguments_str, arguments, ::NONE, SLOPPY),
+      JSObject);
   return target;
 }
 
@@ -12950,12 +12978,14 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_DebugEvaluate) {
   Handle<JSObject> materialized =
       isolate->factory()->NewJSObject(isolate->object_function());
 
-  materialized = MaterializeStackLocalsWithFrameInspector(
-      isolate, materialized, function, &frame_inspector);
-  RETURN_IF_EMPTY_HANDLE(isolate, materialized);
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, materialized,
+      MaterializeStackLocalsWithFrameInspector(
+          isolate, materialized, function, &frame_inspector));
 
-  materialized = MaterializeArgumentsObject(isolate, materialized, function);
-  RETURN_IF_EMPTY_HANDLE(isolate, materialized);
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, materialized,
+      MaterializeArgumentsObject(isolate, materialized, function));
 
   // Add the materialized object in a with-scope to shadow the stack locals.
   context = isolate->factory()->NewWithContext(function, context, materialized);
@@ -14889,8 +14919,6 @@ RUNTIME_FUNCTION(MaybeObject*, Runtime_SetIsObserved) {
   if (obj->IsJSProxy())
     return isolate->heap()->undefined_value();
 
-  ASSERT(!(obj->map()->is_observed() && obj->IsJSObject() &&
-           Handle<JSObject>::cast(obj)->HasFastElements()));
   ASSERT(obj->IsJSObject());
   JSObject::SetObserved(Handle<JSObject>::cast(obj));
   return isolate->heap()->undefined_value();

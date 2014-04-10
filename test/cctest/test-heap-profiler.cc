@@ -445,7 +445,8 @@ TEST(HeapSnapshotConsString) {
       factory->NewStringFromAscii(i::CStrVector("0123456789"));
   i::Handle<i::String> second =
       factory->NewStringFromAscii(i::CStrVector("0123456789"));
-  i::Handle<i::String> cons_string = factory->NewConsString(first, second);
+  i::Handle<i::String> cons_string =
+      factory->NewConsString(first, second).ToHandleChecked();
 
   global->SetInternalField(0, v8::ToApiHandle<v8::String>(cons_string));
 
@@ -2505,6 +2506,41 @@ TEST(BoxObject) {
   const v8::HeapGraphNode* box_value =
       GetProperty(box_node, v8::HeapGraphEdge::kInternal, "value");
   CHECK_NE(NULL, box_value);
+}
+
+
+TEST(WeakContainers) {
+  i::FLAG_allow_natives_syntax = true;
+  LocalContext env;
+  v8::HandleScope scope(env->GetIsolate());
+  if (!CcTest::i_isolate()->use_crankshaft()) return;
+  v8::HeapProfiler* heap_profiler = env->GetIsolate()->GetHeapProfiler();
+  CompileRun(
+      "function foo(a) { return a.x; }\n"
+      "obj = {x : 123};\n"
+      "foo(obj);\n"
+      "foo(obj);\n"
+      "%OptimizeFunctionOnNextCall(foo);\n"
+      "foo(obj);\n");
+  const v8::HeapSnapshot* snapshot =
+      heap_profiler->TakeHeapSnapshot(v8_str("snapshot"));
+  CHECK(ValidateSnapshot(snapshot));
+  const v8::HeapGraphNode* global = GetGlobalObject(snapshot);
+  const v8::HeapGraphNode* obj =
+      GetProperty(global, v8::HeapGraphEdge::kProperty, "obj");
+  CHECK_NE(NULL, obj);
+  const v8::HeapGraphNode* map =
+      GetProperty(obj, v8::HeapGraphEdge::kInternal, "map");
+  CHECK_NE(NULL, map);
+  const v8::HeapGraphNode* dependent_code =
+      GetProperty(map, v8::HeapGraphEdge::kInternal, "dependent_code");
+  if (!dependent_code) return;
+  int count = dependent_code->GetChildrenCount();
+  CHECK_NE(0, count);
+  for (int i = 0; i < count; ++i) {
+    const v8::HeapGraphEdge* prop = dependent_code->GetChild(i);
+    CHECK_EQ(v8::HeapGraphEdge::kWeak, prop->GetType());
+  }
 }
 
 

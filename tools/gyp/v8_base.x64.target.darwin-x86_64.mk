@@ -6,13 +6,14 @@ LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 LOCAL_MODULE := v8_tools_gyp_v8_base_x64_gyp
 LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
-gyp_intermediate_dir := $(call local-intermediates-dir)
-gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared)
+LOCAL_MODULE_TARGET_ARCH := $(TARGET_$(GYP_VAR_PREFIX)ARCH)
+gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_VAR_PREFIX))
+gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
-	$(call intermediates-dir-for,GYP,third_party_icu_icui18n_gyp)/icui18n.stamp \
-	$(call intermediates-dir-for,GYP,third_party_icu_icuuc_gyp)/icuuc.stamp
+	$(call intermediates-dir-for,GYP,third_party_icu_icui18n_gyp,,,$(GYP_VAR_PREFIX))/icui18n.stamp \
+	$(call intermediates-dir-for,GYP,third_party_icu_icuuc_gyp,,,$(GYP_VAR_PREFIX))/icuuc.stamp
 
 GYP_GENERATED_OUTPUTS :=
 
@@ -259,7 +260,6 @@ MY_DEFS_Debug := \
 	'-DV8_TARGET_ARCH_X64' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
-	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DU_USING_ICU_NAMESPACE=0' \
@@ -365,7 +365,6 @@ MY_DEFS_Release := \
 	'-DV8_TARGET_ARCH_X64' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
-	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DU_USING_ICU_NAMESPACE=0' \
@@ -412,9 +411,9 @@ LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
 ### Rules for final target.
 
 LOCAL_LDFLAGS_Debug := \
-	-Wl,--fatal-warnings \
 	-Wl,-z,now \
 	-Wl,-z,relro \
+	-Wl,--fatal-warnings \
 	-Wl,-z,noexecstack \
 	-fPIC \
 	-m64 \
@@ -429,9 +428,9 @@ LOCAL_LDFLAGS_Debug := \
 
 
 LOCAL_LDFLAGS_Release := \
-	-Wl,--fatal-warnings \
 	-Wl,-z,now \
 	-Wl,-z,relro \
+	-Wl,--fatal-warnings \
 	-Wl,-z,noexecstack \
 	-fPIC \
 	-m64 \

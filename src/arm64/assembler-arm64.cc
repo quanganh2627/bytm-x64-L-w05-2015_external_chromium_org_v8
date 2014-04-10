@@ -456,6 +456,8 @@ void Assembler::bind(Label* label) {
   ASSERT(!label->is_near_linked());
   ASSERT(!label->is_bound());
 
+  DeleteUnresolvedBranchInfoForLabel(label);
+
   // If the label is linked, the link chain looks something like this:
   //
   // |--I----I-------I-------L
@@ -497,8 +499,6 @@ void Assembler::bind(Label* label) {
 
   ASSERT(label->is_bound());
   ASSERT(!label->is_linked());
-
-  DeleteUnresolvedBranchInfoForLabel(label);
 }
 
 
@@ -551,14 +551,16 @@ void Assembler::DeleteUnresolvedBranchInfoForLabel(Label* label) {
     return;
   }
 
-  // Branches to this label will be resolved when the label is bound below.
-  std::multimap<int, FarBranchInfo>::iterator it_tmp, it;
-  it = unresolved_branches_.begin();
-  while (it != unresolved_branches_.end()) {
-    it_tmp = it++;
-    if (it_tmp->second.label_ == label) {
-      CHECK(it_tmp->first >= pc_offset());
-      unresolved_branches_.erase(it_tmp);
+  if (label->is_linked()) {
+    // Branches to this label will be resolved when the label is bound below.
+    std::multimap<int, FarBranchInfo>::iterator it_tmp, it;
+    it = unresolved_branches_.begin();
+    while (it != unresolved_branches_.end()) {
+      it_tmp = it++;
+      if (it_tmp->second.label_ == label) {
+        CHECK(it_tmp->first >= pc_offset());
+        unresolved_branches_.erase(it_tmp);
+      }
     }
   }
   if (unresolved_branches_.empty()) {
@@ -645,7 +647,7 @@ int Assembler::ConstantPoolSizeAt(Instruction* instr) {
 void Assembler::ConstantPoolMarker(uint32_t size) {
   ASSERT(is_const_pool_blocked());
   // + 1 is for the crash guard.
-  Emit(LDR_x_lit | ImmLLiteral(2 * size + 1) | Rt(xzr));
+  Emit(LDR_x_lit | ImmLLiteral(size + 1) | Rt(xzr));
 }
 
 
@@ -1658,6 +1660,13 @@ void Assembler::frinta(const FPRegister& fd,
 }
 
 
+void Assembler::frintm(const FPRegister& fd,
+                       const FPRegister& fn) {
+  ASSERT(fd.SizeInBits() == fn.SizeInBits());
+  FPDataProcessing1Source(fd, fn, FRINTM);
+}
+
+
 void Assembler::frintn(const FPRegister& fd,
                        const FPRegister& fn) {
   ASSERT(fd.SizeInBits() == fn.SizeInBits());
@@ -2581,7 +2590,6 @@ void Assembler::CheckConstPool(bool force_emit, bool require_jump) {
   {
     // Block recursive calls to CheckConstPool and protect from veneer pools.
     BlockPoolsScope block_pools(this);
-    RecordComment("[ Constant Pool");
     RecordConstPool(pool_size);
 
     // Emit jump over constant pool if necessary.
@@ -2601,6 +2609,7 @@ void Assembler::CheckConstPool(bool force_emit, bool require_jump) {
     // beginning of the constant pool.
     // TODO(all): currently each relocated constant is 64 bits, consider adding
     // support for 32-bit entries.
+    RecordComment("[ Constant Pool");
     ConstantPoolMarker(2 * num_pending_reloc_info_);
     ConstantPoolGuard();
 

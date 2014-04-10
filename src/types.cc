@@ -140,14 +140,6 @@ int TypeImpl<Config>::LubBitset(i::Object* value) {
         value->ToInt32(&i) ? (Smi::IsValid(i) ? kSignedSmall : kOtherSigned32) :
         value->ToUint32(&u) ? kUnsigned32 : kFloat);
   }
-  if (map->instance_type() == ODDBALL_TYPE) {
-    if (value->IsUndefined()) return kUndefined;
-    if (value->IsNull()) return kNull;
-    if (value->IsBoolean()) return kBoolean;
-    if (value->IsTheHole()) return kAny;  // TODO(rossberg): kNone?
-    if (value->IsUninitialized()) return kNone;
-    UNREACHABLE();
-  }
   return LubBitset(map);
 }
 
@@ -178,8 +170,18 @@ int TypeImpl<Config>::LubBitset(i::Map* map) {
       return kString;
     case SYMBOL_TYPE:
       return kSymbol;
-    case ODDBALL_TYPE:
-      return kOddball;
+    case ODDBALL_TYPE: {
+      Heap* heap = map->GetHeap();
+      if (map == heap->undefined_map()) return kUndefined;
+      if (map == heap->the_hole_map()) return kAny;  // TODO(rossberg): kNone?
+      if (map == heap->null_map()) return kNull;
+      if (map == heap->boolean_map()) return kBoolean;
+      if (map == heap->uninitialized_map()) return kNone;
+      ASSERT(map == heap->no_interceptor_result_sentinel_map() ||
+             map == heap->termination_exception_map() ||
+             map == heap->arguments_marker_map());
+      return kInternal & kTaggedPtr;
+    }
     case HEAP_NUMBER_TYPE:
       return kFloat & kTaggedPtr;
     case JS_VALUE_TYPE:
@@ -249,13 +251,12 @@ int TypeImpl<Config>::GlbBitset() {
 // Most precise _current_ type of a value (usually its class).
 template<class Config>
 typename TypeImpl<Config>::TypeHandle TypeImpl<Config>::NowOf(
-    i::Handle<i::Object> value, Region* region) {
+    i::Object* value, Region* region) {
   if (value->IsSmi() ||
-      i::HeapObject::cast(*value)->map()->instance_type() == HEAP_NUMBER_TYPE ||
-      i::HeapObject::cast(*value)->map()->instance_type() == ODDBALL_TYPE) {
+      i::HeapObject::cast(value)->map()->instance_type() == HEAP_NUMBER_TYPE) {
     return Of(value, region);
   }
-  return Class(i::handle(i::HeapObject::cast(*value)->map()), region);
+  return Class(i::handle(i::HeapObject::cast(value)->map()), region);
 }
 
 
@@ -568,7 +569,6 @@ Representation Representation::FromType(Type* type) {
 }
 
 
-#ifdef OBJECT_PRINT
 template<class Config>
 void TypeImpl<Config>::TypePrint(PrintDimension dim) {
   TypePrint(stdout, dim);
@@ -649,11 +649,11 @@ void TypeImpl<Config>::TypePrint(FILE* out, PrintDimension dim) {
     }
   } else if (this->IsConstant()) {
     PrintF(out, "Constant(%p : ", static_cast<void*>(*this->AsConstant()));
-    Config::from_bitset(this->LubBitset())->TypePrint(out);
+    Config::from_bitset(this->LubBitset())->TypePrint(out, dim);
     PrintF(out, ")");
   } else if (this->IsClass()) {
     PrintF(out, "Class(%p < ", static_cast<void*>(*this->AsClass()));
-    Config::from_bitset(this->LubBitset())->TypePrint(out);
+    Config::from_bitset(this->LubBitset())->TypePrint(out, dim);
     PrintF(out, ")");
   } else if (this->IsUnion()) {
     PrintF(out, "(");
@@ -666,7 +666,6 @@ void TypeImpl<Config>::TypePrint(FILE* out, PrintDimension dim) {
     PrintF(out, ")");
   }
 }
-#endif
 
 
 template class TypeImpl<ZoneTypeConfig>;

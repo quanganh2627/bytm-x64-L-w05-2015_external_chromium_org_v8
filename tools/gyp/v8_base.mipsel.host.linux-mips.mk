@@ -3,12 +3,13 @@
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-LOCAL_MODULE := v8_tools_gyp_v8_base_mipsel_host_gyp
+LOCAL_MODULE := v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
-gyp_intermediate_dir := $(call local-intermediates-dir)
-gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared)
+LOCAL_MODULE_TARGET_ARCH := $(TARGET_$(GYP_VAR_PREFIX)ARCH)
+gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_VAR_PREFIX))
+gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES :=
@@ -246,7 +247,6 @@ MY_DEFS_Debug := \
 	'-D_MIPS_ARCH_MIPS32R2' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
-	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DU_USING_ICU_NAMESPACE=0' \
@@ -327,7 +327,6 @@ MY_DEFS_Release := \
 	'-D_MIPS_ARCH_MIPS32R2' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
-	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
 	'-DU_USING_ICU_NAMESPACE=0' \
@@ -391,10 +390,10 @@ LOCAL_SHARED_LIBRARIES :=
 
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
-gyp_all_modules: v8_tools_gyp_v8_base_mipsel_host_gyp
+gyp_all_modules: v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 # Alias gyp target name.
 .PHONY: v8_base.mipsel
-v8_base.mipsel: v8_tools_gyp_v8_base_mipsel_host_gyp
+v8_base.mipsel: v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 include $(BUILD_HOST_STATIC_LIBRARY)

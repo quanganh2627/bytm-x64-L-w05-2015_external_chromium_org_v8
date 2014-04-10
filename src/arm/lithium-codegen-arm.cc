@@ -783,6 +783,7 @@ void LCodeGen::CallRuntimeFromDeferred(Runtime::FunctionId id,
 
 void LCodeGen::RegisterEnvironmentForDeoptimization(LEnvironment* environment,
                                                     Safepoint::DeoptMode mode) {
+  environment->set_has_been_used();
   if (!environment->HasBeenRegistered()) {
     // Physical stack frame layout:
     // -x ............. -4  0 ..................................... y
@@ -5357,7 +5358,13 @@ void LCodeGen::DoDeferredAllocate(LAllocate* instr) {
     __ push(size);
   } else {
     int32_t size = ToInteger32(LConstantOperand::cast(instr->size()));
-    __ Push(Smi::FromInt(size));
+    if (size >= 0 && size <= Smi::kMaxValue) {
+      __ Push(Smi::FromInt(size));
+    } else {
+      // We should never get here at runtime => abort
+      __ stop("invalid allocation size");
+      return;
+    }
   }
 
   int flags = AllocateDoubleAlignFlag::encode(

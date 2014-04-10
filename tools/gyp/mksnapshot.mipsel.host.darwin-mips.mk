@@ -3,23 +3,24 @@
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_CLASS := EXECUTABLES
-LOCAL_MODULE := v8_tools_gyp_mksnapshot_mipsel_host_gyp
+LOCAL_MODULE := v8_tools_gyp_mksnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 LOCAL_MODULE_STEM := mksnapshot.mipsel
 LOCAL_MODULE_SUFFIX := 
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
-gyp_intermediate_dir := $(call local-intermediates-dir)
-gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared)
+LOCAL_MODULE_TARGET_ARCH := $(TARGET_$(GYP_VAR_PREFIX)ARCH)
+gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_VAR_PREFIX))
+gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_base_mipsel_host_gyp,true)/v8_tools_gyp_v8_base_mipsel_host_gyp.a \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_nosnapshot_mipsel_host_gyp,true)/v8_tools_gyp_v8_nosnapshot_mipsel_host_gyp.a \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icui18n_host_gyp,true)/third_party_icu_icui18n_host_gyp.a \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icuuc_host_gyp,true)/third_party_icu_icuuc_host_gyp.a \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icudata_host_gyp,true)/third_party_icu_icudata_host_gyp.a \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_host_gyp,true)/js2c.stamp \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_host_gyp,true)/generate_trig_table.stamp
+	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
+	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_nosnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_nosnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
+	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
+	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
+	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/js2c.stamp \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/generate_trig_table.stamp
 
 GYP_GENERATED_OUTPUTS :=
 
@@ -80,7 +81,6 @@ MY_DEFS_Debug := \
 	'-D_MIPS_ARCH_MIPS32R2' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
-	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
 	'-DDYNAMIC_ANNOTATIONS_ENABLED=1' \
@@ -154,7 +154,6 @@ MY_DEFS_Release := \
 	'-D_MIPS_ARCH_MIPS32R2' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
-	'-DV8_USE_DEFAULT_PLATFORM' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
 	'-DNDEBUG' \
@@ -199,11 +198,11 @@ LOCAL_LDFLAGS_Release := \
 LOCAL_LDFLAGS := $(LOCAL_LDFLAGS_$(GYP_CONFIGURATION))
 
 LOCAL_STATIC_LIBRARIES := \
-	v8_tools_gyp_v8_base_mipsel_host_gyp \
-	v8_tools_gyp_v8_nosnapshot_mipsel_host_gyp \
-	third_party_icu_icui18n_host_gyp \
-	third_party_icu_icuuc_host_gyp \
-	third_party_icu_icudata_host_gyp
+	v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
+	v8_tools_gyp_v8_nosnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
+	third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
+	third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
+	third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 # Enable grouping to fix circular references
 LOCAL_GROUP_STATIC_LIBRARIES := true
@@ -212,11 +211,11 @@ LOCAL_SHARED_LIBRARIES :=
 
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
-gyp_all_modules: v8_tools_gyp_mksnapshot_mipsel_host_gyp
+gyp_all_modules: v8_tools_gyp_mksnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 # Alias gyp target name.
 .PHONY: mksnapshot.mipsel
-mksnapshot.mipsel: v8_tools_gyp_mksnapshot_mipsel_host_gyp
+mksnapshot.mipsel: v8_tools_gyp_mksnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 LOCAL_MODULE_PATH := $(gyp_shared_intermediate_dir)
 include $(BUILD_HOST_EXECUTABLE)

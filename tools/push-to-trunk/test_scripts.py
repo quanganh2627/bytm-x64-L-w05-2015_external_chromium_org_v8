@@ -34,6 +34,7 @@ import unittest
 import auto_push
 from auto_push import CheckLastPush
 from auto_push import SETTINGS_LOCATION
+import auto_roll
 import common_includes
 from common_includes import *
 import merge_to_branch
@@ -261,7 +262,7 @@ class SimpleMock(object):
     # arguments.
     if len(args) > len(expected_call['args']):
       raise NoRetryException("When calling %s with arguments, the "
-          "expectations must consist of at least as many arguments.")
+          "expectations must consist of at least as many arguments." % name)
 
     # Compare expected and actual arguments.
     for (expected_arg, actual_arg) in zip(expected_call['args'], args):
@@ -783,7 +784,7 @@ Performance and stability improvements on all platforms.""", commit)
       Git("status -s -b -uno", "## some_branch\n"),
       Git("svn fetch", ""),
       Git(("log -1 --format=%H --grep="
-           "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]* (based\" "
+           "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]*\" "
            "svn/trunk"), "push_hash\n"),
       Git("svn find-rev push_hash", "123455\n"),
       Git("log -1 --format=%s push_hash",
@@ -908,6 +909,70 @@ Performance and stability improvements on all platforms.""", commit)
       auto_push.AutoPush(TEST_CONFIG, self).Run(AUTO_PUSH_ARGS)
     self.assertRaises(Exception, RunAutoPush)
 
+  def testAutoRollExistingRoll(self):
+    self.ExpectReadURL([
+      URL("https://codereview.chromium.org/search",
+          "owner=author%40chromium.org&limit=30&closed=3&format=json",
+          ("{\"results\": [{\"subject\": \"different\"},"
+           "{\"subject\": \"Update V8 to Version...\"}]}")),
+    ])
+
+    result = auto_roll.AutoRoll(TEST_CONFIG, self).Run(
+        AUTO_PUSH_ARGS + ["-c", TEST_CONFIG[CHROMIUM]])
+    self.assertEquals(1, result)
+
+  # Snippet from the original DEPS file.
+  FAKE_DEPS = """
+vars = {
+  "v8_revision": "123455",
+}
+deps = {
+  "src/v8":
+    (Var("googlecode_url") % "v8") + "/" + Var("v8_branch") + "@" +
+    Var("v8_revision"),
+}
+"""
+
+  def testAutoRollUpToDate(self):
+    self.ExpectReadURL([
+      URL("https://codereview.chromium.org/search",
+          "owner=author%40chromium.org&limit=30&closed=3&format=json",
+          ("{\"results\": [{\"subject\": \"different\"}]}")),
+      URL("http://src.chromium.org/svn/trunk/src/DEPS",
+          self.FAKE_DEPS),
+    ])
+
+    self.ExpectGit([
+      Git(("log -1 --format=%H --grep="
+           "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]*\" "
+           "svn/trunk"), "push_hash\n"),
+      Git("svn find-rev push_hash", "123455\n"),
+    ])
+
+    result = auto_roll.AutoRoll(TEST_CONFIG, self).Run(
+        AUTO_PUSH_ARGS + ["-c", TEST_CONFIG[CHROMIUM]])
+    self.assertEquals(1, result)
+
+  def testAutoRoll(self):
+    self.ExpectReadURL([
+      URL("https://codereview.chromium.org/search",
+          "owner=author%40chromium.org&limit=30&closed=3&format=json",
+          ("{\"results\": [{\"subject\": \"different\"}]}")),
+      URL("http://src.chromium.org/svn/trunk/src/DEPS",
+          self.FAKE_DEPS),
+    ])
+
+    self.ExpectGit([
+      Git(("log -1 --format=%H --grep="
+           "\"^Version [[:digit:]]*\.[[:digit:]]*\.[[:digit:]]*\" "
+           "svn/trunk"), "push_hash\n"),
+      Git("svn find-rev push_hash", "123456\n"),
+    ])
+
+    result = auto_roll.AutoRoll(TEST_CONFIG, self).Run(
+        AUTO_PUSH_ARGS + ["-c", TEST_CONFIG[CHROMIUM], "--roll"])
+    self.assertEquals(0, result)
+
   def testMergeToBranch(self):
     TEST_CONFIG[ALREADY_MERGING_SENTINEL_FILE] = self.MakeEmptyTempFile()
     TEST_CONFIG[DOT_GIT_LOCATION] = self.MakeEmptyTempFile()
@@ -920,7 +985,7 @@ Performance and stability improvements on all platforms.""", commit)
       return lambda: self.assertEquals(patch,
           FileToText(TEST_CONFIG[TEMPORARY_PATCH_FILE]))
 
-    msg = """Merged r12345, r23456, r34567, r45678, r56789 into trunk branch.
+    msg = """Version 3.22.5.1 (merged r12345, r23456, r34567, r45678, r56789)
 
 Title4
 
@@ -930,7 +995,7 @@ Title3
 
 Title1
 
-Title5
+Revert "Something"
 
 BUG=123,234,345,456,567,v8:123
 LOG=N
@@ -978,12 +1043,12 @@ LOG=N
       Git("log -1 --format=%s hash2", "Title2"),
       Git("log -1 --format=%s hash3", "Title3"),
       Git("log -1 --format=%s hash1", "Title1"),
-      Git("log -1 --format=%s hash5", "Title5"),
+      Git("log -1 --format=%s hash5", "Revert \"Something\""),
       Git("log -1 hash4", "Title4\nBUG=123\nBUG=234"),
       Git("log -1 hash2", "Title2\n BUG = v8:123,345"),
       Git("log -1 hash3", "Title3\nLOG=n\nBUG=567, 456"),
-      Git("log -1 hash1", "Title1"),
-      Git("log -1 hash5", "Title5"),
+      Git("log -1 hash1", "Title1\nBUG="),
+      Git("log -1 hash5", "Revert \"Something\"\nBUG=none"),
       Git("log -1 -p hash4", "patch4"),
       Git("apply --index --reject \"%s\"" % TEST_CONFIG[TEMPORARY_PATCH_FILE],
           "", cb=VerifyPatch("patch4")),
@@ -1006,7 +1071,8 @@ LOG=N
       Git("cl presubmit", "Presubmit successfull\n"),
       Git("cl dcommit -f --bypass-hooks", "Closing issue\n", cb=VerifySVNCommit),
       Git("svn fetch", ""),
-      Git("log -1 --format=%%H --grep=\"%s\" svn/trunk" % msg, "hash6"),
+      Git(("log -1 --format=%%H --grep=\"%s\" svn/trunk"
+           % msg.replace("\"", "\\\"")), "hash6"),
       Git("svn find-rev hash6", "1324"),
       Git(("copy -r 1324 https://v8.googlecode.com/svn/trunk "
            "https://v8.googlecode.com/svn/tags/3.22.5.1 -m "

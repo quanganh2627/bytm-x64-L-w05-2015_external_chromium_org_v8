@@ -387,6 +387,7 @@ class MacroAssembler : public Assembler {
                      const FPRegister& fm,
                      const FPRegister& fa);
   inline void Frinta(const FPRegister& fd, const FPRegister& fn);
+  inline void Frintm(const FPRegister& fd, const FPRegister& fn);
   inline void Frintn(const FPRegister& fd, const FPRegister& fn);
   inline void Frintz(const FPRegister& fd, const FPRegister& fn);
   inline void Fsqrt(const FPRegister& fd, const FPRegister& fn);
@@ -502,7 +503,8 @@ class MacroAssembler : public Assembler {
   // Pseudo-instructions ------------------------------------------------------
 
   // Compute rd = abs(rm).
-  // This function clobbers the condition flags.
+  // This function clobbers the condition flags. On output the overflow flag is
+  // set iff the negation overflowed.
   //
   // If rm is the minimum representable value, the result is not representable.
   // Handlers for each case can be specified using the relevant labels.

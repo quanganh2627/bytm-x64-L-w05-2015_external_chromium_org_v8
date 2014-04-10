@@ -24,7 +24,6 @@ namespace internal {
 //   None <= T
 //   T <= Any
 //
-//   Oddball = Boolean \/ Null \/ Undefined
 //   Number = Signed32 \/ Unsigned32 \/ Double
 //   Smi <= Signed32
 //   Name = String \/ Symbol
@@ -142,7 +141,6 @@ namespace internal {
   V(Proxy,               1 << 15 | REPRESENTATION(kTaggedPtr)) \
   V(Internal,            1 << 16 | REPRESENTATION(kTagged | kUntagged)) \
   \
-  V(Oddball,             kBoolean | kNull | kUndefined)                 \
   V(Signed32,            kSignedSmall | kOtherSigned32)                 \
   V(Number,              kSigned32 | kUnsigned32 | kFloat)              \
   V(String,              kInternalizedString | kOtherString)            \
@@ -154,7 +152,8 @@ namespace internal {
   V(Detectable,          kDetectableReceiver | kNumber | kName)         \
   V(Object,              kDetectableObject | kUndetectable)             \
   V(Receiver,            kObject | kProxy)                              \
-  V(NonNumber,           kOddball | kName | kReceiver | kInternal)      \
+  V(NonNumber,           kBoolean | kName | kNull | kReceiver |         \
+                         kUndefined | kInternal)                        \
   V(Any,                 kNumber | kNonNumber)
 
 #define BITSET_TYPE_LIST(V) \
@@ -213,8 +212,11 @@ class TypeImpl : public Config::Base {
   static TypeHandle Union(TypeHandle type1, TypeHandle type2, Region* reg);
   static TypeHandle Intersect(TypeHandle type1, TypeHandle type2, Region* reg);
 
+  static TypeHandle Of(i::Object* value, Region* region) {
+    return Config::from_bitset(LubBitset(value), region);
+  }
   static TypeHandle Of(i::Handle<i::Object> value, Region* region) {
-    return Config::from_bitset(LubBitset(*value), region);
+    return Of(*value, region);
   }
 
   bool Is(TypeImpl* that) { return this == that || this->SlowIs(that); }
@@ -231,7 +233,10 @@ class TypeImpl : public Config::Base {
 
   // State-dependent versions of Of and Is that consider subtyping between
   // a constant and its map class.
-  static TypeHandle NowOf(i::Handle<i::Object> value, Region* region);
+  static TypeHandle NowOf(i::Object* value, Region* region);
+  static TypeHandle NowOf(i::Handle<i::Object> value, Region* region) {
+    return NowOf(*value, region);
+  }
   bool NowIs(TypeImpl* that);
   template<class TypeHandle>
   bool NowIs(TypeHandle that)  { return this->NowIs(*that); }
@@ -287,11 +292,9 @@ class TypeImpl : public Config::Base {
   static TypeHandle Convert(
       typename OtherTypeImpl::TypeHandle type, Region* region);
 
-#ifdef OBJECT_PRINT
   enum PrintDimension { BOTH_DIMS, SEMANTIC_DIM, REPRESENTATION_DIM };
   void TypePrint(PrintDimension = BOTH_DIMS);
   void TypePrint(FILE* out, PrintDimension = BOTH_DIMS);
-#endif
 
  private:
   template<class> friend class Iterator;
@@ -343,10 +346,8 @@ class TypeImpl : public Config::Base {
   static int ExtendIntersection(
       UnionedHandle unioned, TypeHandle t, TypeHandle other, int current_size);
 
-#ifdef OBJECT_PRINT
   static const char* bitset_name(int bitset);
   static void BitsetTypePrint(FILE* out, int bitset);
-#endif
 };
 
 
