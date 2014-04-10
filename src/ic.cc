@@ -1226,9 +1226,10 @@ MaybeObject* StoreIC::Store(Handle<Object> object,
   // Check if the given name is an array index.
   uint32_t index;
   if (name->AsArrayIndex(&index)) {
-    Handle<Object> result =
-        JSObject::SetElement(receiver, index, value, NONE, strict_mode());
-    RETURN_IF_EMPTY_HANDLE(isolate(), result);
+    Handle<Object> result;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate(), result,
+        JSObject::SetElement(receiver, index, value, NONE, strict_mode()));
     return *value;
   }
 
@@ -1832,8 +1833,8 @@ RUNTIME_FUNCTION(MaybeObject*, StoreIC_ArrayLength) {
   ASSERT(debug_lookup.IsPropertyCallbacks() && !debug_lookup.IsReadOnly());
 #endif
 
-  RETURN_IF_EMPTY_HANDLE(isolate,
-                         JSArray::SetElementsLength(receiver, len));
+  RETURN_FAILURE_ON_EXCEPTION(
+      isolate, JSArray::SetElementsLength(receiver, len));
   return *len;
 }
 

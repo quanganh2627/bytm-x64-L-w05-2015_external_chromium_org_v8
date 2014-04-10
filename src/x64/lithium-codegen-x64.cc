@@ -1139,22 +1139,28 @@ void LCodeGen::DoFlooringDivByPowerOf2I(LFlooringDivByPowerOf2I* instr) {
   }
 
   // If the divisor is negative, we have to negate and handle edge cases.
-  Label not_kmin_int, done;
   __ negl(dividend);
   if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
     DeoptimizeIf(zero, instr->environment());
   }
-  if (instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
-    // Note that we could emit branch-free code, but that would need one more
-    // register.
-    __ j(no_overflow, &not_kmin_int, Label::kNear);
-    if (divisor == -1) {
-      DeoptimizeIf(no_condition, instr->environment());
-    } else {
-      __ movl(dividend, Immediate(kMinInt / divisor));
-      __ jmp(&done, Label::kNear);
-    }
+
+  // If the negation could not overflow, simply shifting is OK.
+  if (!instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
+    __ sarl(dividend, Immediate(shift));
+    return;
   }
+
+  // Note that we could emit branch-free code, but that would need one more
+  // register.
+  if (divisor == -1) {
+    DeoptimizeIf(overflow, instr->environment());
+    return;
+  }
+
+  Label not_kmin_int, done;
+  __ j(no_overflow, &not_kmin_int, Label::kNear);
+  __ movl(dividend, Immediate(kMinInt / divisor));
+  __ jmp(&done, Label::kNear);
   __ bind(&not_kmin_int);
   __ sarl(dividend, Immediate(shift));
   __ bind(&done);
@@ -2896,7 +2902,7 @@ void LCodeGen::DoLoadNamedField(LLoadNamedField* instr) {
   }
 
   Representation representation = access.representation();
-  if (representation.IsSmi() &&
+  if (representation.IsSmi() && SmiValuesAre32Bits() &&
       instr->hydrogen()->representation().IsInteger32()) {
 #ifdef DEBUG
     Register scratch = kScratchRegister;
@@ -2906,7 +2912,7 @@ void LCodeGen::DoLoadNamedField(LLoadNamedField* instr) {
 
     // Read int value directly from upper half of the smi.
     STATIC_ASSERT(kSmiTag == 0);
-    STATIC_ASSERT(kSmiTagSize + kSmiShiftSize == 32);
+    ASSERT(kSmiTagSize + kSmiShiftSize == 32);
     offset += kPointerSize / 2;
     representation = Representation::Integer32();
   }
@@ -3110,7 +3116,7 @@ void LCodeGen::DoLoadKeyedFixedArray(LLoadKeyed* instr) {
   int offset = FixedArray::kHeaderSize - kHeapObjectTag;
   Representation representation = hinstr->representation();
 
-  if (representation.IsInteger32() &&
+  if (representation.IsInteger32() && SmiValuesAre32Bits() &&
       hinstr->elements_kind() == FAST_SMI_ELEMENTS) {
     ASSERT(!requires_hole_check);
 #ifdef DEBUG
@@ -3126,7 +3132,7 @@ void LCodeGen::DoLoadKeyedFixedArray(LLoadKeyed* instr) {
 #endif
     // Read int value directly from upper half of the smi.
     STATIC_ASSERT(kSmiTag == 0);
-    STATIC_ASSERT(kSmiTagSize + kSmiShiftSize == 32);
+    ASSERT(kSmiTagSize + kSmiShiftSize == 32);
     offset += kPointerSize / 2;
   }
 
@@ -4034,7 +4040,7 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
     __ movp(write_register, FieldOperand(object, JSObject::kPropertiesOffset));
   }
 
-  if (representation.IsSmi() &&
+  if (representation.IsSmi() && SmiValuesAre32Bits() &&
       hinstr->value()->representation().IsInteger32()) {
     ASSERT(hinstr->store_mode() == STORE_TO_INITIALIZED_ENTRY);
 #ifdef DEBUG
@@ -4044,7 +4050,7 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
 #endif
     // Store int value directly to upper half of the smi.
     STATIC_ASSERT(kSmiTag == 0);
-    STATIC_ASSERT(kSmiTagSize + kSmiShiftSize == 32);
+    ASSERT(kSmiTagSize + kSmiShiftSize == 32);
     offset += kPointerSize / 2;
     representation = Representation::Integer32();
   }
@@ -4257,7 +4263,7 @@ void LCodeGen::DoStoreKeyedFixedArray(LStoreKeyed* instr) {
   int offset = FixedArray::kHeaderSize - kHeapObjectTag;
   Representation representation = hinstr->value()->representation();
 
-  if (representation.IsInteger32()) {
+  if (representation.IsInteger32() && SmiValuesAre32Bits()) {
     ASSERT(hinstr->store_mode() == STORE_TO_INITIALIZED_ENTRY);
     ASSERT(hinstr->elements_kind() == FAST_SMI_ELEMENTS);
 #ifdef DEBUG
@@ -4273,7 +4279,7 @@ void LCodeGen::DoStoreKeyedFixedArray(LStoreKeyed* instr) {
 #endif
     // Store int value directly to upper half of the smi.
     STATIC_ASSERT(kSmiTag == 0);
-    STATIC_ASSERT(kSmiTagSize + kSmiShiftSize == 32);
+    ASSERT(kSmiTagSize + kSmiShiftSize == 32);
     offset += kPointerSize / 2;
   }
 
