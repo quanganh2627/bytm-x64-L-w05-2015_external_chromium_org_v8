@@ -672,9 +672,10 @@ RUNTIME_FUNCTION(MaybeObject*, KeyedLoadPropertyWithInterceptor) {
   Handle<JSObject> receiver = args.at<JSObject>(0);
   ASSERT(args.smi_at(1) >= 0);
   uint32_t index = args.smi_at(1);
-  Handle<Object> result =
-      JSObject::GetElementWithInterceptor(receiver, receiver, index);
-  RETURN_IF_EMPTY_HANDLE(isolate, result);
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      JSObject::GetElementWithInterceptor(receiver, receiver, index));
   return *result;
 }
 
@@ -1276,6 +1277,7 @@ Handle<Code> BaseLoadStoreStubCompiler::GetICCode(Code::Kind kind,
                                                   InlineCacheState state) {
   Code::Flags flags = Code::ComputeFlags(kind, state, extra_state(), type);
   Handle<Code> code = GetCodeWithFlags(flags, name);
+  IC::RegisterWeakMapDependency(code);
   PROFILE(isolate(), CodeCreateEvent(log_kind(code), *code, *name));
   JitEvent(name, code);
   return code;

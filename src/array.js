@@ -25,6 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+"use strict";
+
 // This file relies on the fact that the following declarations have been made
 // in runtime.js:
 // var $Array = global.Array;
@@ -444,13 +446,14 @@ function ObservedArrayPush() {
     for (var i = 0; i < m; i++) {
       this[i+n] = %_Arguments(i);
     }
-    this.length = n + m;
+    var new_length = n + m;
+    this.length = new_length;
   } finally {
     EndPerformSplice(this);
     EnqueueSpliceRecord(this, n, [], m);
   }
 
-  return this.length;
+  return new_length;
 }
 
 // Appends the arguments to the end of the array and returns the new
@@ -471,8 +474,10 @@ function ArrayPush() {
   for (var i = 0; i < m; i++) {
     this[i+n] = %_Arguments(i);
   }
-  this.length = n + m;
-  return this.length;
+
+  var new_length = n + m;
+  this.length = new_length;
+  return new_length;
 }
 
 
@@ -627,13 +632,14 @@ function ObservedArrayUnshift() {
     for (var i = 0; i < num_arguments; i++) {
       this[i] = %_Arguments(i);
     }
-    this.length = len + num_arguments;
+    var new_length = len + num_arguments;
+    this.length = new_length;
   } finally {
     EndPerformSplice(this);
     EnqueueSpliceRecord(this, 0, [], num_arguments);
   }
 
-  return len + num_arguments;
+  return new_length;
 }
 
 function ArrayUnshift(arg1) {  // length == 1
@@ -672,9 +678,9 @@ function ArrayUnshift(arg1) {  // length == 1
     this[i] = %_Arguments(i);
   }
 
-  this.length = len + num_arguments;
-
-  return this.length;
+  var new_length = len + num_arguments;
+  this.length = new_length;
+  return new_length;
 }
 
 

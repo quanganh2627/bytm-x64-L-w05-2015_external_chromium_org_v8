@@ -324,7 +324,6 @@ namespace internal {
   F(SetIsObserved, 1, 1) \
   F(GetObservationState, 0, 1) \
   F(ObservationWeakMapCreate, 0, 1) \
-  F(UnwrapGlobalProxy, 1, 1) \
   F(IsAccessAllowedForObserver, 3, 1) \
   \
   /* Harmony typed arrays */ \
@@ -798,11 +797,8 @@ class Runtime : public AllStatic {
 
   // Add internalized strings for all the intrinsic function names to a
   // StringDictionary.
-  // Returns failure if an allocation fails.  In this case, it must be
-  // retried with a new, empty StringDictionary, not with the same one.
-  // Alternatively, heap initialization can be completely restarted.
-  MUST_USE_RESULT static MaybeObject* InitializeIntrinsicFunctionNames(
-      Heap* heap, Object* dictionary);
+  static void InitializeIntrinsicFunctionNames(Isolate* isolate,
+                                               Handle<NameDictionary> dict);
 
   // Get the intrinsic function with the given name, which must be internalized.
   static const Function* FunctionForName(Handle<String> name);
@@ -823,9 +819,10 @@ class Runtime : public AllStatic {
 
   // Support getting the characters in a string using [] notation as
   // in Firefox/SpiderMonkey, Safari and Opera.
-  static Handle<Object> GetElementOrCharAt(Isolate* isolate,
-                                           Handle<Object> object,
-                                           uint32_t index);
+  MUST_USE_RESULT static MaybeHandle<Object> GetElementOrCharAt(
+      Isolate* isolate,
+      Handle<Object> object,
+      uint32_t index);
 
   MUST_USE_RESULT static MaybeHandle<Object> SetObjectProperty(
       Isolate* isolate,
@@ -841,20 +838,21 @@ class Runtime : public AllStatic {
       Handle<Object> value,
       PropertyAttributes attr);
 
-  MUST_USE_RESULT static MaybeObject* DeleteObjectProperty(
+  MUST_USE_RESULT static MaybeHandle<Object> DeleteObjectProperty(
       Isolate* isolate,
       Handle<JSReceiver> object,
       Handle<Object> key,
       JSReceiver::DeleteMode mode);
 
-  MUST_USE_RESULT static MaybeObject* HasObjectProperty(
+  MUST_USE_RESULT static MaybeHandle<Object> HasObjectProperty(
       Isolate* isolate,
       Handle<JSReceiver> object,
       Handle<Object> key);
 
-  static Handle<Object> GetObjectProperty(Isolate* isolate,
-                                          Handle<Object> object,
-                                          Handle<Object> key);
+  MUST_USE_RESULT static MaybeHandle<Object> GetObjectProperty(
+      Isolate* isolate,
+      Handle<Object> object,
+      Handle<Object> key);
 
   static void SetupArrayBuffer(Isolate* isolate,
                                Handle<JSArrayBuffer> array_buffer,

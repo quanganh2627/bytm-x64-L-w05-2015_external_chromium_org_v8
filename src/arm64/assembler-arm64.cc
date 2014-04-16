@@ -545,6 +545,40 @@ int Assembler::LinkAndGetByteOffsetTo(Label* label) {
 }
 
 
+void Assembler::DeleteUnresolvedBranchInfoForLabelTraverse(Label* label) {
+  ASSERT(label->is_linked());
+  CheckLabelLinkChain(label);
+
+  int link_offset = label->pos();
+  int link_pcoffset;
+  bool end_of_chain = false;
+
+  while (!end_of_chain) {
+    Instruction * link = InstructionAt(link_offset);
+    link_pcoffset = link->ImmPCOffset();
+
+    // ADR instructions are not handled by veneers.
+    if (link->IsImmBranch()) {
+      int max_reachable_pc = InstructionOffset(link) +
+          Instruction::ImmBranchRange(link->BranchType());
+      typedef std::multimap<int, FarBranchInfo>::iterator unresolved_info_it;
+      std::pair<unresolved_info_it, unresolved_info_it> range;
+      range = unresolved_branches_.equal_range(max_reachable_pc);
+      unresolved_info_it it;
+      for (it = range.first; it != range.second; ++it) {
+        if (it->second.pc_offset_ == link_offset) {
+          unresolved_branches_.erase(it);
+          break;
+        }
+      }
+    }
+
+    end_of_chain = (link_pcoffset == 0);
+    link_offset = link_offset + link_pcoffset;
+  }
+}
+
+
 void Assembler::DeleteUnresolvedBranchInfoForLabel(Label* label) {
   if (unresolved_branches_.empty()) {
     ASSERT(next_veneer_pool_check_ == kMaxInt);
@@ -552,16 +586,9 @@ void Assembler::DeleteUnresolvedBranchInfoForLabel(Label* label) {
   }
 
   if (label->is_linked()) {
-    // Branches to this label will be resolved when the label is bound below.
-    std::multimap<int, FarBranchInfo>::iterator it_tmp, it;
-    it = unresolved_branches_.begin();
-    while (it != unresolved_branches_.end()) {
-      it_tmp = it++;
-      if (it_tmp->second.label_ == label) {
-        CHECK(it_tmp->first >= pc_offset());
-        unresolved_branches_.erase(it_tmp);
-      }
-    }
+    // Branches to this label will be resolved when the label is bound, normally
+    // just after all the associated info has been deleted.
+    DeleteUnresolvedBranchInfoForLabelTraverse(label);
   }
   if (unresolved_branches_.empty()) {
     next_veneer_pool_check_ = kMaxInt;
@@ -2814,6 +2841,76 @@ MaybeObject* Assembler::AllocateConstantPool(Heap* heap) {
 void Assembler::PopulateConstantPool(ConstantPoolArray* constant_pool) {
   // No out-of-line constant pool support.
   UNREACHABLE();
+}
+
+
+void PatchingAssembler::MovInt64(const Register& rd, int64_t imm) {
+  Label start;
+  bind(&start);
+
+  ASSERT(rd.Is64Bits());
+  ASSERT(!rd.IsSP());
+
+  for (unsigned i = 0; i < (rd.SizeInBits() / 16); i++) {
+    uint64_t imm16 = (imm >> (16 * i)) & 0xffffL;
+    movk(rd, imm16, 16 * i);
+  }
+
+  ASSERT(SizeOfCodeGeneratedSince(&start) ==
+         kMovInt64NInstrs * kInstructionSize);
+}
+
+
+void PatchingAssembler::PatchAdrFar(Instruction* target) {
+  // The code at the current instruction should be:
+  //   adr  rd, 0
+  //   nop  (adr_far)
+  //   nop  (adr_far)
+  //   nop  (adr_far)
+  //   movz scratch, 0
+  //   add  rd, rd, scratch
+
+  // Verify the expected code.
+  Instruction* expected_adr = InstructionAt(0);
+  CHECK(expected_adr->IsAdr() && (expected_adr->ImmPCRel() == 0));
+  int rd_code = expected_adr->Rd();
+  for (int i = 0; i < kAdrFarPatchableNNops; ++i) {
+    CHECK(InstructionAt((i + 1) * kInstructionSize)->IsNop(ADR_FAR_NOP));
+  }
+  Instruction* expected_movz =
+      InstructionAt((kAdrFarPatchableNInstrs - 2) * kInstructionSize);
+  CHECK(expected_movz->IsMovz() &&
+        (expected_movz->ImmMoveWide() == 0) &&
+        (expected_movz->ShiftMoveWide() == 0));
+  int scratch_code = expected_movz->Rd();
+  Instruction* expected_add =
+      InstructionAt((kAdrFarPatchableNInstrs - 1) * kInstructionSize);
+  CHECK(expected_add->IsAddSubShifted() &&
+        (expected_add->Mask(AddSubOpMask) == ADD) &&
+        expected_add->SixtyFourBits() &&
+        (expected_add->Rd() == rd_code) && (expected_add->Rn() == rd_code) &&
+        (expected_add->Rm() == scratch_code) &&
+        (static_cast<Shift>(expected_add->ShiftDP()) == LSL) &&
+        (expected_add->ImmDPShift() == 0));
+
+  // Patch to load the correct address.
+  Label start;
+  bind(&start);
+  Register rd = Register::XRegFromCode(rd_code);
+  // If the target is in range, we only patch the adr. Otherwise we patch the
+  // nops with fixup instructions.
+  int target_offset = expected_adr->DistanceTo(target);
+  if (Instruction::IsValidPCRelOffset(target_offset)) {
+    adr(rd, target_offset);
+    for (int i = 0; i < kAdrFarPatchableNInstrs - 2; ++i) {
+      nop(ADR_FAR_NOP);
+    }
+  } else {
+    Register scratch = Register::XRegFromCode(scratch_code);
+    adr(rd, 0);
+    MovInt64(scratch, target_offset);
+    add(rd, rd, scratch);
+  }
 }
 
 

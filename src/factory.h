@@ -14,11 +14,6 @@ namespace internal {
 
 class Factory V8_FINAL {
  public:
-  // Allocate a new boxed value.
-  Handle<Box> NewBox(
-      Handle<Object> value,
-      PretenureFlag pretenure = NOT_TENURED);
-
   // Allocates a fixed array initialized with undefined values.
   Handle<FixedArray> NewFixedArray(
       int size,
@@ -37,6 +32,11 @@ class Factory V8_FINAL {
       int size,
       PretenureFlag pretenure = NOT_TENURED);
 
+  // Allocate a new fixed double array with hole values.
+  Handle<FixedDoubleArray> NewFixedDoubleArrayWithHoles(
+      int size,
+      PretenureFlag pretenure = NOT_TENURED);
+
   Handle<ConstantPoolArray> NewConstantPoolArray(
       int number_of_int64_entries,
       int number_of_code_ptr_entries,
@@ -51,8 +51,6 @@ class Factory V8_FINAL {
 
   Handle<NameDictionary> NewNameDictionary(int at_least_space_for);
 
-  Handle<ObjectHashSet> NewObjectHashSet(int at_least_space_for);
-
   Handle<ObjectHashTable> NewObjectHashTable(
       int at_least_space_for,
       MinimumCapacity capacity_option = USE_DEFAULT_MINIMUM_CAPACITY);
@@ -62,17 +60,20 @@ class Factory V8_FINAL {
 
   Handle<WeakHashTable> NewWeakHashTable(int at_least_space_for);
 
-  Handle<DescriptorArray> NewDescriptorArray(int number_of_descriptors,
-                                             int slack = 0);
   Handle<DeoptimizationInputData> NewDeoptimizationInputData(
       int deopt_entry_count,
       PretenureFlag pretenure);
   Handle<DeoptimizationOutputData> NewDeoptimizationOutputData(
       int deopt_entry_count,
       PretenureFlag pretenure);
-  // Allocates a pre-tenured empty AccessorPair.
+
+  // Create a new boxed value.
+  Handle<Box> NewBox(Handle<Object> value);
+
+  // Create a pre-tenured empty AccessorPair.
   Handle<AccessorPair> NewAccessorPair();
 
+  // Create an empty TypeFeedbackInfo.
   Handle<TypeFeedbackInfo> NewTypeFeedbackInfo();
 
   Handle<String> InternalizeUtf8String(Vector<const char> str);
@@ -142,6 +143,8 @@ class Factory V8_FINAL {
       int length,
       PretenureFlag pretenure = NOT_TENURED);
 
+  Handle<String> LookupSingleCharacterStringFromCode(uint32_t index);
+
   // Create a new cons string object which consists of a pair of strings.
   MUST_USE_RESULT MaybeHandle<String> NewConsString(Handle<String> left,
                                                     Handle<String> right);
@@ -200,7 +203,7 @@ class Factory V8_FINAL {
   // Create a 'with' context.
   Handle<Context> NewWithContext(Handle<JSFunction> function,
                                  Handle<Context> previous,
-                                 Handle<JSObject> extension);
+                                 Handle<JSReceiver> extension);
 
   // Create a block context.
   Handle<Context> NewBlockContext(Handle<JSFunction> function,
@@ -329,10 +332,13 @@ class Factory V8_FINAL {
 
   // JS arrays are pretenured when allocated by the parser.
 
+  // Create a JSArray with no elements.
   Handle<JSArray> NewJSArray(
       ElementsKind elements_kind,
       PretenureFlag pretenure = NOT_TENURED);
 
+  // Create a JSArray with a specified length and elements initialized
+  // according to the specified mode.
   Handle<JSArray> NewJSArray(
       ElementsKind elements_kind,
       int length,
@@ -351,7 +357,7 @@ class Factory V8_FINAL {
                       INITIALIZE_ARRAY_ELEMENTS_WITH_HOLE, pretenure);
   }
 
-  // Allocate a JSArray with no elements
+  // Create a JSArray with the given elements.
   Handle<JSArray> NewJSArrayWithElements(
       Handle<FixedArrayBase> elements,
       ElementsKind elements_kind,
@@ -405,8 +411,10 @@ class Factory V8_FINAL {
       Handle<Context> context,
       PretenureFlag pretenure = TENURED);
 
+  // Create a serialized scope info.
   Handle<ScopeInfo> NewScopeInfo(int length);
 
+  // Create an External object for V8's external API.
   Handle<JSObject> NewExternal(void* value);
 
   Handle<Code> NewCode(const CodeDesc& desc,
@@ -419,10 +427,6 @@ class Factory V8_FINAL {
   Handle<Code> CopyCode(Handle<Code> code);
 
   Handle<Code> CopyCode(Handle<Code> code, Vector<byte> reloc_info);
-
-  Handle<Object> ToObject(Handle<Object> object);
-  Handle<Object> ToObject(Handle<Object> object,
-                          Handle<Context> native_context);
 
   // Interface for creating error objects.
 
@@ -500,9 +504,8 @@ class Factory V8_FINAL {
   // Installs interceptors on the instance.  'desc' is a function template,
   // and instance is an object instance created by the function of this
   // function template.
-  void ConfigureInstance(Handle<FunctionTemplateInfo> desc,
-                         Handle<JSObject> instance,
-                         bool* pending_exception);
+  MUST_USE_RESULT MaybeHandle<FunctionTemplateInfo> ConfigureInstance(
+      Handle<FunctionTemplateInfo> desc, Handle<JSObject> instance);
 
 #define ROOT_ACCESSOR(type, name, camel_name)                                  \
   inline Handle<type> name() {                                                 \

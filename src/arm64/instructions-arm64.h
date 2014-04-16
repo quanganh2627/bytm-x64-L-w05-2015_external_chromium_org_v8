@@ -160,9 +160,10 @@ class Instruction {
   // ImmPCRel is a compound field (not present in INSTRUCTION_FIELDS_LIST),
   // formed from ImmPCRelLo and ImmPCRelHi.
   int ImmPCRel() const {
+    ASSERT(IsPCRelAddressing());
     int const offset = ((ImmPCRelHi() << ImmPCRelLo_width) | ImmPCRelLo());
     int const width = ImmPCRelLo_width + ImmPCRelHi_width;
-    return signed_bitextract_32(width-1, 0, offset);
+    return signed_bitextract_32(width - 1, 0, offset);
   }
 
   uint64_t ImmLogical();
@@ -191,6 +192,10 @@ class Instruction {
     return Mask(TestBranchFMask) == TestBranchFixed;
   }
 
+  bool IsImmBranch() const {
+    return BranchType() != UnknownBranchType;
+  }
+
   bool IsLdrLiteral() const {
     return Mask(LoadLiteralFMask) == LoadLiteralFixed;
   }
@@ -203,12 +208,20 @@ class Instruction {
     return Mask(PCRelAddressingFMask) == PCRelAddressingFixed;
   }
 
+  bool IsAdr() const {
+    return Mask(PCRelAddressingMask) == ADR;
+  }
+
   bool IsLogicalImmediate() const {
     return Mask(LogicalImmediateFMask) == LogicalImmediateFixed;
   }
 
   bool IsAddSubImmediate() const {
     return Mask(AddSubImmediateFMask) == AddSubImmediateFixed;
+  }
+
+  bool IsAddSubShifted() const {
+    return Mask(AddSubShiftedFMask) == AddSubShiftedFixed;
   }
 
   bool IsAddSubExtended() const {
@@ -387,6 +400,10 @@ class Instruction {
   }
 
 
+  static const int ImmPCRelRangeBitwidth = 21;
+  static bool IsValidPCRelOffset(int offset) {
+    return is_int21(offset);
+  }
   void SetPCRelImmTarget(Instruction* target);
   void SetBranchImmTarget(Instruction* target);
 };

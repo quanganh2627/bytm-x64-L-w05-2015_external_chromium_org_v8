@@ -3851,22 +3851,28 @@ void LCodeGen::DoFlooringDivByPowerOf2I(LFlooringDivByPowerOf2I* instr) {
   }
 
   // If the divisor is negative, we have to negate and handle edge cases.
-  Label not_kmin_int, done;
   __ Negs(result, dividend);
   if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
     DeoptimizeIf(eq, instr->environment());
   }
-  if (instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
-    // Note that we could emit branch-free code, but that would need one more
-    // register.
-    if (divisor == -1) {
-      DeoptimizeIf(vs, instr->environment());
-    } else {
-      __ B(vc, &not_kmin_int);
-      __ Mov(result, kMinInt / divisor);
-      __ B(&done);
-    }
+
+  // If the negation could not overflow, simply shifting is OK.
+  if (!instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
+    __ Mov(result, Operand(dividend, ASR, shift));
+    return;
   }
+
+  // Dividing by -1 is basically negation, unless we overflow.
+  if (divisor == -1) {
+    DeoptimizeIf(vs, instr->environment());
+    return;
+  }
+
+  // Using a conditional data processing instruction would need 1 more register.
+  Label not_kmin_int, done;
+  __ B(vc, &not_kmin_int);
+  __ Mov(result, kMinInt / divisor);
+  __ B(&done);
   __ bind(&not_kmin_int);
   __ Mov(result, Operand(dividend, ASR, shift));
   __ bind(&done);
@@ -5709,7 +5715,8 @@ void LCodeGen::DoTypeofIsAndBranch(LTypeofIsAndBranch* instr) {
   Label* false_label = instr->FalseLabel(chunk_);
   Register value = ToRegister(instr->value());
 
-  if (type_name->Equals(heap()->number_string())) {
+  Factory* factory = isolate()->factory();
+  if (String::Equals(type_name, factory->number_string())) {
     ASSERT(instr->temp1() != NULL);
     Register map = ToRegister(instr->temp1());
 
@@ -5718,7 +5725,7 @@ void LCodeGen::DoTypeofIsAndBranch(LTypeofIsAndBranch* instr) {
     __ CompareRoot(map, Heap::kHeapNumberMapRootIndex);
     EmitBranch(instr, eq);
 
-  } else if (type_name->Equals(heap()->string_string())) {
+  } else if (String::Equals(type_name, factory->string_string())) {
     ASSERT((instr->temp1() != NULL) && (instr->temp2() != NULL));
     Register map = ToRegister(instr->temp1());
     Register scratch = ToRegister(instr->temp2());
@@ -5729,7 +5736,7 @@ void LCodeGen::DoTypeofIsAndBranch(LTypeofIsAndBranch* instr) {
     __ Ldrb(scratch, FieldMemOperand(map, Map::kBitFieldOffset));
     EmitTestAndBranch(instr, eq, scratch, 1 << Map::kIsUndetectable);
 
-  } else if (type_name->Equals(heap()->symbol_string())) {
+  } else if (String::Equals(type_name, factory->symbol_string())) {
     ASSERT((instr->temp1() != NULL) && (instr->temp2() != NULL));
     Register map = ToRegister(instr->temp1());
     Register scratch = ToRegister(instr->temp2());
@@ -5738,16 +5745,17 @@ void LCodeGen::DoTypeofIsAndBranch(LTypeofIsAndBranch* instr) {
     __ CompareObjectType(value, map, scratch, SYMBOL_TYPE);
     EmitBranch(instr, eq);
 
-  } else if (type_name->Equals(heap()->boolean_string())) {
+  } else if (String::Equals(type_name, factory->boolean_string())) {
     __ JumpIfRoot(value, Heap::kTrueValueRootIndex, true_label);
     __ CompareRoot(value, Heap::kFalseValueRootIndex);
     EmitBranch(instr, eq);
 
-  } else if (FLAG_harmony_typeof && type_name->Equals(heap()->null_string())) {
+  } else if (FLAG_harmony_typeof &&
+             String::Equals(type_name, factory->null_string())) {
     __ CompareRoot(value, Heap::kNullValueRootIndex);
     EmitBranch(instr, eq);
 
-  } else if (type_name->Equals(heap()->undefined_string())) {
+  } else if (String::Equals(type_name, factory->undefined_string())) {
     ASSERT(instr->temp1() != NULL);
     Register scratch = ToRegister(instr->temp1());
 
@@ -5758,7 +5766,7 @@ void LCodeGen::DoTypeofIsAndBranch(LTypeofIsAndBranch* instr) {
     __ Ldrb(scratch, FieldMemOperand(scratch, Map::kBitFieldOffset));
     EmitTestAndBranch(instr, ne, scratch, 1 << Map::kIsUndetectable);
 
-  } else if (type_name->Equals(heap()->function_string())) {
+  } else if (String::Equals(type_name, factory->function_string())) {
     STATIC_ASSERT(NUM_OF_CALLABLE_SPEC_OBJECT_TYPES == 2);
     ASSERT(instr->temp1() != NULL);
     Register type = ToRegister(instr->temp1());
@@ -5768,7 +5776,7 @@ void LCodeGen::DoTypeofIsAndBranch(LTypeofIsAndBranch* instr) {
     // HeapObject's type has been loaded into type register by JumpIfObjectType.
     EmitCompareAndBranch(instr, eq, type, JS_FUNCTION_PROXY_TYPE);
 
-  } else if (type_name->Equals(heap()->object_string())) {
+  } else if (String::Equals(type_name, factory->object_string())) {
     ASSERT((instr->temp1() != NULL) && (instr->temp2() != NULL));
     Register map = ToRegister(instr->temp1());
     Register scratch = ToRegister(instr->temp2());
@@ -5814,7 +5822,7 @@ void LCodeGen::DoWrapReceiver(LWrapReceiver* instr) {
   // If the receiver is null or undefined, we have to pass the global object as
   // a receiver to normal functions. Values have to be passed unchanged to
   // builtins and strict-mode functions.
-  Label global_object, done;
+  Label global_object, done, copy_receiver;
 
   if (!instr->hydrogen()->known_function()) {
     __ Ldr(result, FieldMemOperand(function,
@@ -5825,10 +5833,10 @@ void LCodeGen::DoWrapReceiver(LWrapReceiver* instr) {
            FieldMemOperand(result, SharedFunctionInfo::kCompilerHintsOffset));
 
     // Do not transform the receiver to object for strict mode functions.
-    __ Tbnz(result, SharedFunctionInfo::kStrictModeFunction, &done);
+    __ Tbnz(result, SharedFunctionInfo::kStrictModeFunction, &copy_receiver);
 
     // Do not transform the receiver to object for builtins.
-    __ Tbnz(result, SharedFunctionInfo::kNative, &done);
+    __ Tbnz(result, SharedFunctionInfo::kNative, &copy_receiver);
   }
 
   // Normal function. Replace undefined or null with global receiver.
@@ -5838,15 +5846,17 @@ void LCodeGen::DoWrapReceiver(LWrapReceiver* instr) {
   // Deoptimize if the receiver is not a JS object.
   DeoptimizeIfSmi(receiver, instr->environment());
   __ CompareObjectType(receiver, result, result, FIRST_SPEC_OBJECT_TYPE);
-  __ Mov(result, receiver);
-  __ B(ge, &done);
+  __ B(ge, &copy_receiver);
   Deoptimize(instr->environment());
 
   __ Bind(&global_object);
   __ Ldr(result, FieldMemOperand(function, JSFunction::kContextOffset));
   __ Ldr(result, ContextMemOperand(result, Context::GLOBAL_OBJECT_INDEX));
   __ Ldr(result, FieldMemOperand(result, GlobalObject::kGlobalReceiverOffset));
+  __ B(&done);
 
+  __ Bind(&copy_receiver);
+  __ Mov(result, receiver);
   __ Bind(&done);
 }
 

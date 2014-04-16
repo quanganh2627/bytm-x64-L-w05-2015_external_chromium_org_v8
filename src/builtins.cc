@@ -301,6 +301,11 @@ static inline MaybeHandle<FixedArrayBase> EnsureJSArrayWithWritableFastElements(
     int first_added_arg) {
   if (!receiver->IsJSArray()) return MaybeHandle<FixedArrayBase>();
   Handle<JSArray> array = Handle<JSArray>::cast(receiver);
+  // If there may be elements accessors in the prototype chain, the fast path
+  // cannot be used.
+  if (array->map()->DictionaryElementsInPrototypeChainOnly()) {
+    return MaybeHandle<FixedArrayBase>();
+  }
   if (array->map()->is_observed()) return MaybeHandle<FixedArrayBase>();
   if (!array->map()->is_extensible()) return MaybeHandle<FixedArrayBase>();
   Handle<FixedArrayBase> elms(array->elements(), isolate);
@@ -369,21 +374,21 @@ MUST_USE_RESULT static MaybeObject* CallJsBuiltin(
 
   Handle<Object> js_builtin =
       GetProperty(Handle<JSObject>(isolate->native_context()->builtins()),
-                  name);
+                  name).ToHandleChecked();
   Handle<JSFunction> function = Handle<JSFunction>::cast(js_builtin);
   int argc = args.length() - 1;
   ScopedVector<Handle<Object> > argv(argc);
   for (int i = 0; i < argc; ++i) {
     argv[i] = args.at<Object>(i + 1);
   }
-  bool pending_exception;
-  Handle<Object> result = Execution::Call(isolate,
-                                          function,
-                                          args.receiver(),
-                                          argc,
-                                          argv.start(),
-                                          &pending_exception);
-  if (pending_exception) return Failure::Exception();
+  Handle<Object> result;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, result,
+      Execution::Call(isolate,
+                      function,
+                      args.receiver(),
+                      argc,
+                      argv.start()));
   return *result;
 }
 
@@ -514,18 +519,18 @@ BUILTIN(ArrayPop) {
 
   ElementsAccessor* accessor = array->GetElementsAccessor();
   int new_length = len - 1;
-  Handle<Object> element;
+  MaybeHandle<Object> maybe_element;
   if (accessor->HasElement(array, array, new_length, elms_obj)) {
-    element = accessor->Get(
-        array, array, new_length, elms_obj);
+    maybe_element = accessor->Get(array, array, new_length, elms_obj);
   } else {
     Handle<Object> proto(array->GetPrototype(), isolate);
-    element = Object::GetElement(isolate, proto, len - 1);
+    maybe_element = Object::GetElement(isolate, proto, len - 1);
   }
-  RETURN_IF_EMPTY_HANDLE(isolate, element);
-  RETURN_IF_EMPTY_HANDLE(isolate,
-                         accessor->SetLength(
-                             array, handle(Smi::FromInt(new_length), isolate)));
+  Handle<Object> element;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, element, maybe_element);
+  RETURN_IF_EMPTY_HANDLE(
+      isolate,
+      accessor->SetLength(array, handle(Smi::FromInt(new_length), isolate)));
   return *element;
 }
 
@@ -550,8 +555,9 @@ BUILTIN(ArrayShift) {
 
   // Get first element
   ElementsAccessor* accessor = array->GetElementsAccessor();
-  Handle<Object> first = accessor->Get(receiver, array, 0, elms_obj);
-  RETURN_IF_EMPTY_HANDLE(isolate, first);
+  Handle<Object> first;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, first, accessor->Get(receiver, array, 0, elms_obj));
   if (first->IsTheHole()) {
     first = isolate->factory()->undefined_value();
   }
@@ -1168,15 +1174,13 @@ MUST_USE_RESULT static MaybeObject* HandleApiCallHelper(
   Handle<JSFunction> function = args.called_function();
   ASSERT(function->shared()->IsApiFunction());
 
-  FunctionTemplateInfo* fun_data = function->shared()->get_api_func_data();
+  Handle<FunctionTemplateInfo> fun_data(
+      function->shared()->get_api_func_data(), isolate);
   if (is_construct) {
-    Handle<FunctionTemplateInfo> desc(fun_data, isolate);
-    bool pending_exception = false;
-    isolate->factory()->ConfigureInstance(
-        desc, Handle<JSObject>::cast(args.receiver()), &pending_exception);
-    ASSERT(isolate->has_pending_exception() == pending_exception);
-    if (pending_exception) return Failure::Exception();
-    fun_data = *desc;
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+        isolate, fun_data,
+        isolate->factory()->ConfigureInstance(
+            fun_data, Handle<JSObject>::cast(args.receiver())));
   }
 
   SharedFunctionInfo* shared = function->shared();
@@ -1188,7 +1192,7 @@ MUST_USE_RESULT static MaybeObject* HandleApiCallHelper(
     }
   }
 
-  Object* raw_holder = TypeCheck(heap, args.length(), &args[0], fun_data);
+  Object* raw_holder = TypeCheck(heap, args.length(), &args[0], *fun_data);
 
   if (raw_holder->IsNull()) {
     // This function cannot be called with the given receiver.  Abort!

@@ -516,8 +516,8 @@ class CPURegList {
   void Combine(const CPURegList& other);
 
   // Remove every register in the other CPURegList from this one. Registers that
-  // do not exist in this list are ignored. The type and size of the registers
-  // in the 'other' list must match those in this list.
+  // do not exist in this list are ignored. The type of the registers in the
+  // 'other' list must match those in this list.
   void Remove(const CPURegList& other);
 
   // Variants of Combine and Remove which take CPURegisters.
@@ -1501,8 +1501,9 @@ class Assembler : public AssemblerBase {
   enum NopMarkerTypes {
     DEBUG_BREAK_NOP,
     INTERRUPT_CODE_NOP,
+    ADR_FAR_NOP,
     FIRST_NOP_MARKER = DEBUG_BREAK_NOP,
-    LAST_NOP_MARKER = INTERRUPT_CODE_NOP
+    LAST_NOP_MARKER = ADR_FAR_NOP
   };
 
   void nop(NopMarkerTypes n) {
@@ -1691,6 +1692,10 @@ class Assembler : public AssemblerBase {
 
   Instruction* InstructionAt(int offset) const {
     return reinterpret_cast<Instruction*>(buffer_ + offset);
+  }
+
+  ptrdiff_t InstructionOffset(Instruction* instr) const {
+    return reinterpret_cast<byte*>(instr) - buffer_;
   }
 
   // Register encoding.
@@ -2039,6 +2044,7 @@ class Assembler : public AssemblerBase {
   }
 
   void GrowBuffer();
+  void CheckBufferSpace();
   void CheckBuffer();
 
   // Pc offset of the next constant pool check.
@@ -2181,6 +2187,11 @@ class Assembler : public AssemblerBase {
   // not later attempt (likely unsuccessfully) to patch it to branch directly to
   // the label.
   void DeleteUnresolvedBranchInfoForLabel(Label* label);
+  // This function deletes the information related to the label by traversing
+  // the label chain, and for each PC-relative instruction in the chain checking
+  // if pending unresolved information exists. Its complexity is proportional to
+  // the length of the label chain.
+  void DeleteUnresolvedBranchInfoForLabelTraverse(Label* label);
 
  private:
   PositionsRecorder positions_recorder_;
@@ -2223,13 +2234,21 @@ class PatchingAssembler : public Assembler {
     size_t length = buffer_size_ - kGap;
     CPU::FlushICache(buffer_, length);
   }
+
+  static const int kMovInt64NInstrs = 4;
+  void MovInt64(const Register& rd, int64_t imm);
+
+  // See definition of PatchAdrFar() for details.
+  static const int kAdrFarPatchableNNops = kMovInt64NInstrs - 1;
+  static const int kAdrFarPatchableNInstrs = kAdrFarPatchableNNops + 3;
+  void PatchAdrFar(Instruction* target);
 };
 
 
 class EnsureSpace BASE_EMBEDDED {
  public:
   explicit EnsureSpace(Assembler* assembler) {
-    assembler->CheckBuffer();
+    assembler->CheckBufferSpace();
   }
 };
 
