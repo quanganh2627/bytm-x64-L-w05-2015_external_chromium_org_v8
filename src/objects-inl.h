@@ -1002,6 +1002,11 @@ bool Object::IsTheHole() {
 }
 
 
+bool Object::IsException() {
+  return IsOddball() && Oddball::cast(this)->kind() == Oddball::kException;
+}
+
+
 bool Object::IsUninitialized() {
   return IsOddball() && Oddball::cast(this)->kind() == Oddball::kUninitialized;
 }
@@ -1045,20 +1050,6 @@ Handle<Object> Object::ToSmi(Isolate* isolate, Handle<Object> object) {
     }
   }
   return Handle<Object>();
-}
-
-
-// TODO(ishell): Use handlified version instead.
-MaybeObject* Object::ToSmi() {
-  if (IsSmi()) return this;
-  if (IsHeapNumber()) {
-    double value = HeapNumber::cast(this)->value();
-    int int_value = FastD2I(value);
-    if (value == FastI2D(int_value) && Smi::IsValid(int_value)) {
-      return Smi::FromInt(int_value);
-    }
-  }
-  return Failure::Exception();
 }
 
 
@@ -5208,7 +5199,6 @@ ACCESSORS(SharedFunctionInfo, function_data, Object, kFunctionDataOffset)
 ACCESSORS(SharedFunctionInfo, script, Object, kScriptOffset)
 ACCESSORS(SharedFunctionInfo, debug_info, Object, kDebugInfoOffset)
 ACCESSORS(SharedFunctionInfo, inferred_name, String, kInferredNameOffset)
-SMI_ACCESSORS(SharedFunctionInfo, ast_node_count, kAstNodeCountOffset)
 
 
 SMI_ACCESSORS(FunctionTemplateInfo, length, kLengthOffset)
@@ -5263,6 +5253,8 @@ SMI_ACCESSORS(SharedFunctionInfo, compiler_hints,
 SMI_ACCESSORS(SharedFunctionInfo, opt_count_and_bailout_reason,
               kOptCountAndBailoutReasonOffset)
 SMI_ACCESSORS(SharedFunctionInfo, counters, kCountersOffset)
+SMI_ACCESSORS(SharedFunctionInfo, ast_node_count, kAstNodeCountOffset)
+SMI_ACCESSORS(SharedFunctionInfo, profiler_ticks, kProfilerTicksOffset)
 
 #else
 
@@ -5313,8 +5305,14 @@ PSEUDO_SMI_ACCESSORS_HI(SharedFunctionInfo,
 PSEUDO_SMI_ACCESSORS_LO(SharedFunctionInfo,
                         opt_count_and_bailout_reason,
                         kOptCountAndBailoutReasonOffset)
-
 PSEUDO_SMI_ACCESSORS_HI(SharedFunctionInfo, counters, kCountersOffset)
+
+PSEUDO_SMI_ACCESSORS_LO(SharedFunctionInfo,
+                        ast_node_count,
+                        kAstNodeCountOffset)
+PSEUDO_SMI_ACCESSORS_HI(SharedFunctionInfo,
+                        profiler_ticks,
+                        kProfilerTicksOffset)
 
 #endif
 
@@ -5356,12 +5354,6 @@ void SharedFunctionInfo::set_optimization_disabled(bool disable) {
   if ((code()->kind() == Code::FUNCTION) && disable) {
     code()->set_optimizable(false);
   }
-}
-
-
-int SharedFunctionInfo::profiler_ticks() {
-  if (code()->kind() != Code::FUNCTION) return 0;
-  return code()->profiler_ticks();
 }
 
 
