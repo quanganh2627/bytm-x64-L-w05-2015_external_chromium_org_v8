@@ -117,40 +117,13 @@ class Simulator;
 // of handles to the actual constants.
 typedef ZoneList<Handle<Object> > ZoneObjectList;
 
-#define RETURN_IF_SCHEDULED_EXCEPTION(isolate)            \
+#define RETURN_FAILURE_IF_SCHEDULED_EXCEPTION(isolate)    \
   do {                                                    \
     Isolate* __isolate__ = (isolate);                     \
     if (__isolate__->has_scheduled_exception()) {         \
       return __isolate__->PromoteScheduledException();    \
     }                                                     \
   } while (false)
-
-#define RETURN_HANDLE_IF_SCHEDULED_EXCEPTION(isolate, T)  \
-  do {                                                    \
-    Isolate* __isolate__ = (isolate);                     \
-    if (__isolate__->has_scheduled_exception()) {         \
-      __isolate__->PromoteScheduledException();           \
-      return Handle<T>::null();                           \
-    }                                                     \
-  } while (false)
-
-#define RETURN_IF_EMPTY_HANDLE_VALUE(isolate, call, value)  \
-  do {                                                      \
-    if ((call).is_null()) {                                 \
-      ASSERT((isolate)->has_pending_exception());           \
-      return (value);                                       \
-    }                                                       \
-  } while (false)
-
-#define CHECK_NOT_EMPTY_HANDLE(isolate, call)     \
-  do {                                            \
-    ASSERT(!(isolate)->has_pending_exception());  \
-    CHECK(!(call).is_null());                     \
-  } while (false)
-
-#define RETURN_IF_EMPTY_HANDLE(isolate, call)  \
-  RETURN_IF_EMPTY_HANDLE_VALUE(isolate, call, Failure::Exception())
-
 
 // Macros for MaybeHandle.
 
@@ -172,7 +145,8 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
   } while (false)
 
 #define ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, dst, call)  \
-  ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, dst, call, Failure::Exception())
+  ASSIGN_RETURN_ON_EXCEPTION_VALUE(                             \
+      isolate, dst, call, isolate->heap()->exception())
 
 #define ASSIGN_RETURN_ON_EXCEPTION(isolate, dst, call, T)  \
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, dst, call, MaybeHandle<T>())
@@ -186,7 +160,7 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
   } while (false)
 
 #define RETURN_FAILURE_ON_EXCEPTION(isolate, call)  \
-  RETURN_ON_EXCEPTION_VALUE(isolate, call, Failure::Exception())
+  RETURN_ON_EXCEPTION_VALUE(isolate, call, isolate->heap()->exception())
 
 #define RETURN_ON_EXCEPTION(isolate, call, T)  \
   RETURN_ON_EXCEPTION_VALUE(isolate, call, MaybeHandle<T>())
@@ -556,16 +530,6 @@ class Isolate {
   // If one does not yet exist, return null.
   PerIsolateThreadData* FindPerThreadDataForThread(ThreadId thread_id);
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
-  // Get the debugger from the default isolate. Preinitializes the
-  // default isolate if needed.
-  static Debugger* GetDefaultIsolateDebugger();
-#endif
-
-  // Get the stack guard from the default isolate. Preinitializes the
-  // default isolate if needed.
-  static StackGuard* GetDefaultIsolateStackGuard();
-
   // Returns the key used to store the pointer to the current isolate.
   // Used internally for V8 threads that do not execute JavaScript but still
   // are part of the domain of an isolate (like the context switcher).
@@ -579,12 +543,6 @@ class Isolate {
   }
 
   static Thread::LocalStorageKey per_isolate_thread_data_key();
-
-  // If a client attempts to create a Locker without specifying an isolate,
-  // we assume that the client is using legacy behavior. Set up the current
-  // thread to be inside the implicit isolate (or fail a check if we have
-  // switched to non-legacy behavior).
-  static void EnterDefaultIsolate();
 
   // Mutex for serializing access to break control structures.
   RecursiveMutex* break_access() { return &break_access_; }
@@ -610,17 +568,17 @@ class Isolate {
   // Interface to pending exception.
   Object* pending_exception() {
     ASSERT(has_pending_exception());
-    ASSERT(!thread_local_top_.pending_exception_->IsFailure());
+    ASSERT(!thread_local_top_.pending_exception_->IsException());
     return thread_local_top_.pending_exception_;
   }
 
-  void set_pending_exception(Object* exception) {
-    ASSERT(!exception->IsFailure());
-    thread_local_top_.pending_exception_ = exception;
+  void set_pending_exception(Object* exception_obj) {
+    ASSERT(!exception_obj->IsException());
+    thread_local_top_.pending_exception_ = exception_obj;
   }
 
   void clear_pending_exception() {
-    ASSERT(!thread_local_top_.pending_exception_->IsFailure());
+    ASSERT(!thread_local_top_.pending_exception_->IsException());
     thread_local_top_.pending_exception_ = heap_.the_hole_value();
   }
 
@@ -629,7 +587,7 @@ class Isolate {
   }
 
   bool has_pending_exception() {
-    ASSERT(!thread_local_top_.pending_exception_->IsFailure());
+    ASSERT(!thread_local_top_.pending_exception_->IsException());
     return !thread_local_top_.pending_exception_->IsTheHole();
   }
 
@@ -671,15 +629,15 @@ class Isolate {
 
   Object* scheduled_exception() {
     ASSERT(has_scheduled_exception());
-    ASSERT(!thread_local_top_.scheduled_exception_->IsFailure());
+    ASSERT(!thread_local_top_.scheduled_exception_->IsException());
     return thread_local_top_.scheduled_exception_;
   }
   bool has_scheduled_exception() {
-    ASSERT(!thread_local_top_.scheduled_exception_->IsFailure());
+    ASSERT(!thread_local_top_.scheduled_exception_->IsException());
     return thread_local_top_.scheduled_exception_ != heap_.the_hole_value();
   }
   void clear_scheduled_exception() {
-    ASSERT(!thread_local_top_.scheduled_exception_->IsFailure());
+    ASSERT(!thread_local_top_.scheduled_exception_->IsException());
     thread_local_top_.scheduled_exception_ = heap_.the_hole_value();
   }
 
@@ -797,7 +755,7 @@ class Isolate {
 
   // Exception throwing support. The caller should use the result
   // of Throw() as its return value.
-  Failure* Throw(Object* exception, MessageLocation* location = NULL);
+  Object* Throw(Object* exception, MessageLocation* location = NULL);
 
   template <typename T>
   MUST_USE_RESULT MaybeHandle<T> Throw(Handle<Object> exception,
@@ -809,7 +767,7 @@ class Isolate {
   // Re-throw an exception.  This involves no error reporting since
   // error reporting was handled when the exception was thrown
   // originally.
-  Failure* ReThrow(Object* exception);
+  Object* ReThrow(Object* exception);
   void ScheduleThrow(Object* exception);
   // Re-set pending message, script and positions reported to the TryCatch
   // back to the TLS for re-use when rethrowing.
@@ -817,11 +775,11 @@ class Isolate {
   void ReportPendingMessages();
   // Return pending location if any or unfilled structure.
   MessageLocation GetMessageLocation();
-  Failure* ThrowIllegalOperation();
-  Failure* ThrowInvalidStringLength();
+  Object* ThrowIllegalOperation();
+  Object* ThrowInvalidStringLength();
 
   // Promote a scheduled exception to pending. Asserts has_scheduled_exception.
-  Failure* PromoteScheduledException();
+  Object* PromoteScheduledException();
   void DoThrow(Object* exception, MessageLocation* location);
   // Checks if exception should be reported and finds out if it's
   // caught externally.
@@ -833,8 +791,8 @@ class Isolate {
   void ComputeLocation(MessageLocation* target);
 
   // Out of resource exception helpers.
-  Failure* StackOverflow();
-  Failure* TerminateExecution();
+  Object* StackOverflow();
+  Object* TerminateExecution();
   void CancelTerminateExecution();
 
   // Administration
@@ -1123,11 +1081,6 @@ class Isolate {
   SweeperThread** sweeper_threads() {
     return sweeper_thread_;
   }
-
-  // PreInits and returns a default isolate. Needed when a new thread tries
-  // to create a Locker for the first time (the lock itself is in the isolate).
-  // TODO(svenpanne) This method is on death row...
-  static v8::Isolate* GetDefaultIsolateForLocking();
 
   int id() const { return static_cast<int>(id_); }
 

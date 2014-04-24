@@ -2408,19 +2408,28 @@ void CEntryStub::GenerateAheadOfTime(Isolate* isolate) {
 }
 
 
-void CEntryStub::GenerateCore(MacroAssembler* masm,
-                              Label* throw_normal_exception,
-                              Label* throw_termination_exception,
-                              bool do_gc,
-                              bool always_allocate_scope) {
-  // rax: result parameter for PerformGC, if any.
-  // rbx: pointer to C function  (C callee-saved).
-  // rbp: frame pointer  (restored after C call).
-  // rsp: stack pointer  (restored after C call).
+void CEntryStub::Generate(MacroAssembler* masm) {
+  // rax: number of arguments including receiver
+  // rbx: pointer to C function  (C callee-saved)
+  // rbp: frame pointer of calling JS frame (restored after C call)
+  // rsp: stack pointer  (restored after C call)
+  // rsi: current context (restored)
+
+  ProfileEntryHookStub::MaybeCallEntryHook(masm);
+
+  // Enter the exit frame that transitions from JavaScript to C++.
+#ifdef _WIN64
+  int arg_stack_space = (result_size_ < 2 ? 2 : 4);
+#else
+  int arg_stack_space = 0;
+#endif
+  __ EnterExitFrame(arg_stack_space, save_doubles_);
+
+  // rbx: pointer to builtin function  (C callee-saved).
+  // rbp: frame pointer of exit frame  (restored after C call).
+  // rsp: stack pointer (restored after C call).
   // r14: number of arguments including receiver (C callee-saved).
-  // r15: pointer to the first argument (C callee-saved).
-  //      This pointer is reused in LeaveExitFrame(), so it is stored in a
-  //      callee-saved register.
+  // r15: argv pointer (C callee-saved).
 
   // Simple results returned in rax (both AMD64 and Win64 calling conventions).
   // Complex results must be written to address passed as first argument.
@@ -2429,25 +2438,6 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   // Check stack alignment.
   if (FLAG_debug_code) {
     __ CheckStackAlignment();
-  }
-
-  if (do_gc) {
-    // Pass failure code returned from last attempt as first argument to
-    // PerformGC. No need to use PrepareCallCFunction/CallCFunction here as the
-    // stack is known to be aligned. This function takes one argument which is
-    // passed in register.
-    __ Move(arg_reg_2, ExternalReference::isolate_address(masm->isolate()));
-    __ movp(arg_reg_1, rax);
-    __ Move(kScratchRegister,
-            ExternalReference::perform_gc_function(masm->isolate()));
-    __ call(kScratchRegister);
-  }
-
-  ExternalReference scope_depth =
-      ExternalReference::heap_always_allocate_scope_depth(masm->isolate());
-  if (always_allocate_scope) {
-    Operand scope_depth_operand = masm->ExternalOperand(scope_depth);
-    __ incl(scope_depth_operand);
   }
 
   // Call C function.
@@ -2480,14 +2470,6 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   __ call(rbx);
   // Result is in rax - do not destroy this register!
 
-  if (always_allocate_scope) {
-    Operand scope_depth_operand = masm->ExternalOperand(scope_depth);
-    __ decl(scope_depth_operand);
-  }
-
-  // Check for failure result.
-  Label failure_returned;
-  STATIC_ASSERT(((kFailureTag + 1) & kFailureTagMask) == 0);
 #ifdef _WIN64
   // If return value is on the stack, pop it to registers.
   if (result_size_ > 1) {
@@ -2499,121 +2481,65 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
     __ movq(rdx, Operand(rsp, 7 * kRegisterSize));
   }
 #endif
-  __ leap(rcx, Operand(rax, 1));
-  // Lower 2 bits of rcx are 0 iff rax has failure tag.
-  __ testl(rcx, Immediate(kFailureTagMask));
-  __ j(zero, &failure_returned);
+
+  // Runtime functions should not return 'the hole'.  Allowing it to escape may
+  // lead to crashes in the IC code later.
+  if (FLAG_debug_code) {
+    Label okay;
+    __ CompareRoot(rax, Heap::kTheHoleValueRootIndex);
+    __ j(not_equal, &okay, Label::kNear);
+    __ int3();
+    __ bind(&okay);
+  }
+
+  // Check result for exception sentinel.
+  Label exception_returned;
+  __ CompareRoot(rax, Heap::kExceptionRootIndex);
+  __ j(equal, &exception_returned);
+
+  ExternalReference pending_exception_address(
+      Isolate::kPendingExceptionAddress, masm->isolate());
+
+  // Check that there is no pending exception, otherwise we
+  // should have returned the exception sentinel.
+  if (FLAG_debug_code) {
+    Label okay;
+    __ LoadRoot(r14, Heap::kTheHoleValueRootIndex);
+    Operand pending_exception_operand =
+        masm->ExternalOperand(pending_exception_address);
+    __ cmpp(r14, pending_exception_operand);
+    __ j(equal, &okay, Label::kNear);
+    __ int3();
+    __ bind(&okay);
+  }
 
   // Exit the JavaScript to C++ exit frame.
   __ LeaveExitFrame(save_doubles_);
   __ ret(0);
 
-  // Handling of failure.
-  __ bind(&failure_returned);
-
-  Label retry;
-  // If the returned exception is RETRY_AFTER_GC continue at retry label
-  STATIC_ASSERT(Failure::RETRY_AFTER_GC == 0);
-  __ testl(rax, Immediate(((1 << kFailureTypeTagSize) - 1) << kFailureTagSize));
-  __ j(zero, &retry, Label::kNear);
+  // Handling of exception.
+  __ bind(&exception_returned);
 
   // Retrieve the pending exception.
-  ExternalReference pending_exception_address(
-      Isolate::kPendingExceptionAddress, masm->isolate());
   Operand pending_exception_operand =
       masm->ExternalOperand(pending_exception_address);
   __ movp(rax, pending_exception_operand);
 
   // Clear the pending exception.
-  pending_exception_operand =
-      masm->ExternalOperand(pending_exception_address);
   __ LoadRoot(rdx, Heap::kTheHoleValueRootIndex);
   __ movp(pending_exception_operand, rdx);
 
   // Special handling of termination exceptions which are uncatchable
   // by javascript code.
+  Label throw_termination_exception;
   __ CompareRoot(rax, Heap::kTerminationExceptionRootIndex);
-  __ j(equal, throw_termination_exception);
+  __ j(equal, &throw_termination_exception);
 
   // Handle normal exception.
-  __ jmp(throw_normal_exception);
-
-  // Retry.
-  __ bind(&retry);
-}
-
-
-void CEntryStub::Generate(MacroAssembler* masm) {
-  // rax: number of arguments including receiver
-  // rbx: pointer to C function  (C callee-saved)
-  // rbp: frame pointer of calling JS frame (restored after C call)
-  // rsp: stack pointer  (restored after C call)
-  // rsi: current context (restored)
-
-  // NOTE: Invocations of builtins may return failure objects
-  // instead of a proper result. The builtin entry handles
-  // this by performing a garbage collection and retrying the
-  // builtin once.
-
-  ProfileEntryHookStub::MaybeCallEntryHook(masm);
-
-  // Enter the exit frame that transitions from JavaScript to C++.
-#ifdef _WIN64
-  int arg_stack_space = (result_size_ < 2 ? 2 : 4);
-#else
-  int arg_stack_space = 0;
-#endif
-  __ EnterExitFrame(arg_stack_space, save_doubles_);
-
-  // rax: Holds the context at this point, but should not be used.
-  //      On entry to code generated by GenerateCore, it must hold
-  //      a failure result if the collect_garbage argument to GenerateCore
-  //      is true.  This failure result can be the result of code
-  //      generated by a previous call to GenerateCore.  The value
-  //      of rax is then passed to Runtime::PerformGC.
-  // rbx: pointer to builtin function  (C callee-saved).
-  // rbp: frame pointer of exit frame  (restored after C call).
-  // rsp: stack pointer (restored after C call).
-  // r14: number of arguments including receiver (C callee-saved).
-  // r15: argv pointer (C callee-saved).
-
-  Label throw_normal_exception;
-  Label throw_termination_exception;
-
-  // Call into the runtime system.
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               false,
-               false);
-
-  // Do space-specific GC and retry runtime call.
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               true,
-               false);
-
-  // Do full GC and retry runtime call one final time.
-  Failure* failure = Failure::InternalError();
-  __ Move(rax, failure, Assembler::RelocInfoNone());
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               true,
-               true);
-
-  { FrameScope scope(masm, StackFrame::MANUAL);
-    __ PrepareCallCFunction(0);
-    __ CallCFunction(
-        ExternalReference::out_of_memory_function(masm->isolate()), 0);
-  }
+  __ Throw(rax);
 
   __ bind(&throw_termination_exception);
   __ ThrowUncatchable(rax);
-
-  __ bind(&throw_normal_exception);
-  __ Throw(rax);
 }
 
 
@@ -2702,7 +2628,7 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   ExternalReference pending_exception(Isolate::kPendingExceptionAddress,
                                       isolate);
   __ Store(pending_exception, rax);
-  __ Move(rax, Failure::Exception(), Assembler::RelocInfoNone());
+  __ LoadRoot(rax, Heap::kExceptionRootIndex);
   __ jmp(&exit);
 
   // Invoke: Link this frame into the handler chain.  There's only one
@@ -3617,202 +3543,6 @@ void StringCompareStub::Generate(MacroAssembler* masm) {
   // tagged as a small integer.
   __ bind(&runtime);
   __ TailCallRuntime(Runtime::kHiddenStringCompare, 2, 1);
-}
-
-
-void ArrayPushStub::Generate(MacroAssembler* masm) {
-  int argc = arguments_count();
-
-  StackArgumentsAccessor args(rsp, argc);
-  if (argc == 0) {
-    // Noop, return the length.
-    __ movp(rax, FieldOperand(rdx, JSArray::kLengthOffset));
-    __ ret((argc + 1) * kPointerSize);
-    return;
-  }
-
-  Isolate* isolate = masm->isolate();
-
-  if (argc != 1) {
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  Label call_builtin, attempt_to_grow_elements, with_write_barrier;
-
-  // Get the elements array of the object.
-  __ movp(rdi, FieldOperand(rdx, JSArray::kElementsOffset));
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    // Check that the elements are in fast mode and writable.
-    __ Cmp(FieldOperand(rdi, HeapObject::kMapOffset),
-           isolate->factory()->fixed_array_map());
-    __ j(not_equal, &call_builtin);
-  }
-
-  // Get the array's length into rax and calculate new length.
-  __ SmiToInteger32(rax, FieldOperand(rdx, JSArray::kLengthOffset));
-  STATIC_ASSERT(FixedArray::kMaxLength < Smi::kMaxValue);
-  __ addl(rax, Immediate(argc));
-
-  // Get the elements' length into rcx.
-  __ SmiToInteger32(rcx, FieldOperand(rdi, FixedArray::kLengthOffset));
-
-  // Check if we could survive without allocation.
-  __ cmpl(rax, rcx);
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    __ j(greater, &attempt_to_grow_elements);
-
-    // Check if value is a smi.
-    __ movp(rcx, args.GetArgumentOperand(1));
-    __ JumpIfNotSmi(rcx, &with_write_barrier);
-
-    // Store the value.
-    __ movp(FieldOperand(rdi,
-                         rax,
-                         times_pointer_size,
-                         FixedArray::kHeaderSize - argc * kPointerSize),
-            rcx);
-  } else {
-    __ j(greater, &call_builtin);
-
-    __ movp(rcx, args.GetArgumentOperand(1));
-    __ StoreNumberToDoubleElements(
-        rcx, rdi, rax, xmm0, &call_builtin, argc * kDoubleSize);
-  }
-
-  // Save new length.
-  __ Integer32ToSmiField(FieldOperand(rdx, JSArray::kLengthOffset), rax);
-
-  __ Integer32ToSmi(rax, rax);  // Return new length as smi.
-  __ ret((argc + 1) * kPointerSize);
-
-  if (IsFastDoubleElementsKind(elements_kind())) {
-    __ bind(&call_builtin);
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  __ bind(&with_write_barrier);
-
-  if (IsFastSmiElementsKind(elements_kind())) {
-    if (FLAG_trace_elements_transitions) __ jmp(&call_builtin);
-
-    __ Cmp(FieldOperand(rcx, HeapObject::kMapOffset),
-           isolate->factory()->heap_number_map());
-    __ j(equal, &call_builtin);
-
-    ElementsKind target_kind = IsHoleyElementsKind(elements_kind())
-        ? FAST_HOLEY_ELEMENTS : FAST_ELEMENTS;
-    __ movp(rbx, ContextOperand(rsi, Context::GLOBAL_OBJECT_INDEX));
-    __ movp(rbx, FieldOperand(rbx, GlobalObject::kNativeContextOffset));
-    __ movp(rbx, ContextOperand(rbx, Context::JS_ARRAY_MAPS_INDEX));
-    const int header_size = FixedArrayBase::kHeaderSize;
-    // Verify that the object can be transitioned in place.
-    const int origin_offset = header_size + elements_kind() * kPointerSize;
-    __ movp(rdi, FieldOperand(rbx, origin_offset));
-    __ cmpp(rdi, FieldOperand(rdx, HeapObject::kMapOffset));
-    __ j(not_equal, &call_builtin);
-
-    const int target_offset = header_size + target_kind * kPointerSize;
-    __ movp(rbx, FieldOperand(rbx, target_offset));
-    ElementsTransitionGenerator::GenerateMapChangeElementsTransition(
-        masm, DONT_TRACK_ALLOCATION_SITE, NULL);
-    __ movp(rdi, FieldOperand(rdx, JSArray::kElementsOffset));
-  }
-
-  // Save new length.
-  __ Integer32ToSmiField(FieldOperand(rdx, JSArray::kLengthOffset), rax);
-
-  // Store the value.
-  __ leap(rdx, FieldOperand(rdi,
-                           rax, times_pointer_size,
-                           FixedArray::kHeaderSize - argc * kPointerSize));
-  __ movp(Operand(rdx, 0), rcx);
-
-  __ RecordWrite(rdi, rdx, rcx, kDontSaveFPRegs, EMIT_REMEMBERED_SET,
-                 OMIT_SMI_CHECK);
-
-  __ Integer32ToSmi(rax, rax);  // Return new length as smi.
-  __ ret((argc + 1) * kPointerSize);
-
-  __ bind(&attempt_to_grow_elements);
-  if (!FLAG_inline_new) {
-    __ bind(&call_builtin);
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  __ movp(rbx, args.GetArgumentOperand(1));
-  // Growing elements that are SMI-only requires special handling in case the
-  // new element is non-Smi. For now, delegate to the builtin.
-  Label no_fast_elements_check;
-  __ JumpIfSmi(rbx, &no_fast_elements_check);
-  __ movp(rcx, FieldOperand(rdx, HeapObject::kMapOffset));
-  __ CheckFastObjectElements(rcx, &call_builtin, Label::kFar);
-  __ bind(&no_fast_elements_check);
-
-  ExternalReference new_space_allocation_top =
-      ExternalReference::new_space_allocation_top_address(isolate);
-  ExternalReference new_space_allocation_limit =
-      ExternalReference::new_space_allocation_limit_address(isolate);
-
-  const int kAllocationDelta = 4;
-  ASSERT(kAllocationDelta >= argc);
-  // Load top.
-  __ Load(rcx, new_space_allocation_top);
-
-  // Check if it's the end of elements.
-  __ leap(rdx, FieldOperand(rdi,
-                           rax, times_pointer_size,
-                           FixedArray::kHeaderSize - argc * kPointerSize));
-  __ cmpp(rdx, rcx);
-  __ j(not_equal, &call_builtin);
-  __ addp(rcx, Immediate(kAllocationDelta * kPointerSize));
-  Operand limit_operand = masm->ExternalOperand(new_space_allocation_limit);
-  __ cmpp(rcx, limit_operand);
-  __ j(above, &call_builtin);
-
-  // We fit and could grow elements.
-  __ Store(new_space_allocation_top, rcx);
-
-  // Push the argument...
-  __ movp(Operand(rdx, 0), rbx);
-  // ... and fill the rest with holes.
-  __ LoadRoot(kScratchRegister, Heap::kTheHoleValueRootIndex);
-  for (int i = 1; i < kAllocationDelta; i++) {
-    __ movp(Operand(rdx, i * kPointerSize), kScratchRegister);
-  }
-
-  if (IsFastObjectElementsKind(elements_kind())) {
-    // We know the elements array is in new space so we don't need the
-    // remembered set, but we just pushed a value onto it so we may have to tell
-    // the incremental marker to rescan the object that we just grew.  We don't
-    // need to worry about the holes because they are in old space and already
-    // marked black.
-    __ RecordWrite(rdi, rdx, rbx, kDontSaveFPRegs, OMIT_REMEMBERED_SET);
-  }
-
-  // Restore receiver to rdx as finish sequence assumes it's here.
-  __ movp(rdx, args.GetReceiverOperand());
-
-  // Increment element's and array's sizes.
-  __ SmiAddConstant(FieldOperand(rdi, FixedArray::kLengthOffset),
-                    Smi::FromInt(kAllocationDelta));
-
-  // Make new length a smi before returning it.
-  __ Integer32ToSmi(rax, rax);
-  __ movp(FieldOperand(rdx, JSArray::kLengthOffset), rax);
-
-  __ ret((argc + 1) * kPointerSize);
-
-  __ bind(&call_builtin);
-  __ TailCallExternalReference(
-      ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
 }
 
 

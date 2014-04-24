@@ -69,16 +69,18 @@ class RegExpImpl {
   // generic data and choice of implementation - as well as what
   // the implementation wants to store in the data field.
   // Returns false if compilation fails.
-  static Handle<Object> Compile(Handle<JSRegExp> re,
-                                Handle<String> pattern,
-                                Handle<String> flags);
+  MUST_USE_RESULT static MaybeHandle<Object> Compile(
+      Handle<JSRegExp> re,
+      Handle<String> pattern,
+      Handle<String> flags);
 
   // See ECMA-262 section 15.10.6.2.
   // This function calls the garbage collector if necessary.
-  static Handle<Object> Exec(Handle<JSRegExp> regexp,
-                             Handle<String> subject,
-                             int index,
-                             Handle<JSArray> lastMatchInfo);
+  MUST_USE_RESULT static MaybeHandle<Object> Exec(
+      Handle<JSRegExp> regexp,
+      Handle<String> subject,
+      int index,
+      Handle<JSArray> lastMatchInfo);
 
   // Prepares a JSRegExp object with Irregexp-specific data.
   static void IrregexpInitialize(Handle<JSRegExp> re,
@@ -133,10 +135,11 @@ class RegExpImpl {
   // On a successful match, the result is a JSArray containing
   // captured positions.  On a failure, the result is the null value.
   // Returns an empty handle in case of an exception.
-  static Handle<Object> IrregexpExec(Handle<JSRegExp> regexp,
-                                     Handle<String> subject,
-                                     int index,
-                                     Handle<JSArray> lastMatchInfo);
+  MUST_USE_RESULT static MaybeHandle<Object> IrregexpExec(
+      Handle<JSRegExp> regexp,
+      Handle<String> subject,
+      int index,
+      Handle<JSArray> lastMatchInfo);
 
   // Set last match info.  If match is NULL, then setting captures is omitted.
   static Handle<JSArray> SetLastMatchInfo(Handle<JSArray> last_match_info,

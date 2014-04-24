@@ -559,13 +559,14 @@ class ConvertToDoubleStub : public PlatformCodeStub {
 
 
 void ConvertToDoubleStub::Generate(MacroAssembler* masm) {
-#ifndef BIG_ENDIAN_FLOATING_POINT
-  Register exponent = result1_;
-  Register mantissa = result2_;
-#else
-  Register exponent = result2_;
-  Register mantissa = result1_;
-#endif
+  Register exponent, mantissa;
+  if (kArchEndian == kLittle) {
+    exponent = result1_;
+    mantissa = result2_;
+  } else {
+    exponent = result2_;
+    mantissa = result1_;
+  }
   Label not_special;
   // Convert from Smi to integer.
   __ sra(source_, source_, kSmiTagSize);
@@ -671,8 +672,10 @@ void DoubleToIStub::Generate(MacroAssembler* masm) {
   Register input_high = scratch2;
   Register input_low = scratch3;
 
-  __ lw(input_low, MemOperand(input_reg, double_offset));
-  __ lw(input_high, MemOperand(input_reg, double_offset + kIntSize));
+  __ lw(input_low,
+      MemOperand(input_reg, double_offset + Register::kMantissaOffset));
+  __ lw(input_high,
+      MemOperand(input_reg, double_offset + Register::kExponentOffset));
 
   Label normal_exponent, restore_sign;
   // Extract the biased exponent in result.
@@ -1607,34 +1610,34 @@ void CEntryStub::GenerateAheadOfTime(Isolate* isolate) {
 }
 
 
-void CEntryStub::GenerateCore(MacroAssembler* masm,
-                              Label* throw_normal_exception,
-                              Label* throw_termination_exception,
-                              bool do_gc,
-                              bool always_allocate) {
-  // v0: result parameter for PerformGC, if any
-  // s0: number of arguments including receiver (C callee-saved)
-  // s1: pointer to the first argument          (C callee-saved)
-  // s2: pointer to builtin function            (C callee-saved)
+void CEntryStub::Generate(MacroAssembler* masm) {
+  // Called from JavaScript; parameters are on stack as if calling JS function
+  // s0: number of arguments including receiver
+  // s1: size of arguments excluding receiver
+  // s2: pointer to builtin function
+  // fp: frame pointer    (restored after C call)
+  // sp: stack pointer    (restored as callee's sp after C call)
+  // cp: current context  (C callee-saved)
+
+  ProfileEntryHookStub::MaybeCallEntryHook(masm);
+
+  // NOTE: s0-s2 hold the arguments of this function instead of a0-a2.
+  // The reason for this is that these arguments would need to be saved anyway
+  // so it's faster to set them up directly.
+  // See MacroAssembler::PrepareCEntryArgs and PrepareCEntryFunction.
+
+  // Compute the argv pointer in a callee-saved register.
+  __ Addu(s1, sp, s1);
+
+  // Enter the exit frame that transitions from JavaScript to C++.
+  FrameScope scope(masm, StackFrame::MANUAL);
+  __ EnterExitFrame(save_doubles_);
+
+  // s0: number of arguments  including receiver (C callee-saved)
+  // s1: pointer to first argument (C callee-saved)
+  // s2: pointer to builtin function (C callee-saved)
 
   Isolate* isolate = masm->isolate();
-
-  if (do_gc) {
-    // Move result passed in v0 into a0 to call PerformGC.
-    __ mov(a0, v0);
-    __ PrepareCallCFunction(2, 0, a1);
-    __ li(a1, Operand(ExternalReference::isolate_address(masm->isolate())));
-    __ CallCFunction(ExternalReference::perform_gc_function(isolate), 2, 0);
-  }
-
-  ExternalReference scope_depth =
-      ExternalReference::heap_always_allocate_scope_depth(isolate);
-  if (always_allocate) {
-    __ li(a0, Operand(scope_depth));
-    __ lw(a1, MemOperand(a0));
-    __ Addu(a1, a1, Operand(1));
-    __ sw(a1, MemOperand(a0));
-  }
 
   // Prepare arguments for C routine.
   // a0 = argc
@@ -1681,130 +1684,67 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
               masm->InstructionsGeneratedSince(&find_ra));
   }
 
-  if (always_allocate) {
-    // It's okay to clobber a2 and a3 here. v0 & v1 contain result.
-    __ li(a2, Operand(scope_depth));
-    __ lw(a3, MemOperand(a2));
-    __ Subu(a3, a3, Operand(1));
-    __ sw(a3, MemOperand(a2));
+
+  // Runtime functions should not return 'the hole'.  Allowing it to escape may
+  // lead to crashes in the IC code later.
+  if (FLAG_debug_code) {
+    Label okay;
+    __ LoadRoot(t0, Heap::kTheHoleValueRootIndex);
+    __ Branch(&okay, ne, v0, Operand(t0));
+    __ stop("The hole escaped");
+    __ bind(&okay);
   }
 
-  // Check for failure result.
-  Label failure_returned;
-  STATIC_ASSERT(((kFailureTag + 1) & kFailureTagMask) == 0);
-  __ addiu(a2, v0, 1);
-  __ andi(t0, a2, kFailureTagMask);
-  __ Branch(USE_DELAY_SLOT, &failure_returned, eq, t0, Operand(zero_reg));
-  // Restore stack (remove arg slots) in branch delay slot.
-  __ addiu(sp, sp, kCArgsSlotsSize);
+  // Check result for exception sentinel.
+  Label exception_returned;
+  __ LoadRoot(t0, Heap::kExceptionRootIndex);
+  __ Branch(&exception_returned, eq, t0, Operand(v0));
 
+  ExternalReference pending_exception_address(
+      Isolate::kPendingExceptionAddress, isolate);
+
+  // Check that there is no pending exception, otherwise we
+  // should have returned the exception sentinel.
+  if (FLAG_debug_code) {
+    Label okay;
+    __ li(a2, Operand(pending_exception_address));
+    __ lw(a2, MemOperand(a2));
+    __ LoadRoot(t0, Heap::kTheHoleValueRootIndex);
+    // Cannot use check here as it attempts to generate call into runtime.
+    __ Branch(&okay, eq, t0, Operand(a2));
+    __ stop("Unexpected pending exception");
+    __ bind(&okay);
+  }
 
   // Exit C frame and return.
   // v0:v1: result
   // sp: stack pointer
   // fp: frame pointer
+  // s0: still holds argc (callee-saved).
   __ LeaveExitFrame(save_doubles_, s0, true, EMIT_RETURN);
 
-  // Check if we should retry or throw exception.
-  Label retry;
-  __ bind(&failure_returned);
-  STATIC_ASSERT(Failure::RETRY_AFTER_GC == 0);
-  __ andi(t0, v0, ((1 << kFailureTypeTagSize) - 1) << kFailureTagSize);
-  __ Branch(&retry, eq, t0, Operand(zero_reg));
+  // Handling of exception.
+  __ bind(&exception_returned);
 
   // Retrieve the pending exception.
-  __ li(t0, Operand(ExternalReference(Isolate::kPendingExceptionAddress,
-                                      isolate)));
-  __ lw(v0, MemOperand(t0));
+  __ li(a2, Operand(pending_exception_address));
+  __ lw(v0, MemOperand(a2));
 
   // Clear the pending exception.
   __ li(a3, Operand(isolate->factory()->the_hole_value()));
-  __ li(t0, Operand(ExternalReference(Isolate::kPendingExceptionAddress,
-                                      isolate)));
-  __ sw(a3, MemOperand(t0));
+  __ sw(a3, MemOperand(a2));
 
   // Special handling of termination exceptions which are uncatchable
   // by javascript code.
+  Label throw_termination_exception;
   __ LoadRoot(t0, Heap::kTerminationExceptionRootIndex);
-  __ Branch(throw_termination_exception, eq, v0, Operand(t0));
+  __ Branch(&throw_termination_exception, eq, v0, Operand(t0));
 
   // Handle normal exception.
-  __ jmp(throw_normal_exception);
-
-  __ bind(&retry);
-  // Last failure (v0) will be moved to (a0) for parameter when retrying.
-}
-
-
-void CEntryStub::Generate(MacroAssembler* masm) {
-  // Called from JavaScript; parameters are on stack as if calling JS function
-  // s0: number of arguments including receiver
-  // s1: size of arguments excluding receiver
-  // s2: pointer to builtin function
-  // fp: frame pointer    (restored after C call)
-  // sp: stack pointer    (restored as callee's sp after C call)
-  // cp: current context  (C callee-saved)
-
-  ProfileEntryHookStub::MaybeCallEntryHook(masm);
-
-  // NOTE: Invocations of builtins may return failure objects
-  // instead of a proper result. The builtin entry handles
-  // this by performing a garbage collection and retrying the
-  // builtin once.
-
-  // NOTE: s0-s2 hold the arguments of this function instead of a0-a2.
-  // The reason for this is that these arguments would need to be saved anyway
-  // so it's faster to set them up directly.
-  // See MacroAssembler::PrepareCEntryArgs and PrepareCEntryFunction.
-
-  // Compute the argv pointer in a callee-saved register.
-  __ Addu(s1, sp, s1);
-
-  // Enter the exit frame that transitions from JavaScript to C++.
-  FrameScope scope(masm, StackFrame::MANUAL);
-  __ EnterExitFrame(save_doubles_);
-
-  // s0: number of arguments (C callee-saved)
-  // s1: pointer to first argument (C callee-saved)
-  // s2: pointer to builtin function (C callee-saved)
-
-  Label throw_normal_exception;
-  Label throw_termination_exception;
-
-  // Call into the runtime system.
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               false,
-               false);
-
-  // Do space-specific GC and retry runtime call.
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               true,
-               false);
-
-  // Do full GC and retry runtime call one final time.
-  Failure* failure = Failure::InternalError();
-  __ li(v0, Operand(reinterpret_cast<int32_t>(failure)));
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               true,
-               true);
-
-  { FrameScope scope(masm, StackFrame::MANUAL);
-    __ PrepareCallCFunction(0, v0);
-    __ CallCFunction(
-        ExternalReference::out_of_memory_function(masm->isolate()), 0);
-  }
+  __ Throw(v0);
 
   __ bind(&throw_termination_exception);
   __ ThrowUncatchable(v0);
-
-  __ bind(&throw_normal_exception);
-  __ Throw(v0);
 }
 
 
@@ -1896,7 +1836,7 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   __ li(t0, Operand(ExternalReference(Isolate::kPendingExceptionAddress,
                                       isolate)));
   __ sw(v0, MemOperand(t0));  // We come back from 'invoke'. result is in v0.
-  __ li(v0, Operand(reinterpret_cast<int32_t>(Failure::Exception())));
+  __ LoadRoot(v0, Heap::kExceptionRootIndex);
   __ b(&exit);  // b exposes branch delay slot.
   __ nop();   // Branch delay slot nop.
 
@@ -3532,9 +3472,15 @@ void StringHelper::GenerateCopyCharactersLong(MacroAssembler* masm,
   {
     Label loop;
     __ bind(&loop);
-    __ lwr(scratch1, MemOperand(src));
-    __ Addu(src, src, Operand(kReadAlignment));
-    __ lwl(scratch1, MemOperand(src, -1));
+    if (kArchEndian == kBig) {
+      __ lwl(scratch1, MemOperand(src));
+      __ Addu(src, src, Operand(kReadAlignment));
+      __ lwr(scratch1, MemOperand(src, -1));
+    } else {
+      __ lwr(scratch1, MemOperand(src));
+      __ Addu(src, src, Operand(kReadAlignment));
+      __ lwl(scratch1, MemOperand(src, -1));
+    }
     __ sw(scratch1, MemOperand(dest));
     __ Addu(dest, dest, Operand(kReadAlignment));
     __ Subu(scratch2, limit, dest);
@@ -3996,206 +3942,6 @@ void StringCompareStub::Generate(MacroAssembler* masm) {
 
   __ bind(&runtime);
   __ TailCallRuntime(Runtime::kHiddenStringCompare, 2, 1);
-}
-
-
-void ArrayPushStub::Generate(MacroAssembler* masm) {
-  Register receiver = a0;
-  Register scratch = a1;
-
-  int argc = arguments_count();
-
-  if (argc == 0) {
-    // Nothing to do, just return the length.
-    __ lw(v0, FieldMemOperand(receiver, JSArray::kLengthOffset));
-    __ DropAndRet(argc + 1);
-    return;
-  }
-
-  Isolate* isolate = masm->isolate();
-
-  if (argc != 1) {
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  Label call_builtin, attempt_to_grow_elements, with_write_barrier;
-
-  Register elements = t2;
-  Register end_elements = t1;
-  // Get the elements array of the object.
-  __ lw(elements, FieldMemOperand(receiver, JSArray::kElementsOffset));
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    // Check that the elements are in fast mode and writable.
-    __ CheckMap(elements,
-                scratch,
-                Heap::kFixedArrayMapRootIndex,
-                &call_builtin,
-                DONT_DO_SMI_CHECK);
-  }
-
-  // Get the array's length into scratch and calculate new length.
-  __ lw(scratch, FieldMemOperand(receiver, JSArray::kLengthOffset));
-  __ Addu(scratch, scratch, Operand(Smi::FromInt(argc)));
-
-  // Get the elements' length.
-  __ lw(t0, FieldMemOperand(elements, FixedArray::kLengthOffset));
-
-  const int kEndElementsOffset =
-      FixedArray::kHeaderSize - kHeapObjectTag - argc * kPointerSize;
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    // Check if we could survive without allocation.
-    __ Branch(&attempt_to_grow_elements, gt, scratch, Operand(t0));
-
-    // Check if value is a smi.
-    __ lw(t0, MemOperand(sp, (argc - 1) * kPointerSize));
-    __ JumpIfNotSmi(t0, &with_write_barrier);
-
-    // Store the value.
-    // We may need a register containing the address end_elements below,
-    // so write back the value in end_elements.
-    __ sll(end_elements, scratch, kPointerSizeLog2 - kSmiTagSize);
-    __ Addu(end_elements, elements, end_elements);
-    __ Addu(end_elements, end_elements, kEndElementsOffset);
-    __ sw(t0, MemOperand(end_elements));
-  } else {
-    // Check if we could survive without allocation.
-    __ Branch(&call_builtin, gt, scratch, Operand(t0));
-
-    __ lw(t0, MemOperand(sp, (argc - 1) * kPointerSize));
-    __ StoreNumberToDoubleElements(t0, scratch, elements, a3, t1, a2,
-                                   &call_builtin, argc * kDoubleSize);
-  }
-
-  // Save new length.
-  __ sw(scratch, FieldMemOperand(receiver, JSArray::kLengthOffset));
-  __ mov(v0, scratch);
-  __ DropAndRet(argc + 1);
-
-  if (IsFastDoubleElementsKind(elements_kind())) {
-    __ bind(&call_builtin);
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  __ bind(&with_write_barrier);
-
-  if (IsFastSmiElementsKind(elements_kind())) {
-    if (FLAG_trace_elements_transitions) __ jmp(&call_builtin);
-
-    __ lw(t3, FieldMemOperand(t0, HeapObject::kMapOffset));
-    __ LoadRoot(at, Heap::kHeapNumberMapRootIndex);
-    __ Branch(&call_builtin, eq, t3, Operand(at));
-
-    ElementsKind target_kind = IsHoleyElementsKind(elements_kind())
-        ? FAST_HOLEY_ELEMENTS : FAST_ELEMENTS;
-    __ lw(a3, ContextOperand(cp, Context::GLOBAL_OBJECT_INDEX));
-    __ lw(a3, FieldMemOperand(a3, GlobalObject::kNativeContextOffset));
-    __ lw(a3, ContextOperand(a3, Context::JS_ARRAY_MAPS_INDEX));
-    const int header_size = FixedArrayBase::kHeaderSize;
-    // Verify that the object can be transitioned in place.
-    const int origin_offset = header_size + elements_kind() * kPointerSize;
-    __ lw(a2, FieldMemOperand(receiver, origin_offset));
-    __ lw(at, FieldMemOperand(a3, HeapObject::kMapOffset));
-    __ Branch(&call_builtin, ne, a2, Operand(at));
-
-
-    const int target_offset = header_size + target_kind * kPointerSize;
-    __ lw(a3, FieldMemOperand(a3, target_offset));
-    __ mov(a2, receiver);
-    ElementsTransitionGenerator::GenerateMapChangeElementsTransition(
-        masm, DONT_TRACK_ALLOCATION_SITE, NULL);
-  }
-
-  // Save new length.
-  __ sw(scratch, FieldMemOperand(receiver, JSArray::kLengthOffset));
-
-  // Store the value.
-  // We may need a register containing the address end_elements below, so write
-  // back the value in end_elements.
-  __ sll(end_elements, scratch, kPointerSizeLog2 - kSmiTagSize);
-  __ Addu(end_elements, elements, end_elements);
-  __ Addu(end_elements, end_elements, kEndElementsOffset);
-  __ sw(t0, MemOperand(end_elements));
-
-  __ RecordWrite(elements,
-                 end_elements,
-                 t0,
-                 kRAHasNotBeenSaved,
-                 kDontSaveFPRegs,
-                 EMIT_REMEMBERED_SET,
-                 OMIT_SMI_CHECK);
-  __ mov(v0, scratch);
-  __ DropAndRet(argc + 1);
-
-  __ bind(&attempt_to_grow_elements);
-  // scratch: array's length + 1.
-
-  if (!FLAG_inline_new) {
-    __ bind(&call_builtin);
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  __ lw(a2, MemOperand(sp, (argc - 1) * kPointerSize));
-  // Growing elements that are SMI-only requires special handling in case the
-  // new element is non-Smi. For now, delegate to the builtin.
-  if (IsFastSmiElementsKind(elements_kind())) {
-    __ JumpIfNotSmi(a2, &call_builtin);
-  }
-
-  // We could be lucky and the elements array could be at the top of new-space.
-  // In this case we can just grow it in place by moving the allocation pointer
-  // up.
-  ExternalReference new_space_allocation_top =
-      ExternalReference::new_space_allocation_top_address(isolate);
-  ExternalReference new_space_allocation_limit =
-      ExternalReference::new_space_allocation_limit_address(isolate);
-
-  const int kAllocationDelta = 4;
-  ASSERT(kAllocationDelta >= argc);
-  // Load top and check if it is the end of elements.
-  __ sll(end_elements, scratch, kPointerSizeLog2 - kSmiTagSize);
-  __ Addu(end_elements, elements, end_elements);
-  __ Addu(end_elements, end_elements, Operand(kEndElementsOffset));
-  __ li(t0, Operand(new_space_allocation_top));
-  __ lw(a3, MemOperand(t0));
-  __ Branch(&call_builtin, ne, a3, Operand(end_elements));
-
-  __ li(t3, Operand(new_space_allocation_limit));
-  __ lw(t3, MemOperand(t3));
-  __ Addu(a3, a3, Operand(kAllocationDelta * kPointerSize));
-  __ Branch(&call_builtin, hi, a3, Operand(t3));
-
-  // We fit and could grow elements.
-  // Update new_space_allocation_top.
-  __ sw(a3, MemOperand(t0));
-  // Push the argument.
-  __ sw(a2, MemOperand(end_elements));
-  // Fill the rest with holes.
-  __ LoadRoot(a3, Heap::kTheHoleValueRootIndex);
-  for (int i = 1; i < kAllocationDelta; i++) {
-    __ sw(a3, MemOperand(end_elements, i * kPointerSize));
-  }
-
-  // Update elements' and array's sizes.
-  __ sw(scratch, FieldMemOperand(receiver, JSArray::kLengthOffset));
-  __ lw(t0, FieldMemOperand(elements, FixedArray::kLengthOffset));
-  __ Addu(t0, t0, Operand(Smi::FromInt(kAllocationDelta)));
-  __ sw(t0, FieldMemOperand(elements, FixedArray::kLengthOffset));
-
-  // Elements are in new space, so write barrier is not required.
-  __ mov(v0, scratch);
-  __ DropAndRet(argc + 1);
-
-  __ bind(&call_builtin);
-  __ TailCallExternalReference(
-      ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
 }
 
 

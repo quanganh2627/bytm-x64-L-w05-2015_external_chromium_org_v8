@@ -77,6 +77,16 @@ struct Register {
   static const int kSizeInBytes = 4;
   static const int kCpRegister = 23;  // cp (s7) is the 23rd register.
 
+#if defined(V8_TARGET_LITTLE_ENDIAN)
+  static const int kMantissaOffset = 0;
+  static const int kExponentOffset = 4;
+#elif defined(V8_TARGET_BIG_ENDIAN)
+  static const int kMantissaOffset = 4;
+  static const int kExponentOffset = 0;
+#else
+#error Unknown endianness
+#endif
+
   inline static int NumAllocatableRegisters();
 
   static int ToAllocationIndex(Register reg) {
@@ -417,6 +427,11 @@ class CpuFeatures : public AllStatic {
   // is enabled (snapshots must be portable).
   static void Probe();
 
+  // A special case for printing target and features, which we want to do
+  // before initializing the isolate
+  static void SetHintCreatingSnapshot();
+  static void ProbeWithoutIsolate();
+
   // Check whether a feature is supported by the target CPU.
   static bool IsSupported(CpuFeature f) {
     ASSERT(initialized_);
@@ -445,6 +460,9 @@ class CpuFeatures : public AllStatic {
   }
 
  private:
+  static void Probe(bool serializer_enabled);
+  static bool hint_creating_snapshot_;
+
   static bool Check(CpuFeature f, unsigned set) {
     return (set & flag2set(f)) != 0;
   }
@@ -1007,7 +1025,7 @@ class Assembler : public AssemblerBase {
   void CheckTrampolinePool();
 
   // Allocate a constant pool of the correct size for the generated code.
-  MaybeObject* AllocateConstantPool(Heap* heap);
+  Handle<ConstantPoolArray> NewConstantPool(Isolate* isolate);
 
   // Generate the constant pool for the generated code.
   void PopulateConstantPool(ConstantPoolArray* constant_pool);

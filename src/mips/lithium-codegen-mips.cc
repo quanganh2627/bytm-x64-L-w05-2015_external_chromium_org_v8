@@ -3219,7 +3219,7 @@ void LCodeGen::DoLoadKeyedFixedDoubleArray(LLoadKeyed* instr) {
   __ ldc1(result, MemOperand(scratch));
 
   if (instr->hydrogen()->RequiresHoleCheck()) {
-    __ lw(scratch, MemOperand(scratch, sizeof(kHoleNanLower32)));
+    __ lw(scratch, MemOperand(scratch, kHoleNanUpper32Offset));
     DeoptimizeIf(eq, instr->environment(), scratch, Operand(kHoleNanUpper32));
   }
 }
@@ -4085,7 +4085,7 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
       __ SmiTst(value, scratch);
       DeoptimizeIf(eq, instr->environment(), scratch, Operand(zero_reg));
 
-      // We know that value is a smi now, so we can omit the check below.
+      // We know now that value is not a smi, so we can omit the check below.
       check_needed = OMIT_SMI_CHECK;
     }
   } else if (representation.IsDouble()) {
@@ -4162,42 +4162,25 @@ void LCodeGen::DoStoreNamedGeneric(LStoreNamedGeneric* instr) {
 }
 
 
-void LCodeGen::ApplyCheckIf(Condition condition,
-                            LBoundsCheck* check,
-                            Register src1,
-                            const Operand& src2) {
-  if (FLAG_debug_code && check->hydrogen()->skip_check()) {
+void LCodeGen::DoBoundsCheck(LBoundsCheck* instr) {
+  Condition cc = instr->hydrogen()->allow_equality() ? hi : hs;
+  Operand operand(0);
+  Register reg;
+  if (instr->index()->IsConstantOperand()) {
+    operand = ToOperand(instr->index());
+    reg = ToRegister(instr->length());
+    cc = ReverseCondition(cc);
+  } else {
+    reg = ToRegister(instr->index());
+    operand = ToOperand(instr->length());
+  }
+  if (FLAG_debug_code && instr->hydrogen()->skip_check()) {
     Label done;
-    __ Branch(&done, NegateCondition(condition), src1, src2);
+    __ Branch(&done, NegateCondition(cc), reg, operand);
     __ stop("eliminated bounds check failed");
     __ bind(&done);
   } else {
-    DeoptimizeIf(condition, check->environment(), src1, src2);
-  }
-}
-
-
-void LCodeGen::DoBoundsCheck(LBoundsCheck* instr) {
-  if (instr->hydrogen()->skip_check()) return;
-
-  Condition condition = instr->hydrogen()->allow_equality() ? hi : hs;
-  if (instr->index()->IsConstantOperand()) {
-    int constant_index =
-        ToInteger32(LConstantOperand::cast(instr->index()));
-    if (instr->hydrogen()->length()->representation().IsSmi()) {
-      __ li(at, Operand(Smi::FromInt(constant_index)));
-    } else {
-      __ li(at, Operand(constant_index));
-    }
-    ApplyCheckIf(condition,
-                 instr,
-                 at,
-                 Operand(ToRegister(instr->length())));
-  } else {
-    ApplyCheckIf(condition,
-                 instr,
-                 ToRegister(instr->index()),
-                 Operand(ToRegister(instr->length())));
+    DeoptimizeIf(cc, instr->environment(), reg, operand);
   }
 }
 
@@ -5197,13 +5180,13 @@ void LCodeGen::DoCheckMaps(LCheckMaps* instr) {
     __ bind(deferred->check_maps());
   }
 
-  UniqueSet<Map> map_set = instr->hydrogen()->map_set();
+  const UniqueSet<Map>* map_set = instr->hydrogen()->map_set();
   Label success;
-  for (int i = 0; i < map_set.size() - 1; i++) {
-    Handle<Map> map = map_set.at(i).handle();
+  for (int i = 0; i < map_set->size() - 1; i++) {
+    Handle<Map> map = map_set->at(i).handle();
     __ CompareMapAndBranch(map_reg, map, &success, eq, &success);
   }
-  Handle<Map> map = map_set.at(map_set.size() - 1).handle();
+  Handle<Map> map = map_set->at(map_set->size() - 1).handle();
   // Do the CompareMap() directly within the Branch() and DeoptimizeIf().
   if (instr->hydrogen()->has_migration_target()) {
     __ Branch(deferred->entry(), ne, map_reg, Operand(map));

@@ -1247,6 +1247,13 @@ bool HBranch::KnownSuccessorBlock(HBasicBlock** block) {
 }
 
 
+void HBranch::PrintDataTo(StringStream* stream) {
+  HUnaryControlInstruction::PrintDataTo(stream);
+  stream->Add(" ");
+  expected_input_types().Print(stream);
+}
+
+
 void HCompareMap::PrintDataTo(StringStream* stream) {
   value()->PrintNameTo(stream);
   stream->Add(" (%p)", *map().handle());
@@ -3303,6 +3310,21 @@ void HCompareHoleAndBranch::InferRepresentation(
 }
 
 
+bool HCompareNumericAndBranch::KnownSuccessorBlock(HBasicBlock** block) {
+  if (left() == right() &&
+      left()->representation().IsSmiOrInteger32()) {
+    *block = (token() == Token::EQ ||
+              token() == Token::EQ_STRICT ||
+              token() == Token::LTE ||
+              token() == Token::GTE)
+        ? FirstSuccessor() : SecondSuccessor();
+    return true;
+  }
+  *block = NULL;
+  return false;
+}
+
+
 bool HCompareMinusZeroAndBranch::KnownSuccessorBlock(HBasicBlock** block) {
   if (FLAG_fold_constants && value()->IsConstant()) {
     HConstant* constant = HConstant::cast(value());
@@ -3382,6 +3404,14 @@ void HLoadNamedField::PrintDataTo(StringStream* stream) {
   object()->PrintNameTo(stream);
   access_.PrintTo(stream);
 
+  if (map_set_.size() != 0) {
+    stream->Add(" [%p", *map_set_.at(0).handle());
+    for (int i = 1; i < map_set_.size(); ++i) {
+      stream->Add(",%p", *map_set_.at(i).handle());
+    }
+    stream->Add("]");
+  }
+
   if (HasDependency()) {
     stream->Add(" ");
     dependency()->PrintNameTo(stream);
@@ -3403,8 +3433,8 @@ HCheckMaps* HCheckMaps::New(Zone* zone,
     // TODO(titzer): collect dependent map checks into a list.
     check_map->omit_ = true;
     if (map->CanTransition()) {
-      map->AddDependentCompilationInfo(
-          DependentCode::kPrototypeCheckGroup, info);
+      Map::AddDependentCompilationInfo(
+          map, DependentCode::kPrototypeCheckGroup, info);
     }
   }
   return check_map;

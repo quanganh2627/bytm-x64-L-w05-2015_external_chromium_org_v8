@@ -107,6 +107,22 @@ class AssemblerBase: public Malloced {
 };
 
 
+// Avoids emitting debug code during the lifetime of this scope object.
+class DontEmitDebugCodeScope BASE_EMBEDDED {
+ public:
+  explicit DontEmitDebugCodeScope(AssemblerBase* assembler)
+      : assembler_(assembler), old_value_(assembler->emit_debug_code()) {
+    assembler_->set_emit_debug_code(false);
+  }
+  ~DontEmitDebugCodeScope() {
+    assembler_->set_emit_debug_code(old_value_);
+  };
+ private:
+  AssemblerBase* assembler_;
+  bool old_value_;
+};
+
+
 // Avoids using instructions that vary in size in unpredictable ways between the
 // snapshot and the running VM.
 class PredictableCodeSizeScope {
@@ -747,8 +763,6 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference store_buffer_overflow_function(
       Isolate* isolate);
   static ExternalReference flush_icache_function(Isolate* isolate);
-  static ExternalReference perform_gc_function(Isolate* isolate);
-  static ExternalReference out_of_memory_function(Isolate* isolate);
   static ExternalReference delete_handle_scope_extensions(Isolate* isolate);
 
   static ExternalReference get_date_field_function(Isolate* isolate);

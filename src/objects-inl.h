@@ -87,13 +87,6 @@ PropertyDetails PropertyDetails::AsDeleted() const {
   }
 
 
-#define FIXED_TYPED_ARRAY_CAST_ACCESSOR(type)   \
-  template<>                                    \
-  type* type::cast(Object* object) {            \
-    SLOW_ASSERT(object->Is##type());            \
-    return reinterpret_cast<type*>(object);     \
-  }
-
 #define INT_ACCESSORS(holder, name, offset)                             \
   int holder::name() { return READ_INT_FIELD(this, offset); }           \
   void holder::set_##name(int value) { WRITE_INT_FIELD(this, offset, value); }
@@ -286,6 +279,7 @@ bool Object::IsExternalTwoByteString() {
          String::cast(this)->IsTwoByteRepresentation();
 }
 
+
 bool Object::HasValidElements() {
   // Dictionary is covered under FixedArray.
   return IsFixedArray() || IsFixedDoubleArray() || IsExternalArray() ||
@@ -293,16 +287,17 @@ bool Object::HasValidElements() {
 }
 
 
-MaybeObject* Object::AllocateNewStorageFor(Heap* heap,
-                                           Representation representation) {
-  if (representation.IsSmi() && IsUninitialized()) {
-    return Smi::FromInt(0);
+Handle<Object> Object::NewStorageFor(Isolate* isolate,
+                                     Handle<Object> object,
+                                     Representation representation) {
+  if (representation.IsSmi() && object->IsUninitialized()) {
+    return handle(Smi::FromInt(0), isolate);
   }
-  if (!representation.IsDouble()) return this;
-  if (IsUninitialized()) {
-    return heap->AllocateHeapNumber(0);
+  if (!representation.IsDouble()) return object;
+  if (object->IsUninitialized()) {
+    return isolate->factory()->NewHeapNumber(0);
   }
-  return heap->AllocateHeapNumber(Number());
+  return isolate->factory()->NewHeapNumber(object->Number());
 }
 
 
@@ -671,16 +666,6 @@ bool MaybeObject::IsException() {
 }
 
 
-bool MaybeObject::IsTheHole() {
-  return !IsFailure() && ToObjectUnchecked()->IsTheHole();
-}
-
-
-bool MaybeObject::IsUninitialized() {
-  return !IsFailure() && ToObjectUnchecked()->IsUninitialized();
-}
-
-
 Failure* Failure::cast(MaybeObject* obj) {
   ASSERT(HAS_FAILURE_TAG(obj));
   return reinterpret_cast<Failure*>(obj);
@@ -711,6 +696,8 @@ bool Object::IsJSProxy() {
 TYPE_CHECKER(JSFunctionProxy, JS_FUNCTION_PROXY_TYPE)
 TYPE_CHECKER(JSSet, JS_SET_TYPE)
 TYPE_CHECKER(JSMap, JS_MAP_TYPE)
+TYPE_CHECKER(JSSetIterator, JS_SET_ITERATOR_TYPE)
+TYPE_CHECKER(JSMapIterator, JS_MAP_ITERATOR_TYPE)
 TYPE_CHECKER(JSWeakMap, JS_WEAK_MAP_TYPE)
 TYPE_CHECKER(JSWeakSet, JS_WEAK_SET_TYPE)
 TYPE_CHECKER(JSContextExtensionObject, JS_CONTEXT_EXTENSION_OBJECT_TYPE)
@@ -1015,6 +1002,11 @@ bool Object::IsTheHole() {
 }
 
 
+bool Object::IsException() {
+  return IsOddball() && Oddball::cast(this)->kind() == Oddball::kException;
+}
+
+
 bool Object::IsUninitialized() {
   return IsOddball() && Oddball::cast(this)->kind() == Oddball::kUninitialized;
 }
@@ -1061,20 +1053,6 @@ Handle<Object> Object::ToSmi(Isolate* isolate, Handle<Object> object) {
 }
 
 
-// TODO(ishell): Use handlified version instead.
-MaybeObject* Object::ToSmi() {
-  if (IsSmi()) return this;
-  if (IsHeapNumber()) {
-    double value = HeapNumber::cast(this)->value();
-    int int_value = FastD2I(value);
-    if (value == FastI2D(int_value) && Smi::IsValid(int_value)) {
-      return Smi::FromInt(int_value);
-    }
-  }
-  return Failure::Exception();
-}
-
-
 MaybeHandle<JSReceiver> Object::ToObject(Isolate* isolate,
                                          Handle<Object> object) {
   return ToObject(
@@ -1111,6 +1089,19 @@ MaybeHandle<Object> Object::GetPropertyOrElement(Handle<Object> object,
   Isolate* isolate = name->GetIsolate();
   if (name->AsArrayIndex(&index)) return GetElement(isolate, object, index);
   return GetProperty(object, name);
+}
+
+
+MaybeHandle<Object> Object::GetProperty(Isolate* isolate,
+                                        Handle<Object> object,
+                                        const char* name) {
+  Handle<String> str = isolate->factory()->InternalizeUtf8String(name);
+  ASSERT(!str.is_null());
+#ifdef DEBUG
+  uint32_t index;  // Assert that the name is not an array index.
+  ASSERT(!str->AsArrayIndex(&index));
+#endif  // DEBUG
+  return GetProperty(object, str);
 }
 
 
@@ -1296,11 +1287,6 @@ Smi* Smi::FromIntptr(intptr_t value) {
 
 Failure::Type Failure::type() const {
   return static_cast<Type>(value() & kFailureTypeTagMask);
-}
-
-
-bool Failure::IsInternalError() const {
-  return type() == INTERNAL_ERROR;
 }
 
 
@@ -1923,6 +1909,10 @@ int JSObject::GetHeaderSize() {
       return JSSet::kSize;
     case JS_MAP_TYPE:
       return JSMap::kSize;
+    case JS_SET_ITERATOR_TYPE:
+      return JSSetIterator::kSize;
+    case JS_MAP_ITERATOR_TYPE:
+      return JSMapIterator::kSize;
     case JS_WEAK_MAP_TYPE:
       return JSWeakMap::kSize;
     case JS_WEAK_SET_TYPE:
@@ -1984,13 +1974,6 @@ void JSObject::SetInternalField(int index, Smi* value) {
   // to adjust the index here.
   int offset = GetHeaderSize() + (kPointerSize * index);
   WRITE_FIELD(this, offset, value);
-}
-
-
-MaybeObject* JSObject::FastPropertyAt(Representation representation,
-                                      int index) {
-  Object* raw_value = RawFastPropertyAt(index);
-  return raw_value->AllocateNewStorageFor(GetHeap(), representation);
 }
 
 
@@ -2225,14 +2208,6 @@ int64_t FixedDoubleArray::get_representation(int index) {
          map() != GetHeap()->fixed_array_map());
   ASSERT(index >= 0 && index < this->length());
   return READ_INT64_FIELD(this, kHeaderSize + index * kDoubleSize);
-}
-
-MaybeObject* FixedDoubleArray::get(int index) {
-  if (is_the_hole(index)) {
-    return GetHeap()->the_hole_value();
-  } else {
-    return GetHeap()->NumberFromDouble(get_scalar(index));
-  }
 }
 
 
@@ -2729,14 +2704,6 @@ void DescriptorArray::SetRepresentation(int descriptor_index,
 }
 
 
-void DescriptorArray::InitializeRepresentations(Representation representation) {
-  int length = number_of_descriptors();
-  for (int i = 0; i < length; i++) {
-    SetRepresentation(i, representation);
-  }
-}
-
-
 Object** DescriptorArray::GetValueSlot(int descriptor_number) {
   ASSERT(descriptor_number < number_of_descriptors());
   return RawFieldOfElementAt(ToValueIndex(descriptor_number));
@@ -2746,6 +2713,11 @@ Object** DescriptorArray::GetValueSlot(int descriptor_number) {
 Object* DescriptorArray::GetValue(int descriptor_number) {
   ASSERT(descriptor_number < number_of_descriptors());
   return get(ToValueIndex(descriptor_number));
+}
+
+
+void DescriptorArray::SetValue(int descriptor_index, Object* value) {
+  set(ToValueIndex(descriptor_index), value);
 }
 
 
@@ -2764,6 +2736,12 @@ PropertyType DescriptorArray::GetType(int descriptor_number) {
 int DescriptorArray::GetFieldIndex(int descriptor_number) {
   ASSERT(GetDetails(descriptor_number).type() == FIELD);
   return GetDetails(descriptor_number).field_index();
+}
+
+
+HeapType* DescriptorArray::GetFieldType(int descriptor_number) {
+  ASSERT(GetDetails(descriptor_number).type() == FIELD);
+  return HeapType::cast(GetValue(descriptor_number));
 }
 
 
@@ -2995,6 +2973,8 @@ CAST_ACCESSOR(JSProxy)
 CAST_ACCESSOR(JSFunctionProxy)
 CAST_ACCESSOR(JSSet)
 CAST_ACCESSOR(JSMap)
+CAST_ACCESSOR(JSSetIterator)
+CAST_ACCESSOR(JSMapIterator)
 CAST_ACCESSOR(JSWeakMap)
 CAST_ACCESSOR(JSWeakSet)
 CAST_ACCESSOR(Foreign)
@@ -3638,15 +3618,11 @@ uint8_t ExternalUint8ClampedArray::get_scalar(int index) {
 }
 
 
-Object* ExternalUint8ClampedArray::get(int index) {
-  return Smi::FromInt(static_cast<int>(get_scalar(index)));
-}
-
-
 Handle<Object> ExternalUint8ClampedArray::get(
     Handle<ExternalUint8ClampedArray> array,
     int index) {
-  return handle(array->get(index), array->GetIsolate());
+  return Handle<Smi>(Smi::FromInt(array->get_scalar(index)),
+                     array->GetIsolate());
 }
 
 
@@ -3676,14 +3652,10 @@ int8_t ExternalInt8Array::get_scalar(int index) {
 }
 
 
-Object* ExternalInt8Array::get(int index) {
-  return Smi::FromInt(static_cast<int>(get_scalar(index)));
-}
-
-
 Handle<Object> ExternalInt8Array::get(Handle<ExternalInt8Array> array,
                                       int index) {
-  return handle(array->get(index), array->GetIsolate());
+  return Handle<Smi>(Smi::FromInt(array->get_scalar(index)),
+                     array->GetIsolate());
 }
 
 
@@ -3701,14 +3673,10 @@ uint8_t ExternalUint8Array::get_scalar(int index) {
 }
 
 
-Object* ExternalUint8Array::get(int index) {
-  return Smi::FromInt(static_cast<int>(get_scalar(index)));
-}
-
-
 Handle<Object> ExternalUint8Array::get(Handle<ExternalUint8Array> array,
                                        int index) {
-  return handle(array->get(index), array->GetIsolate());
+  return Handle<Smi>(Smi::FromInt(array->get_scalar(index)),
+                     array->GetIsolate());
 }
 
 
@@ -3726,14 +3694,10 @@ int16_t ExternalInt16Array::get_scalar(int index) {
 }
 
 
-Object* ExternalInt16Array::get(int index) {
-  return Smi::FromInt(static_cast<int>(get_scalar(index)));
-}
-
-
 Handle<Object> ExternalInt16Array::get(Handle<ExternalInt16Array> array,
                                        int index) {
-  return handle(array->get(index), array->GetIsolate());
+  return Handle<Smi>(Smi::FromInt(array->get_scalar(index)),
+                     array->GetIsolate());
 }
 
 
@@ -3751,14 +3715,10 @@ uint16_t ExternalUint16Array::get_scalar(int index) {
 }
 
 
-Object* ExternalUint16Array::get(int index) {
-  return Smi::FromInt(static_cast<int>(get_scalar(index)));
-}
-
-
 Handle<Object> ExternalUint16Array::get(Handle<ExternalUint16Array> array,
                                         int index) {
-  return handle(array->get(index), array->GetIsolate());
+  return Handle<Smi>(Smi::FromInt(array->get_scalar(index)),
+                     array->GetIsolate());
 }
 
 
@@ -3773,11 +3733,6 @@ int32_t ExternalInt32Array::get_scalar(int index) {
   ASSERT((index >= 0) && (index < this->length()));
   int32_t* ptr = static_cast<int32_t*>(external_pointer());
   return ptr[index];
-}
-
-
-MaybeObject* ExternalInt32Array::get(int index) {
-  return GetHeap()->NumberFromInt32(get_scalar(index));
 }
 
 
@@ -3802,11 +3757,6 @@ uint32_t ExternalUint32Array::get_scalar(int index) {
 }
 
 
-MaybeObject* ExternalUint32Array::get(int index) {
-  return GetHeap()->NumberFromUint32(get_scalar(index));
-}
-
-
 Handle<Object> ExternalUint32Array::get(Handle<ExternalUint32Array> array,
                                         int index) {
   return array->GetIsolate()->factory()->
@@ -3828,11 +3778,6 @@ float ExternalFloat32Array::get_scalar(int index) {
 }
 
 
-MaybeObject* ExternalFloat32Array::get(int index) {
-  return GetHeap()->NumberFromDouble(get_scalar(index));
-}
-
-
 Handle<Object> ExternalFloat32Array::get(Handle<ExternalFloat32Array> array,
                                          int index) {
   return array->GetIsolate()->factory()->NewNumber(array->get_scalar(index));
@@ -3850,11 +3795,6 @@ double ExternalFloat64Array::get_scalar(int index) {
   ASSERT((index >= 0) && (index < this->length()));
   double* ptr = static_cast<double*>(external_pointer());
   return ptr[index];
-}
-
-
-MaybeObject* ExternalFloat64Array::get(int index) {
-    return GetHeap()->NumberFromDouble(get_scalar(index));
 }
 
 
@@ -4005,60 +3945,39 @@ double FixedTypedArray<Float64ArrayTraits>::from_double(double value) {
 
 
 template <class Traits>
-MaybeObject* FixedTypedArray<Traits>::get(int index) {
-  return Traits::ToObject(GetHeap(), get_scalar(index));
-}
-
-template <class Traits>
 Handle<Object> FixedTypedArray<Traits>::get(
     Handle<FixedTypedArray<Traits> > array,
     int index) {
   return Traits::ToHandle(array->GetIsolate(), array->get_scalar(index));
 }
 
-template <class Traits>
-MaybeObject* FixedTypedArray<Traits>::SetValue(uint32_t index, Object* value) {
-  ElementType cast_value = Traits::defaultValue();
-  if (index < static_cast<uint32_t>(length())) {
-    if (value->IsSmi()) {
-      int int_value = Smi::cast(value)->value();
-      cast_value = from_int(int_value);
-    } else if (value->IsHeapNumber()) {
-      double double_value = HeapNumber::cast(value)->value();
-      cast_value = from_double(double_value);
-    } else {
-      // Clamp undefined to the default value. All other types have been
-      // converted to a number type further up in the call chain.
-      ASSERT(value->IsUndefined());
-    }
-    set(index, cast_value);
-  }
-  return Traits::ToObject(GetHeap(), cast_value);
-}
 
 template <class Traits>
 Handle<Object> FixedTypedArray<Traits>::SetValue(
     Handle<FixedTypedArray<Traits> > array,
     uint32_t index,
     Handle<Object> value) {
-  CALL_HEAP_FUNCTION(array->GetIsolate(),
-                     array->SetValue(index, *value),
-                     Object);
-}
-
-
-MaybeObject* Uint8ArrayTraits::ToObject(Heap*, uint8_t scalar) {
-  return Smi::FromInt(scalar);
+  ElementType cast_value = Traits::defaultValue();
+  if (index < static_cast<uint32_t>(array->length())) {
+    if (value->IsSmi()) {
+      int int_value = Handle<Smi>::cast(value)->value();
+      cast_value = from_int(int_value);
+    } else if (value->IsHeapNumber()) {
+      double double_value = Handle<HeapNumber>::cast(value)->value();
+      cast_value = from_double(double_value);
+    } else {
+      // Clamp undefined to the default value. All other types have been
+      // converted to a number type further up in the call chain.
+      ASSERT(value->IsUndefined());
+    }
+    array->set(index, cast_value);
+  }
+  return Traits::ToHandle(array->GetIsolate(), cast_value);
 }
 
 
 Handle<Object> Uint8ArrayTraits::ToHandle(Isolate* isolate, uint8_t scalar) {
   return handle(Smi::FromInt(scalar), isolate);
-}
-
-
-MaybeObject* Uint8ClampedArrayTraits::ToObject(Heap*, uint8_t scalar) {
-  return Smi::FromInt(scalar);
 }
 
 
@@ -4068,18 +3987,8 @@ Handle<Object> Uint8ClampedArrayTraits::ToHandle(Isolate* isolate,
 }
 
 
-MaybeObject* Int8ArrayTraits::ToObject(Heap*, int8_t scalar) {
-  return Smi::FromInt(scalar);
-}
-
-
 Handle<Object> Int8ArrayTraits::ToHandle(Isolate* isolate, int8_t scalar) {
   return handle(Smi::FromInt(scalar), isolate);
-}
-
-
-MaybeObject* Uint16ArrayTraits::ToObject(Heap*, uint16_t scalar) {
-  return Smi::FromInt(scalar);
 }
 
 
@@ -4088,18 +3997,8 @@ Handle<Object> Uint16ArrayTraits::ToHandle(Isolate* isolate, uint16_t scalar) {
 }
 
 
-MaybeObject* Int16ArrayTraits::ToObject(Heap*, int16_t scalar) {
-  return Smi::FromInt(scalar);
-}
-
-
 Handle<Object> Int16ArrayTraits::ToHandle(Isolate* isolate, int16_t scalar) {
   return handle(Smi::FromInt(scalar), isolate);
-}
-
-
-MaybeObject* Uint32ArrayTraits::ToObject(Heap* heap, uint32_t scalar) {
-  return heap->NumberFromUint32(scalar);
 }
 
 
@@ -4108,28 +4007,13 @@ Handle<Object> Uint32ArrayTraits::ToHandle(Isolate* isolate, uint32_t scalar) {
 }
 
 
-MaybeObject* Int32ArrayTraits::ToObject(Heap* heap, int32_t scalar) {
-  return heap->NumberFromInt32(scalar);
-}
-
-
 Handle<Object> Int32ArrayTraits::ToHandle(Isolate* isolate, int32_t scalar) {
   return isolate->factory()->NewNumberFromInt(scalar);
 }
 
 
-MaybeObject* Float32ArrayTraits::ToObject(Heap* heap, float scalar) {
-  return heap->NumberFromDouble(scalar);
-}
-
-
 Handle<Object> Float32ArrayTraits::ToHandle(Isolate* isolate, float scalar) {
   return isolate->factory()->NewNumber(scalar);
-}
-
-
-MaybeObject* Float64ArrayTraits::ToObject(Heap* heap, double scalar) {
-  return heap->NumberFromDouble(scalar);
 }
 
 
@@ -5315,7 +5199,6 @@ ACCESSORS(SharedFunctionInfo, function_data, Object, kFunctionDataOffset)
 ACCESSORS(SharedFunctionInfo, script, Object, kScriptOffset)
 ACCESSORS(SharedFunctionInfo, debug_info, Object, kDebugInfoOffset)
 ACCESSORS(SharedFunctionInfo, inferred_name, String, kInferredNameOffset)
-SMI_ACCESSORS(SharedFunctionInfo, ast_node_count, kAstNodeCountOffset)
 
 
 SMI_ACCESSORS(FunctionTemplateInfo, length, kLengthOffset)
@@ -5370,6 +5253,8 @@ SMI_ACCESSORS(SharedFunctionInfo, compiler_hints,
 SMI_ACCESSORS(SharedFunctionInfo, opt_count_and_bailout_reason,
               kOptCountAndBailoutReasonOffset)
 SMI_ACCESSORS(SharedFunctionInfo, counters, kCountersOffset)
+SMI_ACCESSORS(SharedFunctionInfo, ast_node_count, kAstNodeCountOffset)
+SMI_ACCESSORS(SharedFunctionInfo, profiler_ticks, kProfilerTicksOffset)
 
 #else
 
@@ -5420,8 +5305,14 @@ PSEUDO_SMI_ACCESSORS_HI(SharedFunctionInfo,
 PSEUDO_SMI_ACCESSORS_LO(SharedFunctionInfo,
                         opt_count_and_bailout_reason,
                         kOptCountAndBailoutReasonOffset)
-
 PSEUDO_SMI_ACCESSORS_HI(SharedFunctionInfo, counters, kCountersOffset)
+
+PSEUDO_SMI_ACCESSORS_LO(SharedFunctionInfo,
+                        ast_node_count,
+                        kAstNodeCountOffset)
+PSEUDO_SMI_ACCESSORS_HI(SharedFunctionInfo,
+                        profiler_ticks,
+                        kProfilerTicksOffset)
 
 #endif
 
@@ -5463,12 +5354,6 @@ void SharedFunctionInfo::set_optimization_disabled(bool disable) {
   if ((code()->kind() == Code::FUNCTION) && disable) {
     code()->set_optimizable(false);
   }
-}
-
-
-int SharedFunctionInfo::profiler_ticks() {
-  if (code()->kind() != Code::FUNCTION) return 0;
-  return code()->profiler_ticks();
 }
 
 
@@ -5922,6 +5807,32 @@ void JSProxy::InitializeBody(int object_size, Object* value) {
 
 ACCESSORS(JSSet, table, Object, kTableOffset)
 ACCESSORS(JSMap, table, Object, kTableOffset)
+
+
+#define ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(name, type, offset)    \
+  template<class Derived, class TableType>                           \
+  type* OrderedHashTableIterator<Derived, TableType>::name() {       \
+    return type::cast(READ_FIELD(this, offset));                     \
+  }                                                                  \
+  template<class Derived, class TableType>                           \
+  void OrderedHashTableIterator<Derived, TableType>::set_##name(     \
+      type* value, WriteBarrierMode mode) {                          \
+    WRITE_FIELD(this, offset, value);                                \
+    CONDITIONAL_WRITE_BARRIER(GetHeap(), this, offset, value, mode); \
+  }
+
+ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(table, Object, kTableOffset)
+ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(index, Smi, kIndexOffset)
+ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(count, Smi, kCountOffset)
+ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(kind, Smi, kKindOffset)
+ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(next_iterator, Object,
+                                      kNextIteratorOffset)
+ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(previous_iterator, Object,
+                                      kPreviousIteratorOffset)
+
+#undef ORDERED_HASH_TABLE_ITERATOR_ACCESSORS
+
+
 ACCESSORS(JSWeakCollection, table, Object, kTableOffset)
 ACCESSORS(JSWeakCollection, next, Object, kNextOffset)
 
@@ -6358,6 +6269,20 @@ NameDictionary* JSObject::property_dictionary() {
 SeededNumberDictionary* JSObject::element_dictionary() {
   ASSERT(HasDictionaryElements());
   return SeededNumberDictionary::cast(elements());
+}
+
+
+Handle<JSSetIterator> JSSetIterator::Create(
+    Handle<OrderedHashSet> table,
+    int kind) {
+  return CreateInternal(table->GetIsolate()->set_iterator_map(), table, kind);
+}
+
+
+Handle<JSMapIterator> JSMapIterator::Create(
+    Handle<OrderedHashMap> table,
+    int kind) {
+  return CreateInternal(table->GetIsolate()->map_iterator_map(), table, kind);
 }
 
 

@@ -463,16 +463,18 @@ function ArrayPush() {
 
   var n = TO_UINT32(this.length);
   var m = %_ArgumentsLength();
-  if (m > 0 && ObjectIsSealed(this)) {
-    throw MakeTypeError("array_functions_change_sealed",
-                        ["Array.prototype.push"]);
-  }
 
   if (%IsObserved(this))
     return ObservedArrayPush.apply(this, arguments);
 
   for (var i = 0; i < m; i++) {
-    this[i+n] = %_Arguments(i);
+    // Use SetProperty rather than a direct keyed store to ensure that the store
+    // site doesn't become poisened with an elements transition KeyedStoreIC.
+    //
+    // TODO(danno): Using %SetProperty is a temporary workaround. The spec says
+    // that ToObject needs to be called for primitive values (and
+    // Runtime_SetProperty seem to ignore them).
+    %SetProperty(this, i+n, %_Arguments(i), 0, kStrictMode);
   }
 
   var new_length = n + m;
@@ -649,28 +651,12 @@ function ArrayUnshift(arg1) {  // length == 1
   var num_arguments = %_ArgumentsLength();
   var is_sealed = ObjectIsSealed(this);
 
-  if (num_arguments > 0 && is_sealed) {
-    throw MakeTypeError("array_functions_change_sealed",
-                        ["Array.prototype.unshift"]);
-  }
-
   if (%IsObserved(this))
     return ObservedArrayUnshift.apply(this, arguments);
 
   if (IS_ARRAY(this) && !is_sealed) {
     SmartMove(this, 0, 0, len, num_arguments);
   } else {
-    if (num_arguments == 0 && ObjectIsFrozen(this)) {
-      // In the zero argument case, values from the prototype come into the
-      // object. This can't be allowed on frozen arrays.
-      for (var i = 0; i < len; i++) {
-        if (!this.hasOwnProperty(i) && !IS_UNDEFINED(this[i])) {
-          throw MakeTypeError("array_functions_on_frozen",
-                              ["Array.prototype.shift"]);
-        }
-      }
-    }
-
     SimpleMove(this, 0, 0, len, num_arguments);
   }
 

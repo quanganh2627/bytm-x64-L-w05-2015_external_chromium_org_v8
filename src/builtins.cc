@@ -127,28 +127,28 @@ BUILTIN_LIST_C(DEF_ARG_TYPE)
 #ifdef DEBUG
 
 #define BUILTIN(name)                                            \
-  MUST_USE_RESULT static MaybeObject* Builtin_Impl_##name(       \
+  MUST_USE_RESULT static Object* Builtin_Impl_##name(            \
       name##ArgumentsType args, Isolate* isolate);               \
-  MUST_USE_RESULT static MaybeObject* Builtin_##name(            \
+  MUST_USE_RESULT static Object* Builtin_##name(                 \
       int args_length, Object** args_object, Isolate* isolate) { \
     name##ArgumentsType args(args_length, args_object);          \
     args.Verify();                                               \
     return Builtin_Impl_##name(args, isolate);                   \
   }                                                              \
-  MUST_USE_RESULT static MaybeObject* Builtin_Impl_##name(       \
+  MUST_USE_RESULT static Object* Builtin_Impl_##name(            \
       name##ArgumentsType args, Isolate* isolate)
 
 #else  // For release mode.
 
 #define BUILTIN(name)                                            \
-  static MaybeObject* Builtin_impl##name(                        \
+  static Object* Builtin_impl##name(                             \
       name##ArgumentsType args, Isolate* isolate);               \
-  static MaybeObject* Builtin_##name(                            \
+  static Object* Builtin_##name(                                 \
       int args_length, Object** args_object, Isolate* isolate) { \
     name##ArgumentsType args(args_length, args_object);          \
     return Builtin_impl##name(args, isolate);                    \
   }                                                              \
-  static MaybeObject* Builtin_impl##name(                        \
+  static Object* Builtin_impl##name(                             \
       name##ArgumentsType args, Isolate* isolate)
 #endif
 
@@ -366,15 +366,16 @@ static inline bool IsJSArrayFastElementMovingAllowed(Heap* heap,
 }
 
 
-MUST_USE_RESULT static MaybeObject* CallJsBuiltin(
+MUST_USE_RESULT static Object* CallJsBuiltin(
     Isolate* isolate,
     const char* name,
     BuiltinArguments<NO_EXTRA_ARGUMENTS> args) {
   HandleScope handleScope(isolate);
 
-  Handle<Object> js_builtin =
-      GetProperty(Handle<JSObject>(isolate->native_context()->builtins()),
-                  name).ToHandleChecked();
+  Handle<Object> js_builtin = Object::GetProperty(
+      isolate,
+      handle(isolate->native_context()->builtins(), isolate),
+      name).ToHandleChecked();
   Handle<JSFunction> function = Handle<JSFunction>::cast(js_builtin);
   int argc = args.length() - 1;
   ScopedVector<Handle<Object> > argv(argc);
@@ -528,7 +529,7 @@ BUILTIN(ArrayPop) {
   }
   Handle<Object> element;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, element, maybe_element);
-  RETURN_IF_EMPTY_HANDLE(
+  RETURN_FAILURE_ON_EXCEPTION(
       isolate,
       accessor->SetLength(array, handle(Smi::FromInt(new_length), isolate)));
   return *element;
@@ -1165,7 +1166,7 @@ static inline Object* TypeCheck(Heap* heap,
 
 
 template <bool is_construct>
-MUST_USE_RESULT static MaybeObject* HandleApiCallHelper(
+MUST_USE_RESULT static Object* HandleApiCallHelper(
     BuiltinArguments<NEEDS_CALLED_FUNCTION> args, Isolate* isolate) {
   ASSERT(is_construct == CalledAsConstructor(isolate));
   Heap* heap = isolate->heap();
@@ -1230,7 +1231,7 @@ MUST_USE_RESULT static MaybeObject* HandleApiCallHelper(
       result->VerifyApiCallResultType();
     }
 
-    RETURN_IF_SCHEDULED_EXCEPTION(isolate);
+    RETURN_FAILURE_IF_SCHEDULED_EXCEPTION(isolate);
     if (!is_construct || result->IsJSObject()) return result;
   }
 
@@ -1251,7 +1252,7 @@ BUILTIN(HandleApiCallConstruct) {
 // Helper function to handle calls to non-function objects created through the
 // API. The object can be called as either a constructor (using new) or just as
 // a function (without new).
-MUST_USE_RESULT static MaybeObject* HandleApiCallAsFunctionOrConstructor(
+MUST_USE_RESULT static Object* HandleApiCallAsFunctionOrConstructor(
     Isolate* isolate,
     bool is_construct_call,
     BuiltinArguments<NO_EXTRA_ARGUMENTS> args) {
@@ -1300,7 +1301,7 @@ MUST_USE_RESULT static MaybeObject* HandleApiCallAsFunctionOrConstructor(
     }
   }
   // Check for exceptions and return result.
-  RETURN_IF_SCHEDULED_EXCEPTION(isolate);
+  RETURN_FAILURE_IF_SCHEDULED_EXCEPTION(isolate);
   return result;
 }
 
@@ -1622,7 +1623,6 @@ void Builtins::InitBuiltinFunctionTable() {
 
 void Builtins::SetUp(Isolate* isolate, bool create_heap_objects) {
   ASSERT(!initialized_);
-  Heap* heap = isolate->heap();
 
   // Create a scope for the handles in the builtins.
   HandleScope scope(isolate);
@@ -1653,32 +1653,18 @@ void Builtins::SetUp(Isolate* isolate, bool create_heap_objects) {
       CodeDesc desc;
       masm.GetCode(&desc);
       Code::Flags flags =  functions[i].flags;
-      Object* code = NULL;
-      {
-        // During startup it's OK to always allocate and defer GC to later.
-        // This simplifies things because we don't need to retry.
-        AlwaysAllocateScope __scope__(isolate);
-        { MaybeObject* maybe_code =
-              heap->CreateCode(desc, flags, masm.CodeObject());
-          if (!maybe_code->ToObject(&code)) {
-            v8::internal::V8::FatalProcessOutOfMemory("CreateCode");
-          }
-        }
-      }
+      Handle<Code> code =
+          isolate->factory()->NewCode(desc, flags, masm.CodeObject());
       // Log the event and add the code to the builtins array.
       PROFILE(isolate,
-              CodeCreateEvent(Logger::BUILTIN_TAG,
-                              Code::cast(code),
-                              functions[i].s_name));
-      GDBJIT(AddCode(GDBJITInterface::BUILTIN,
-                     functions[i].s_name,
-                     Code::cast(code)));
-      builtins_[i] = code;
+              CodeCreateEvent(Logger::BUILTIN_TAG, *code, functions[i].s_name));
+      GDBJIT(AddCode(GDBJITInterface::BUILTIN, functions[i].s_name, *code));
+      builtins_[i] = *code;
 #ifdef ENABLE_DISASSEMBLER
       if (FLAG_print_builtin_code) {
         CodeTracer::Scope trace_scope(isolate->GetCodeTracer());
         PrintF(trace_scope.file(), "Builtin: %s\n", functions[i].s_name);
-        Code::cast(code)->Disassemble(functions[i].s_name, trace_scope.file());
+        code->Disassemble(functions[i].s_name, trace_scope.file());
         PrintF(trace_scope.file(), "\n");
       }
 #endif

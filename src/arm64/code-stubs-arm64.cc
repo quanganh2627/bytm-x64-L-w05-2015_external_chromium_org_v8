@@ -1477,186 +1477,6 @@ void CEntryStub::GenerateAheadOfTime(Isolate* isolate) {
 }
 
 
-void CEntryStub::GenerateCore(MacroAssembler* masm,
-                              Label* throw_normal,
-                              Label* throw_termination,
-                              bool do_gc,
-                              bool always_allocate) {
-  // x0  : Result parameter for PerformGC, if do_gc is true.
-  // x21 : argv
-  // x22 : argc
-  // x23 : target
-  //
-  // The stack (on entry) holds the arguments and the receiver, with the
-  // receiver at the highest address:
-  //
-  //         argv[8]:     receiver
-  // argv -> argv[0]:     arg[argc-2]
-  //         ...          ...
-  //         argv[...]:   arg[1]
-  //         argv[...]:   arg[0]
-  //
-  // Immediately below (after) this is the exit frame, as constructed by
-  // EnterExitFrame:
-  //         fp[8]:    CallerPC (lr)
-  //   fp -> fp[0]:    CallerFP (old fp)
-  //         fp[-8]:   Space reserved for SPOffset.
-  //         fp[-16]:  CodeObject()
-  //         csp[...]: Saved doubles, if saved_doubles is true.
-  //         csp[32]:  Alignment padding, if necessary.
-  //         csp[24]:  Preserved x23 (used for target).
-  //         csp[16]:  Preserved x22 (used for argc).
-  //         csp[8]:   Preserved x21 (used for argv).
-  //  csp -> csp[0]:   Space reserved for the return address.
-  //
-  // After a successful call, the exit frame, preserved registers (x21-x23) and
-  // the arguments (including the receiver) are dropped or popped as
-  // appropriate. The stub then returns.
-  //
-  // After an unsuccessful call, the exit frame and suchlike are left
-  // untouched, and the stub either throws an exception by jumping to one of
-  // the provided throw_ labels, or it falls through. The failure details are
-  // passed through in x0.
-  ASSERT(csp.Is(__ StackPointer()));
-
-  Isolate* isolate = masm->isolate();
-
-  const Register& argv = x21;
-  const Register& argc = x22;
-  const Register& target = x23;
-
-  if (do_gc) {
-    // Call Runtime::PerformGC, passing x0 (the result parameter for
-    // PerformGC) and x1 (the isolate).
-    __ Mov(x1, ExternalReference::isolate_address(masm->isolate()));
-    __ CallCFunction(
-        ExternalReference::perform_gc_function(isolate), 2, 0);
-  }
-
-  ExternalReference scope_depth =
-      ExternalReference::heap_always_allocate_scope_depth(isolate);
-  if (always_allocate) {
-    __ Mov(x10, Operand(scope_depth));
-    __ Ldr(x11, MemOperand(x10));
-    __ Add(x11, x11, 1);
-    __ Str(x11, MemOperand(x10));
-  }
-
-  // Prepare AAPCS64 arguments to pass to the builtin.
-  __ Mov(x0, argc);
-  __ Mov(x1, argv);
-  __ Mov(x2, ExternalReference::isolate_address(isolate));
-
-  // Store the return address on the stack, in the space previously allocated
-  // by EnterExitFrame. The return address is queried by
-  // ExitFrame::GetStateForFramePointer.
-  Label return_location;
-  __ Adr(x12, &return_location);
-  __ Poke(x12, 0);
-  if (__ emit_debug_code()) {
-    // Verify that the slot below fp[kSPOffset]-8 points to the return location
-    // (currently in x12).
-    UseScratchRegisterScope temps(masm);
-    Register temp = temps.AcquireX();
-    __ Ldr(temp, MemOperand(fp, ExitFrameConstants::kSPOffset));
-    __ Ldr(temp, MemOperand(temp, -static_cast<int64_t>(kXRegSize)));
-    __ Cmp(temp, x12);
-    __ Check(eq, kReturnAddressNotFoundInFrame);
-  }
-
-  // Call the builtin.
-  __ Blr(target);
-  __ Bind(&return_location);
-  const Register& result = x0;
-
-  if (always_allocate) {
-    __ Mov(x10, Operand(scope_depth));
-    __ Ldr(x11, MemOperand(x10));
-    __ Sub(x11, x11, 1);
-    __ Str(x11, MemOperand(x10));
-  }
-
-  //  x0    result      The return code from the call.
-  //  x21   argv
-  //  x22   argc
-  //  x23   target
-  //
-  // If all of the result bits matching kFailureTagMask are '1', the result is
-  // a failure. Otherwise, it's an ordinary tagged object and the call was a
-  // success.
-  Label failure;
-  __ And(x10, result, kFailureTagMask);
-  __ Cmp(x10, kFailureTagMask);
-  __ B(&failure, eq);
-
-  // The call succeeded, so unwind the stack and return.
-
-  // Restore callee-saved registers x21-x23.
-  __ Mov(x11, argc);
-
-  __ Peek(argv, 1 * kPointerSize);
-  __ Peek(argc, 2 * kPointerSize);
-  __ Peek(target, 3 * kPointerSize);
-
-  __ LeaveExitFrame(save_doubles_, x10, true);
-  ASSERT(jssp.Is(__ StackPointer()));
-  // Pop or drop the remaining stack slots and return from the stub.
-  //         jssp[24]:    Arguments array (of size argc), including receiver.
-  //         jssp[16]:    Preserved x23 (used for target).
-  //         jssp[8]:     Preserved x22 (used for argc).
-  //         jssp[0]:     Preserved x21 (used for argv).
-  __ Drop(x11);
-  __ Ret();
-
-  // The stack pointer is still csp if we aren't returning, and the frame
-  // hasn't changed (except for the return address).
-  __ SetStackPointer(csp);
-
-  __ Bind(&failure);
-  // The call failed, so check if we need to throw an exception, and fall
-  // through (to retry) otherwise.
-
-  Label retry;
-  //  x0    result      The return code from the call, including the failure
-  //                    code and details.
-  //  x21   argv
-  //  x22   argc
-  //  x23   target
-  // Refer to the Failure class for details of the bit layout.
-  STATIC_ASSERT(Failure::RETRY_AFTER_GC == 0);
-  __ Tst(result, kFailureTypeTagMask << kFailureTagSize);
-  __ B(eq, &retry);   // RETRY_AFTER_GC
-
-  // Retrieve the pending exception.
-  const Register& exception = result;
-  const Register& exception_address = x11;
-  __ Mov(exception_address,
-         Operand(ExternalReference(Isolate::kPendingExceptionAddress,
-                                   isolate)));
-  __ Ldr(exception, MemOperand(exception_address));
-
-  // Clear the pending exception.
-  __ Mov(x10, Operand(isolate->factory()->the_hole_value()));
-  __ Str(x10, MemOperand(exception_address));
-
-  //  x0    exception   The exception descriptor.
-  //  x21   argv
-  //  x22   argc
-  //  x23   target
-
-  // Special handling of termination exceptions, which are uncatchable by
-  // JavaScript code.
-  __ Cmp(exception, Operand(isolate->factory()->termination_exception()));
-  __ B(eq, throw_termination);
-
-  // Handle normal exception.
-  __ B(throw_normal);
-
-  __ Bind(&retry);
-  // The result (x0) is passed through as the next PerformGC parameter.
-}
-
-
 void CEntryStub::Generate(MacroAssembler* masm) {
   // The Abort mechanism relies on CallRuntime, which in turn relies on
   // CEntryStub, so until this stub has been generated, we have to use a
@@ -1726,38 +1546,127 @@ void CEntryStub::Generate(MacroAssembler* masm) {
   __ Mov(target, target_input);
   __ Mov(argv, temp_argv);
 
-  Label throw_normal;
-  Label throw_termination;
+  // x21 : argv
+  // x22 : argc
+  // x23 : call target
+  //
+  // The stack (on entry) holds the arguments and the receiver, with the
+  // receiver at the highest address:
+  //
+  //         argv[8]:     receiver
+  // argv -> argv[0]:     arg[argc-2]
+  //         ...          ...
+  //         argv[...]:   arg[1]
+  //         argv[...]:   arg[0]
+  //
+  // Immediately below (after) this is the exit frame, as constructed by
+  // EnterExitFrame:
+  //         fp[8]:    CallerPC (lr)
+  //   fp -> fp[0]:    CallerFP (old fp)
+  //         fp[-8]:   Space reserved for SPOffset.
+  //         fp[-16]:  CodeObject()
+  //         csp[...]: Saved doubles, if saved_doubles is true.
+  //         csp[32]:  Alignment padding, if necessary.
+  //         csp[24]:  Preserved x23 (used for target).
+  //         csp[16]:  Preserved x22 (used for argc).
+  //         csp[8]:   Preserved x21 (used for argv).
+  //  csp -> csp[0]:   Space reserved for the return address.
+  //
+  // After a successful call, the exit frame, preserved registers (x21-x23) and
+  // the arguments (including the receiver) are dropped or popped as
+  // appropriate. The stub then returns.
+  //
+  // After an unsuccessful call, the exit frame and suchlike are left
+  // untouched, and the stub either throws an exception by jumping to one of
+  // the exception_returned label.
 
-  // Call the runtime function.
-  GenerateCore(masm,
-               &throw_normal,
-               &throw_termination,
-               false,
-               false);
+  ASSERT(csp.Is(__ StackPointer()));
 
-  // If successful, the previous GenerateCore will have returned to the
-  // calling code. Otherwise, we fall through into the following.
+  Isolate* isolate = masm->isolate();
 
-  // Do space-specific GC and retry runtime call.
-  GenerateCore(masm,
-               &throw_normal,
-               &throw_termination,
-               true,
-               false);
+  // Prepare AAPCS64 arguments to pass to the builtin.
+  __ Mov(x0, argc);
+  __ Mov(x1, argv);
+  __ Mov(x2, ExternalReference::isolate_address(isolate));
 
-  // Do full GC and retry runtime call one final time.
-  __ Mov(x0, reinterpret_cast<uint64_t>(Failure::InternalError()));
-  GenerateCore(masm,
-               &throw_normal,
-               &throw_termination,
-               true,
-               true);
+  Label return_location;
+  __ Adr(x12, &return_location);
+  __ Poke(x12, 0);
 
-  { FrameScope scope(masm, StackFrame::MANUAL);
-    __ CallCFunction(
-        ExternalReference::out_of_memory_function(masm->isolate()), 0);
+  if (__ emit_debug_code()) {
+    // Verify that the slot below fp[kSPOffset]-8 points to the return location
+    // (currently in x12).
+    UseScratchRegisterScope temps(masm);
+    Register temp = temps.AcquireX();
+    __ Ldr(temp, MemOperand(fp, ExitFrameConstants::kSPOffset));
+    __ Ldr(temp, MemOperand(temp, -static_cast<int64_t>(kXRegSize)));
+    __ Cmp(temp, x12);
+    __ Check(eq, kReturnAddressNotFoundInFrame);
   }
+
+  // Call the builtin.
+  __ Blr(target);
+  __ Bind(&return_location);
+
+  //  x0    result      The return code from the call.
+  //  x21   argv
+  //  x22   argc
+  //  x23   target
+  const Register& result = x0;
+
+  // Check result for exception sentinel.
+  Label exception_returned;
+  __ CompareRoot(result, Heap::kExceptionRootIndex);
+  __ B(eq, &exception_returned);
+
+  // The call succeeded, so unwind the stack and return.
+
+  // Restore callee-saved registers x21-x23.
+  __ Mov(x11, argc);
+
+  __ Peek(argv, 1 * kPointerSize);
+  __ Peek(argc, 2 * kPointerSize);
+  __ Peek(target, 3 * kPointerSize);
+
+  __ LeaveExitFrame(save_doubles_, x10, true);
+  ASSERT(jssp.Is(__ StackPointer()));
+  // Pop or drop the remaining stack slots and return from the stub.
+  //         jssp[24]:    Arguments array (of size argc), including receiver.
+  //         jssp[16]:    Preserved x23 (used for target).
+  //         jssp[8]:     Preserved x22 (used for argc).
+  //         jssp[0]:     Preserved x21 (used for argv).
+  __ Drop(x11);
+  __ Ret();
+
+  // The stack pointer is still csp if we aren't returning, and the frame
+  // hasn't changed (except for the return address).
+  __ SetStackPointer(csp);
+
+  // Handling of exception.
+  __ Bind(&exception_returned);
+
+  // Retrieve the pending exception.
+  ExternalReference pending_exception_address(
+      Isolate::kPendingExceptionAddress, isolate);
+  const Register& exception = result;
+  const Register& exception_address = x11;
+  __ Mov(exception_address, Operand(pending_exception_address));
+  __ Ldr(exception, MemOperand(exception_address));
+
+  // Clear the pending exception.
+  __ Mov(x10, Operand(isolate->factory()->the_hole_value()));
+  __ Str(x10, MemOperand(exception_address));
+
+  //  x0    exception   The exception descriptor.
+  //  x21   argv
+  //  x22   argc
+  //  x23   target
+
+  // Special handling of termination exceptions, which are uncatchable by
+  // JavaScript code.
+  Label throw_termination_exception;
+  __ Cmp(exception, Operand(isolate->factory()->termination_exception()));
+  __ B(eq, &throw_termination_exception);
 
   // We didn't execute a return case, so the stack frame hasn't been updated
   // (except for the return address slot). However, we don't need to initialize
@@ -1765,24 +1674,18 @@ void CEntryStub::Generate(MacroAssembler* masm) {
   // unwinds the stack.
   __ SetStackPointer(jssp);
 
-  // Throw exceptions.
-  // If we throw an exception, we can end up re-entering CEntryStub before we
-  // pop the exit frame, so need to ensure that x21-x23 contain GC-safe values
-  // here.
-
-  __ Bind(&throw_termination);
-  ASM_LOCATION("Throw termination");
-  __ Mov(argv, 0);
-  __ Mov(argc, 0);
-  __ Mov(target, 0);
-  __ ThrowUncatchable(x0, x10, x11, x12, x13);
-
-  __ Bind(&throw_normal);
   ASM_LOCATION("Throw normal");
   __ Mov(argv, 0);
   __ Mov(argc, 0);
   __ Mov(target, 0);
   __ Throw(x0, x10, x11, x12, x13);
+
+  __ Bind(&throw_termination_exception);
+  ASM_LOCATION("Throw termination");
+  __ Mov(argv, 0);
+  __ Mov(argc, 0);
+  __ Mov(target, 0);
+  __ ThrowUncatchable(x0, x10, x11, x12, x13);
 }
 
 
@@ -1882,7 +1785,7 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
            isolate)));
   }
   __ Str(code_entry, MemOperand(x10));
-  __ Mov(x0, Operand(reinterpret_cast<int64_t>(Failure::Exception())));
+  __ LoadRoot(x0, Heap::kExceptionRootIndex);
   __ B(&exit);
 
   // Invoke: Link this frame into the handler chain.  There's only one
@@ -4402,215 +4305,6 @@ void StringCompareStub::Generate(MacroAssembler* masm) {
   // Call the runtime.
   // Returns -1 (less), 0 (equal), or 1 (greater) tagged as a small integer.
   __ TailCallRuntime(Runtime::kHiddenStringCompare, 2, 1);
-}
-
-
-void ArrayPushStub::Generate(MacroAssembler* masm) {
-  Register receiver = x0;
-
-  int argc = arguments_count();
-
-  if (argc == 0) {
-    // Nothing to do, just return the length.
-    __ Ldr(x0, FieldMemOperand(receiver, JSArray::kLengthOffset));
-    __ Drop(argc + 1);
-    __ Ret();
-    return;
-  }
-
-  Isolate* isolate = masm->isolate();
-
-  if (argc != 1) {
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  Label call_builtin, attempt_to_grow_elements, with_write_barrier;
-
-  Register elements_length = x8;
-  Register length = x7;
-  Register elements = x6;
-  Register end_elements = x5;
-  Register value = x4;
-  // Get the elements array of the object.
-  __ Ldr(elements, FieldMemOperand(receiver, JSArray::kElementsOffset));
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    // Check that the elements are in fast mode and writable.
-    __ CheckMap(elements,
-                x10,
-                Heap::kFixedArrayMapRootIndex,
-                &call_builtin,
-                DONT_DO_SMI_CHECK);
-  }
-
-  // Get the array's length and calculate new length.
-  __ Ldr(length, FieldMemOperand(receiver, JSArray::kLengthOffset));
-  STATIC_ASSERT(kSmiTag == 0);
-  __ Add(length, length, Smi::FromInt(argc));
-
-  // Check if we could survive without allocation.
-  __ Ldr(elements_length,
-         FieldMemOperand(elements, FixedArray::kLengthOffset));
-  __ Cmp(length, elements_length);
-
-  const int kEndElementsOffset =
-      FixedArray::kHeaderSize - kHeapObjectTag - argc * kPointerSize;
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    __ B(gt, &attempt_to_grow_elements);
-
-    // Check if value is a smi.
-    __ Peek(value, (argc - 1) * kPointerSize);
-    __ JumpIfNotSmi(value, &with_write_barrier);
-
-    // Store the value.
-    // We may need a register containing the address end_elements below,
-    // so write back the value in end_elements.
-    __ Add(end_elements, elements,
-           Operand::UntagSmiAndScale(length, kPointerSizeLog2));
-    __ Str(value, MemOperand(end_elements, kEndElementsOffset, PreIndex));
-  } else {
-    __ B(gt, &call_builtin);
-
-    __ Peek(value, (argc - 1) * kPointerSize);
-    __ StoreNumberToDoubleElements(value, length, elements, x10, d0, d1,
-                                   &call_builtin, argc * kDoubleSize);
-  }
-
-  // Save new length.
-  __ Str(length, FieldMemOperand(receiver, JSArray::kLengthOffset));
-
-  // Return length.
-  __ Drop(argc + 1);
-  __ Mov(x0, length);
-  __ Ret();
-
-  if (IsFastDoubleElementsKind(elements_kind())) {
-    __ Bind(&call_builtin);
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  __ Bind(&with_write_barrier);
-
-  if (IsFastSmiElementsKind(elements_kind())) {
-    if (FLAG_trace_elements_transitions) {
-      __ B(&call_builtin);
-    }
-
-    __ Ldr(x10, FieldMemOperand(value, HeapObject::kMapOffset));
-    __ JumpIfHeapNumber(x10, &call_builtin);
-
-    ElementsKind target_kind = IsHoleyElementsKind(elements_kind())
-        ? FAST_HOLEY_ELEMENTS : FAST_ELEMENTS;
-    __ Ldr(x10, GlobalObjectMemOperand());
-    __ Ldr(x10, FieldMemOperand(x10, GlobalObject::kNativeContextOffset));
-    __ Ldr(x10, ContextMemOperand(x10, Context::JS_ARRAY_MAPS_INDEX));
-    const int header_size = FixedArrayBase::kHeaderSize;
-    // Verify that the object can be transitioned in place.
-    const int origin_offset = header_size + elements_kind() * kPointerSize;
-    __ ldr(x11, FieldMemOperand(receiver, origin_offset));
-    __ ldr(x12, FieldMemOperand(x10, HeapObject::kMapOffset));
-    __ cmp(x11, x12);
-    __ B(ne, &call_builtin);
-
-    const int target_offset = header_size + target_kind * kPointerSize;
-    __ Ldr(x10, FieldMemOperand(x10, target_offset));
-    __ Mov(x11, receiver);
-    ElementsTransitionGenerator::GenerateMapChangeElementsTransition(
-        masm, DONT_TRACK_ALLOCATION_SITE, NULL);
-  }
-
-  // Save new length.
-  __ Str(length, FieldMemOperand(receiver, JSArray::kLengthOffset));
-
-  // Store the value.
-  // We may need a register containing the address end_elements below,
-  // so write back the value in end_elements.
-  __ Add(end_elements, elements,
-         Operand::UntagSmiAndScale(length, kPointerSizeLog2));
-  __ Str(value, MemOperand(end_elements, kEndElementsOffset, PreIndex));
-
-  __ RecordWrite(elements,
-                 end_elements,
-                 value,
-                 kLRHasNotBeenSaved,
-                 kDontSaveFPRegs,
-                 EMIT_REMEMBERED_SET,
-                 OMIT_SMI_CHECK);
-  __ Drop(argc + 1);
-  __ Mov(x0, length);
-  __ Ret();
-
-  __ Bind(&attempt_to_grow_elements);
-
-  if (!FLAG_inline_new) {
-    __ B(&call_builtin);
-  }
-
-  Register argument = x2;
-  __ Peek(argument, (argc - 1) * kPointerSize);
-  // Growing elements that are SMI-only requires special handling in case
-  // the new element is non-Smi. For now, delegate to the builtin.
-  if (IsFastSmiElementsKind(elements_kind())) {
-    __ JumpIfNotSmi(argument, &call_builtin);
-  }
-
-  // We could be lucky and the elements array could be at the top of new-space.
-  // In this case we can just grow it in place by moving the allocation pointer
-  // up.
-  ExternalReference new_space_allocation_top =
-      ExternalReference::new_space_allocation_top_address(isolate);
-  ExternalReference new_space_allocation_limit =
-      ExternalReference::new_space_allocation_limit_address(isolate);
-
-  const int kAllocationDelta = 4;
-  ASSERT(kAllocationDelta >= argc);
-  Register allocation_top_addr = x5;
-  Register allocation_top = x9;
-  // Load top and check if it is the end of elements.
-  __ Add(end_elements, elements,
-         Operand::UntagSmiAndScale(length, kPointerSizeLog2));
-  __ Add(end_elements, end_elements, kEndElementsOffset);
-  __ Mov(allocation_top_addr, new_space_allocation_top);
-  __ Ldr(allocation_top, MemOperand(allocation_top_addr));
-  __ Cmp(end_elements, allocation_top);
-  __ B(ne, &call_builtin);
-
-  __ Mov(x10, new_space_allocation_limit);
-  __ Ldr(x10, MemOperand(x10));
-  __ Add(allocation_top, allocation_top, kAllocationDelta * kPointerSize);
-  __ Cmp(allocation_top, x10);
-  __ B(hi, &call_builtin);
-
-  // We fit and could grow elements.
-  // Update new_space_allocation_top.
-  __ Str(allocation_top, MemOperand(allocation_top_addr));
-  // Push the argument.
-  __ Str(argument, MemOperand(end_elements));
-  // Fill the rest with holes.
-  __ LoadRoot(x10, Heap::kTheHoleValueRootIndex);
-  ASSERT(kAllocationDelta == 4);
-  __ Stp(x10, x10, MemOperand(end_elements, 1 * kPointerSize));
-  __ Stp(x10, x10, MemOperand(end_elements, 3 * kPointerSize));
-
-  // Update elements' and array's sizes.
-  __ Str(length, FieldMemOperand(receiver, JSArray::kLengthOffset));
-  __ Add(elements_length, elements_length, Smi::FromInt(kAllocationDelta));
-  __ Str(elements_length,
-         FieldMemOperand(elements, FixedArray::kLengthOffset));
-
-  // Elements are in new space, so write barrier is not required.
-  __ Drop(argc + 1);
-  __ Mov(x0, length);
-  __ Ret();
-
-  __ Bind(&call_builtin);
-  __ TailCallExternalReference(
-      ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
 }
 
 

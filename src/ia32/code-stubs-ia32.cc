@@ -2584,12 +2584,19 @@ void CEntryStub::GenerateAheadOfTime(Isolate* isolate) {
 }
 
 
-void CEntryStub::GenerateCore(MacroAssembler* masm,
-                              Label* throw_normal_exception,
-                              Label* throw_termination_exception,
-                              bool do_gc,
-                              bool always_allocate_scope) {
-  // eax: result parameter for PerformGC, if any
+void CEntryStub::Generate(MacroAssembler* masm) {
+  // eax: number of arguments including receiver
+  // ebx: pointer to C function  (C callee-saved)
+  // ebp: frame pointer  (restored after C call)
+  // esp: stack pointer  (restored after C call)
+  // esi: current context (C callee-saved)
+  // edi: JS function of the caller (C callee-saved)
+
+  ProfileEntryHookStub::MaybeCallEntryHook(masm);
+
+  // Enter the exit frame that transitions from JavaScript to C++.
+  __ EnterExitFrame(save_doubles_ == kSaveFPRegs);
+
   // ebx: pointer to C function  (C callee-saved)
   // ebp: frame pointer  (restored after C call)
   // esp: stack pointer  (restored after C call)
@@ -2598,67 +2605,44 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
 
   // Result returned in eax, or eax+edx if result_size_ is 2.
 
+  Isolate* isolate = masm->isolate();
+
   // Check stack alignment.
   if (FLAG_debug_code) {
     __ CheckStackAlignment();
-  }
-
-  if (do_gc) {
-    // Pass failure code returned from last attempt as first argument to
-    // PerformGC. No need to use PrepareCallCFunction/CallCFunction here as the
-    // stack alignment is known to be correct. This function takes one argument
-    // which is passed on the stack, and we know that the stack has been
-    // prepared to pass at least one argument.
-    __ mov(Operand(esp, 1 * kPointerSize),
-           Immediate(ExternalReference::isolate_address(masm->isolate())));
-    __ mov(Operand(esp, 0 * kPointerSize), eax);  // Result.
-    __ call(FUNCTION_ADDR(Runtime::PerformGC), RelocInfo::RUNTIME_ENTRY);
-  }
-
-  ExternalReference scope_depth =
-      ExternalReference::heap_always_allocate_scope_depth(masm->isolate());
-  if (always_allocate_scope) {
-    __ inc(Operand::StaticVariable(scope_depth));
   }
 
   // Call C function.
   __ mov(Operand(esp, 0 * kPointerSize), edi);  // argc.
   __ mov(Operand(esp, 1 * kPointerSize), esi);  // argv.
   __ mov(Operand(esp, 2 * kPointerSize),
-         Immediate(ExternalReference::isolate_address(masm->isolate())));
+         Immediate(ExternalReference::isolate_address(isolate)));
   __ call(ebx);
   // Result is in eax or edx:eax - do not destroy these registers!
-
-  if (always_allocate_scope) {
-    __ dec(Operand::StaticVariable(scope_depth));
-  }
 
   // Runtime functions should not return 'the hole'.  Allowing it to escape may
   // lead to crashes in the IC code later.
   if (FLAG_debug_code) {
     Label okay;
-    __ cmp(eax, masm->isolate()->factory()->the_hole_value());
+    __ cmp(eax, isolate->factory()->the_hole_value());
     __ j(not_equal, &okay, Label::kNear);
     __ int3();
     __ bind(&okay);
   }
 
-  // Check for failure result.
-  Label failure_returned;
-  STATIC_ASSERT(((kFailureTag + 1) & kFailureTagMask) == 0);
-  __ lea(ecx, Operand(eax, 1));
-  // Lower 2 bits of ecx are 0 iff eax has failure tag.
-  __ test(ecx, Immediate(kFailureTagMask));
-  __ j(zero, &failure_returned);
+  // Check result for exception sentinel.
+  Label exception_returned;
+  __ cmp(eax, isolate->factory()->exception());
+  __ j(equal, &exception_returned);
 
   ExternalReference pending_exception_address(
-      Isolate::kPendingExceptionAddress, masm->isolate());
+      Isolate::kPendingExceptionAddress, isolate);
 
   // Check that there is no pending exception, otherwise we
-  // should have returned some failure value.
+  // should have returned the exception sentinel.
   if (FLAG_debug_code) {
     __ push(edx);
-    __ mov(edx, Immediate(masm->isolate()->factory()->the_hole_value()));
+    __ mov(edx, Immediate(isolate->factory()->the_hole_value()));
     Label okay;
     __ cmp(edx, Operand::StaticVariable(pending_exception_address));
     // Cannot use check here as it attempts to generate call into runtime.
@@ -2672,96 +2656,27 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   __ LeaveExitFrame(save_doubles_ == kSaveFPRegs);
   __ ret(0);
 
-  // Handling of failure.
-  __ bind(&failure_returned);
-
-  Label retry;
-  // If the returned exception is RETRY_AFTER_GC continue at retry label
-  STATIC_ASSERT(Failure::RETRY_AFTER_GC == 0);
-  __ test(eax, Immediate(((1 << kFailureTypeTagSize) - 1) << kFailureTagSize));
-  __ j(zero, &retry, Label::kNear);
+  // Handling of exception.
+  __ bind(&exception_returned);
 
   // Retrieve the pending exception.
   __ mov(eax, Operand::StaticVariable(pending_exception_address));
 
   // Clear the pending exception.
-  __ mov(edx, Immediate(masm->isolate()->factory()->the_hole_value()));
+  __ mov(edx, Immediate(isolate->factory()->the_hole_value()));
   __ mov(Operand::StaticVariable(pending_exception_address), edx);
 
   // Special handling of termination exceptions which are uncatchable
   // by javascript code.
-  __ cmp(eax, masm->isolate()->factory()->termination_exception());
-  __ j(equal, throw_termination_exception);
+  Label throw_termination_exception;
+  __ cmp(eax, isolate->factory()->termination_exception());
+  __ j(equal, &throw_termination_exception);
 
   // Handle normal exception.
-  __ jmp(throw_normal_exception);
-
-  // Retry.
-  __ bind(&retry);
-}
-
-
-void CEntryStub::Generate(MacroAssembler* masm) {
-  // eax: number of arguments including receiver
-  // ebx: pointer to C function  (C callee-saved)
-  // ebp: frame pointer  (restored after C call)
-  // esp: stack pointer  (restored after C call)
-  // esi: current context (C callee-saved)
-  // edi: JS function of the caller (C callee-saved)
-
-  ProfileEntryHookStub::MaybeCallEntryHook(masm);
-
-  // NOTE: Invocations of builtins may return failure objects instead
-  // of a proper result. The builtin entry handles this by performing
-  // a garbage collection and retrying the builtin (twice).
-
-  // Enter the exit frame that transitions from JavaScript to C++.
-  __ EnterExitFrame(save_doubles_ == kSaveFPRegs);
-
-  // eax: result parameter for PerformGC, if any (setup below)
-  // ebx: pointer to builtin function  (C callee-saved)
-  // ebp: frame pointer  (restored after C call)
-  // esp: stack pointer  (restored after C call)
-  // edi: number of arguments including receiver (C callee-saved)
-  // esi: argv pointer (C callee-saved)
-
-  Label throw_normal_exception;
-  Label throw_termination_exception;
-
-  // Call into the runtime system.
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               false,
-               false);
-
-  // Do space-specific GC and retry runtime call.
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               true,
-               false);
-
-  // Do full GC and retry runtime call one final time.
-  Failure* failure = Failure::InternalError();
-  __ mov(eax, Immediate(reinterpret_cast<int32_t>(failure)));
-  GenerateCore(masm,
-               &throw_normal_exception,
-               &throw_termination_exception,
-               true,
-               true);
-
-  { FrameScope scope(masm, StackFrame::MANUAL);
-    __ PrepareCallCFunction(0, eax);
-    __ CallCFunction(
-        ExternalReference::out_of_memory_function(masm->isolate()), 0);
-  }
+  __ Throw(eax);
 
   __ bind(&throw_termination_exception);
   __ ThrowUncatchable(eax);
-
-  __ bind(&throw_normal_exception);
-  __ Throw(eax);
 }
 
 
@@ -2809,7 +2724,7 @@ void JSEntryStub::GenerateBody(MacroAssembler* masm, bool is_construct) {
   ExternalReference pending_exception(Isolate::kPendingExceptionAddress,
                                       masm->isolate());
   __ mov(Operand::StaticVariable(pending_exception), eax);
-  __ mov(eax, reinterpret_cast<int32_t>(Failure::Exception()));
+  __ mov(eax, Immediate(masm->isolate()->factory()->exception()));
   __ jmp(&exit);
 
   // Invoke: Link this frame into the handler chain.  There's only one
@@ -3741,198 +3656,6 @@ void StringCompareStub::Generate(MacroAssembler* masm) {
   // tagged as a small integer.
   __ bind(&runtime);
   __ TailCallRuntime(Runtime::kHiddenStringCompare, 2, 1);
-}
-
-
-void ArrayPushStub::Generate(MacroAssembler* masm) {
-  int argc = arguments_count();
-
-  if (argc == 0) {
-    // Noop, return the length.
-    __ mov(eax, FieldOperand(edx, JSArray::kLengthOffset));
-    __ ret((argc + 1) * kPointerSize);
-    return;
-  }
-
-  Isolate* isolate = masm->isolate();
-
-  if (argc != 1) {
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  Label call_builtin, attempt_to_grow_elements, with_write_barrier;
-
-  // Get the elements array of the object.
-  __ mov(edi, FieldOperand(edx, JSArray::kElementsOffset));
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    // Check that the elements are in fast mode and writable.
-    __ cmp(FieldOperand(edi, HeapObject::kMapOffset),
-           isolate->factory()->fixed_array_map());
-    __ j(not_equal, &call_builtin);
-  }
-
-  // Get the array's length into eax and calculate new length.
-  __ mov(eax, FieldOperand(edx, JSArray::kLengthOffset));
-  STATIC_ASSERT(kSmiTagSize == 1);
-  STATIC_ASSERT(kSmiTag == 0);
-  __ add(eax, Immediate(Smi::FromInt(argc)));
-
-  // Get the elements' length into ecx.
-  __ mov(ecx, FieldOperand(edi, FixedArray::kLengthOffset));
-
-  // Check if we could survive without allocation.
-  __ cmp(eax, ecx);
-
-  if (IsFastSmiOrObjectElementsKind(elements_kind())) {
-    __ j(greater, &attempt_to_grow_elements);
-
-    // Check if value is a smi.
-    __ mov(ecx, Operand(esp, argc * kPointerSize));
-    __ JumpIfNotSmi(ecx, &with_write_barrier);
-
-    // Store the value.
-    __ mov(FieldOperand(edi, eax, times_half_pointer_size,
-                        FixedArray::kHeaderSize - argc * kPointerSize),
-           ecx);
-  } else {
-    __ j(greater, &call_builtin);
-
-    __ mov(ecx, Operand(esp, argc * kPointerSize));
-    __ StoreNumberToDoubleElements(
-        ecx, edi, eax, ecx, xmm0, &call_builtin, true, argc * kDoubleSize);
-  }
-
-  // Save new length.
-  __ mov(FieldOperand(edx, JSArray::kLengthOffset), eax);
-  __ ret((argc + 1) * kPointerSize);
-
-  if (IsFastDoubleElementsKind(elements_kind())) {
-    __ bind(&call_builtin);
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  __ bind(&with_write_barrier);
-
-  if (IsFastSmiElementsKind(elements_kind())) {
-    if (FLAG_trace_elements_transitions) __ jmp(&call_builtin);
-
-    __ cmp(FieldOperand(ecx, HeapObject::kMapOffset),
-           isolate->factory()->heap_number_map());
-    __ j(equal, &call_builtin);
-
-    ElementsKind target_kind = IsHoleyElementsKind(elements_kind())
-        ? FAST_HOLEY_ELEMENTS : FAST_ELEMENTS;
-    __ mov(ebx, ContextOperand(esi, Context::GLOBAL_OBJECT_INDEX));
-    __ mov(ebx, FieldOperand(ebx, GlobalObject::kNativeContextOffset));
-    __ mov(ebx, ContextOperand(ebx, Context::JS_ARRAY_MAPS_INDEX));
-    const int header_size = FixedArrayBase::kHeaderSize;
-    // Verify that the object can be transitioned in place.
-    const int origin_offset = header_size + elements_kind() * kPointerSize;
-    __ mov(edi, FieldOperand(ebx, origin_offset));
-    __ cmp(edi, FieldOperand(edx, HeapObject::kMapOffset));
-    __ j(not_equal, &call_builtin);
-
-    const int target_offset = header_size + target_kind * kPointerSize;
-    __ mov(ebx, FieldOperand(ebx, target_offset));
-    ElementsTransitionGenerator::GenerateMapChangeElementsTransition(
-        masm, DONT_TRACK_ALLOCATION_SITE, NULL);
-    // Restore edi used as a scratch register for the write barrier used while
-    // setting the map.
-    __ mov(edi, FieldOperand(edx, JSArray::kElementsOffset));
-  }
-
-  // Save new length.
-  __ mov(FieldOperand(edx, JSArray::kLengthOffset), eax);
-
-  // Store the value.
-  __ lea(edx, FieldOperand(edi, eax, times_half_pointer_size,
-                           FixedArray::kHeaderSize - argc * kPointerSize));
-  __ mov(Operand(edx, 0), ecx);
-
-  __ RecordWrite(edi, edx, ecx, kDontSaveFPRegs, EMIT_REMEMBERED_SET,
-                 OMIT_SMI_CHECK);
-
-  __ ret((argc + 1) * kPointerSize);
-
-  __ bind(&attempt_to_grow_elements);
-  if (!FLAG_inline_new) {
-    __ bind(&call_builtin);
-    __ TailCallExternalReference(
-        ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
-    return;
-  }
-
-  __ mov(ebx, Operand(esp, argc * kPointerSize));
-  // Growing elements that are SMI-only requires special handling in case the
-  // new element is non-Smi. For now, delegate to the builtin.
-  if (IsFastSmiElementsKind(elements_kind())) {
-    __ JumpIfNotSmi(ebx, &call_builtin);
-  }
-
-  // We could be lucky and the elements array could be at the top of new-space.
-  // In this case we can just grow it in place by moving the allocation pointer
-  // up.
-  ExternalReference new_space_allocation_top =
-      ExternalReference::new_space_allocation_top_address(isolate);
-  ExternalReference new_space_allocation_limit =
-      ExternalReference::new_space_allocation_limit_address(isolate);
-
-  const int kAllocationDelta = 4;
-  ASSERT(kAllocationDelta >= argc);
-  // Load top.
-  __ mov(ecx, Operand::StaticVariable(new_space_allocation_top));
-
-  // Check if it's the end of elements.
-  __ lea(edx, FieldOperand(edi, eax, times_half_pointer_size,
-                           FixedArray::kHeaderSize - argc * kPointerSize));
-  __ cmp(edx, ecx);
-  __ j(not_equal, &call_builtin);
-  __ add(ecx, Immediate(kAllocationDelta * kPointerSize));
-  __ cmp(ecx, Operand::StaticVariable(new_space_allocation_limit));
-  __ j(above, &call_builtin);
-
-  // We fit and could grow elements.
-  __ mov(Operand::StaticVariable(new_space_allocation_top), ecx);
-
-  // Push the argument...
-  __ mov(Operand(edx, 0), ebx);
-  // ... and fill the rest with holes.
-  for (int i = 1; i < kAllocationDelta; i++) {
-    __ mov(Operand(edx, i * kPointerSize),
-           isolate->factory()->the_hole_value());
-  }
-
-  if (IsFastObjectElementsKind(elements_kind())) {
-    // We know the elements array is in new space so we don't need the
-    // remembered set, but we just pushed a value onto it so we may have to tell
-    // the incremental marker to rescan the object that we just grew.  We don't
-    // need to worry about the holes because they are in old space and already
-    // marked black.
-    __ RecordWrite(edi, edx, ebx, kDontSaveFPRegs, OMIT_REMEMBERED_SET);
-  }
-
-  // Restore receiver to edx as finish sequence assumes it's here.
-  __ mov(edx, Operand(esp, (argc + 1) * kPointerSize));
-
-  // Increment element's and array's sizes.
-  __ add(FieldOperand(edi, FixedArray::kLengthOffset),
-         Immediate(Smi::FromInt(kAllocationDelta)));
-
-  // NOTE: This only happen in new-space, where we don't care about the
-  // black-byte-count on pages. Otherwise we should update that too if the
-  // object is black.
-
-  __ mov(FieldOperand(edx, JSArray::kLengthOffset), eax);
-  __ ret((argc + 1) * kPointerSize);
-
-  __ bind(&call_builtin);
-  __ TailCallExternalReference(
-      ExternalReference(Builtins::c_ArrayPush, isolate), argc + 1, 1);
 }
 
 

@@ -442,7 +442,7 @@ void IC::RegisterWeakMapDependency(Handle<Code> stub) {
     MapHandleList maps;
     stub->FindAllMaps(&maps);
     if (maps.length() == 1 && stub->IsWeakObjectInIC(*maps.at(0))) {
-      maps.at(0)->AddDependentIC(stub);
+      Map::AddDependentIC(maps.at(0), stub);
       stub->mark_as_weak_stub();
       if (FLAG_enable_ool_constant_pool) {
         stub->constant_pool()->set_weak_object_state(
@@ -680,7 +680,8 @@ bool IC::UpdatePolymorphicIC(Handle<HeapType> type,
 
   for (int i = 0; i < number_of_types; i++) {
     Handle<HeapType> current_type = types.at(i);
-    if (current_type->IsClass() && current_type->AsClass()->is_deprecated()) {
+    if (current_type->IsClass() &&
+        current_type->AsClass()->Map()->is_deprecated()) {
       // Filter out deprecated maps to ensure their instances get migrated.
       ++deprecated_types;
     } else if (type->NowIs(current_type)) {
@@ -691,8 +692,8 @@ bool IC::UpdatePolymorphicIC(Handle<HeapType> type,
     } else if (handler_to_overwrite == -1 &&
                current_type->IsClass() &&
                type->IsClass() &&
-               IsTransitionOfMonomorphicTarget(*current_type->AsClass(),
-                                               *type->AsClass())) {
+               IsTransitionOfMonomorphicTarget(*current_type->AsClass()->Map(),
+                                               *type->AsClass()->Map())) {
       handler_to_overwrite = i;
     }
   }
@@ -734,10 +735,11 @@ Handle<Map> IC::TypeToMap(HeapType* type, Isolate* isolate) {
     return isolate->factory()->heap_number_map();
   if (type->Is(HeapType::Boolean())) return isolate->factory()->boolean_map();
   if (type->IsConstant()) {
-    return handle(Handle<JSGlobalObject>::cast(type->AsConstant())->map());
+    return handle(
+        Handle<JSGlobalObject>::cast(type->AsConstant()->Value())->map());
   }
   ASSERT(type->IsClass());
-  return type->AsClass();
+  return type->AsClass()->Map();
 }
 
 
@@ -1159,7 +1161,7 @@ MaybeHandle<Object> KeyedLoadIC::Load(Handle<Object> object,
         stub = sloppy_arguments_stub();
       } else if (receiver->HasIndexedInterceptor()) {
         stub = indexed_interceptor_stub();
-      } else if (!key->ToSmi()->IsFailure() &&
+      } else if (!Object::ToSmi(isolate(), key).is_null() &&
                  (!target().is_identical_to(sloppy_arguments_stub()))) {
         stub = LoadElementStub(receiver);
       }
@@ -1231,9 +1233,12 @@ static bool LookupForWrite(Handle<JSObject> receiver,
   ASSERT(!receiver->map()->is_deprecated());
   if (!lookup->CanHoldValue(value)) {
     Handle<Map> target(lookup->GetTransitionTarget());
+    Representation field_representation = value->OptimalRepresentation();
+    Handle<HeapType> field_type = value->OptimalType(
+        lookup->isolate(), field_representation);
     Map::GeneralizeRepresentation(
         target, target->LastAdded(),
-        value->OptimalRepresentation(), FORCE_FIELD);
+        field_representation, field_type, FORCE_FIELD);
     // Lookup the transition again since the transition tree may have changed
     // entirely by the migration above.
     receiver->map()->LookupTransition(*holder, *name, lookup);
@@ -1650,10 +1655,9 @@ bool IsOutOfBoundsAccess(Handle<JSObject> receiver,
 KeyedAccessStoreMode KeyedStoreIC::GetStoreMode(Handle<JSObject> receiver,
                                                 Handle<Object> key,
                                                 Handle<Object> value) {
-  ASSERT(!key->ToSmi()->IsFailure());
-  Smi* smi_key = NULL;
-  key->ToSmi()->To(&smi_key);
-  int index = smi_key->value();
+  Handle<Object> smi_key = Object::ToSmi(isolate(), key);
+  ASSERT(!smi_key.is_null() && smi_key->IsSmi());
+  int index = Handle<Smi>::cast(smi_key)->value();
   bool oob_access = IsOutOfBoundsAccess(receiver, index);
   // Don't consider this a growing store if the store would send the receiver to
   // dictionary mode.
@@ -1775,7 +1779,7 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
 
       if (object->IsJSObject()) {
         Handle<JSObject> receiver = Handle<JSObject>::cast(object);
-        bool key_is_smi_like = key->IsSmi() || !key->ToSmi()->IsFailure();
+        bool key_is_smi_like = !Object::ToSmi(isolate(), key).is_null();
         if (receiver->elements()->map() ==
             isolate()->heap()->sloppy_arguments_elements_map()) {
           if (strict_mode() == SLOPPY) {
@@ -1827,7 +1831,7 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
 
 // Used from ic-<arch>.cc.
 // Used from ic-<arch>.cc.
-RUNTIME_FUNCTION(MaybeObject*, LoadIC_Miss) {
+RUNTIME_FUNCTION(LoadIC_Miss) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 2);
   LoadIC ic(IC::NO_EXTRA_FRAME, isolate);
@@ -1841,7 +1845,7 @@ RUNTIME_FUNCTION(MaybeObject*, LoadIC_Miss) {
 
 
 // Used from ic-<arch>.cc
-RUNTIME_FUNCTION(MaybeObject*, KeyedLoadIC_Miss) {
+RUNTIME_FUNCTION(KeyedLoadIC_Miss) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 2);
   KeyedLoadIC ic(IC::NO_EXTRA_FRAME, isolate);
@@ -1854,7 +1858,7 @@ RUNTIME_FUNCTION(MaybeObject*, KeyedLoadIC_Miss) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, KeyedLoadIC_MissFromStubFailure) {
+RUNTIME_FUNCTION(KeyedLoadIC_MissFromStubFailure) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 2);
   KeyedLoadIC ic(IC::EXTRA_CALL_FRAME, isolate);
@@ -1868,7 +1872,7 @@ RUNTIME_FUNCTION(MaybeObject*, KeyedLoadIC_MissFromStubFailure) {
 
 
 // Used from ic-<arch>.cc.
-RUNTIME_FUNCTION(MaybeObject*, StoreIC_Miss) {
+RUNTIME_FUNCTION(StoreIC_Miss) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   StoreIC ic(IC::NO_EXTRA_FRAME, isolate);
@@ -1884,7 +1888,7 @@ RUNTIME_FUNCTION(MaybeObject*, StoreIC_Miss) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, StoreIC_MissFromStubFailure) {
+RUNTIME_FUNCTION(StoreIC_MissFromStubFailure) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   StoreIC ic(IC::EXTRA_CALL_FRAME, isolate);
@@ -1900,7 +1904,7 @@ RUNTIME_FUNCTION(MaybeObject*, StoreIC_MissFromStubFailure) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, StoreIC_ArrayLength) {
+RUNTIME_FUNCTION(StoreIC_ArrayLength) {
   HandleScope scope(isolate);
 
   ASSERT(args.length() == 2);
@@ -1926,7 +1930,7 @@ RUNTIME_FUNCTION(MaybeObject*, StoreIC_ArrayLength) {
 // Extend storage is called in a store inline cache when
 // it is necessary to extend the properties array of a
 // JSObject.
-RUNTIME_FUNCTION(MaybeObject*, SharedStoreIC_ExtendStorage) {
+RUNTIME_FUNCTION(SharedStoreIC_ExtendStorage) {
   HandleScope shs(isolate);
   ASSERT(args.length() == 3);
 
@@ -1967,7 +1971,7 @@ RUNTIME_FUNCTION(MaybeObject*, SharedStoreIC_ExtendStorage) {
 
 
 // Used from ic-<arch>.cc.
-RUNTIME_FUNCTION(MaybeObject*, KeyedStoreIC_Miss) {
+RUNTIME_FUNCTION(KeyedStoreIC_Miss) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   KeyedStoreIC ic(IC::NO_EXTRA_FRAME, isolate);
@@ -1983,7 +1987,7 @@ RUNTIME_FUNCTION(MaybeObject*, KeyedStoreIC_Miss) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, KeyedStoreIC_MissFromStubFailure) {
+RUNTIME_FUNCTION(KeyedStoreIC_MissFromStubFailure) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   KeyedStoreIC ic(IC::EXTRA_CALL_FRAME, isolate);
@@ -1999,7 +2003,7 @@ RUNTIME_FUNCTION(MaybeObject*, KeyedStoreIC_MissFromStubFailure) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, StoreIC_Slow) {
+RUNTIME_FUNCTION(StoreIC_Slow) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   StoreIC ic(IC::NO_EXTRA_FRAME, isolate);
@@ -2016,7 +2020,7 @@ RUNTIME_FUNCTION(MaybeObject*, StoreIC_Slow) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, KeyedStoreIC_Slow) {
+RUNTIME_FUNCTION(KeyedStoreIC_Slow) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   KeyedStoreIC ic(IC::NO_EXTRA_FRAME, isolate);
@@ -2033,7 +2037,7 @@ RUNTIME_FUNCTION(MaybeObject*, KeyedStoreIC_Slow) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, ElementsTransitionAndStoreIC_Miss) {
+RUNTIME_FUNCTION(ElementsTransitionAndStoreIC_Miss) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 4);
   KeyedStoreIC ic(IC::EXTRA_CALL_FRAME, isolate);
@@ -2552,7 +2556,7 @@ MaybeHandle<Object> BinaryOpIC::Transition(
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, BinaryOpIC_Miss) {
+RUNTIME_FUNCTION(BinaryOpIC_Miss) {
   HandleScope scope(isolate);
   ASSERT_EQ(2, args.length());
   Handle<Object> left = args.at<Object>(BinaryOpICStub::kLeft);
@@ -2567,7 +2571,7 @@ RUNTIME_FUNCTION(MaybeObject*, BinaryOpIC_Miss) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, BinaryOpIC_MissWithAllocationSite) {
+RUNTIME_FUNCTION(BinaryOpIC_MissWithAllocationSite) {
   HandleScope scope(isolate);
   ASSERT_EQ(3, args.length());
   Handle<AllocationSite> allocation_site = args.at<AllocationSite>(
@@ -2800,7 +2804,7 @@ Code* CompareIC::UpdateCaches(Handle<Object> x, Handle<Object> y) {
 
 
 // Used from ICCompareStub::GenerateMiss in code-stubs-<arch>.cc.
-RUNTIME_FUNCTION(Code*, CompareIC_Miss) {
+RUNTIME_FUNCTION(CompareIC_Miss) {
   HandleScope scope(isolate);
   ASSERT(args.length() == 3);
   CompareIC ic(isolate, static_cast<Token::Value>(args.smi_at(2)));
@@ -2862,7 +2866,7 @@ Handle<Object> CompareNilIC::CompareNil(Handle<Object> object) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, CompareNilIC_Miss) {
+RUNTIME_FUNCTION(CompareNilIC_Miss) {
   HandleScope scope(isolate);
   Handle<Object> object = args.at<Object>(0);
   CompareNilIC ic(isolate);
@@ -2870,7 +2874,7 @@ RUNTIME_FUNCTION(MaybeObject*, CompareNilIC_Miss) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, Unreachable) {
+RUNTIME_FUNCTION(Unreachable) {
   UNREACHABLE();
   CHECK(false);
   return isolate->heap()->undefined_value();
@@ -2927,7 +2931,7 @@ Handle<Object> ToBooleanIC::ToBoolean(Handle<Object> object) {
 }
 
 
-RUNTIME_FUNCTION(MaybeObject*, ToBooleanIC_Miss) {
+RUNTIME_FUNCTION(ToBooleanIC_Miss) {
   ASSERT(args.length() == 1);
   HandleScope scope(isolate);
   Handle<Object> object = args.at<Object>(0);

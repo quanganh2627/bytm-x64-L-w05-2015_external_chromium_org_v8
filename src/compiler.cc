@@ -637,13 +637,14 @@ static bool CompileUnoptimizedCode(CompilationInfo* info) {
 }
 
 
-static Handle<Code> GetUnoptimizedCodeCommon(CompilationInfo* info) {
+MUST_USE_RESULT static MaybeHandle<Code> GetUnoptimizedCodeCommon(
+    CompilationInfo* info) {
   VMState<COMPILER> state(info->isolate());
   PostponeInterruptsScope postpone(info->isolate());
-  if (!Parser::Parse(info)) return Handle<Code>::null();
+  if (!Parser::Parse(info)) return MaybeHandle<Code>();
   info->SetStrictMode(info->function()->strict_mode());
 
-  if (!CompileUnoptimizedCode(info)) return Handle<Code>::null();
+  if (!CompileUnoptimizedCode(info)) return MaybeHandle<Code>();
   Compiler::RecordFunctionCompilation(
       Logger::LAZY_COMPILE_TAG, info, info->shared_info());
   UpdateSharedFunctionInfo(info);
@@ -652,7 +653,7 @@ static Handle<Code> GetUnoptimizedCodeCommon(CompilationInfo* info) {
 }
 
 
-Handle<Code> Compiler::GetUnoptimizedCode(Handle<JSFunction> function) {
+MaybeHandle<Code> Compiler::GetUnoptimizedCode(Handle<JSFunction> function) {
   ASSERT(!function->GetIsolate()->has_pending_exception());
   ASSERT(!function->is_compiled());
   if (function->shared()->is_compiled()) {
@@ -660,39 +661,43 @@ Handle<Code> Compiler::GetUnoptimizedCode(Handle<JSFunction> function) {
   }
 
   CompilationInfoWithZone info(function);
-  Handle<Code> result = GetUnoptimizedCodeCommon(&info);
-  ASSERT_EQ(result.is_null(), info.isolate()->has_pending_exception());
+  Handle<Code> result;
+  ASSIGN_RETURN_ON_EXCEPTION(info.isolate(), result,
+                             GetUnoptimizedCodeCommon(&info),
+                             Code);
 
   if (FLAG_always_opt &&
-      !result.is_null() &&
       info.isolate()->use_crankshaft() &&
       !info.shared_info()->optimization_disabled() &&
       !info.isolate()->DebuggerHasBreakPoints()) {
-    Handle<Code> opt_code = Compiler::GetOptimizedCode(
-        function, result, Compiler::NOT_CONCURRENT);
-    if (!opt_code.is_null()) result = opt_code;
+    Handle<Code> opt_code;
+    if (Compiler::GetOptimizedCode(
+            function, result,
+            Compiler::NOT_CONCURRENT).ToHandle(&opt_code)) {
+      result = opt_code;
+    }
   }
 
   return result;
 }
 
 
-Handle<Code> Compiler::GetUnoptimizedCode(Handle<SharedFunctionInfo> shared) {
+MaybeHandle<Code> Compiler::GetUnoptimizedCode(
+    Handle<SharedFunctionInfo> shared) {
   ASSERT(!shared->GetIsolate()->has_pending_exception());
   ASSERT(!shared->is_compiled());
 
   CompilationInfoWithZone info(shared);
-  Handle<Code> result = GetUnoptimizedCodeCommon(&info);
-  ASSERT_EQ(result.is_null(), info.isolate()->has_pending_exception());
-  return result;
+  return GetUnoptimizedCodeCommon(&info);
 }
 
 
 bool Compiler::EnsureCompiled(Handle<JSFunction> function,
                               ClearExceptionFlag flag) {
   if (function->is_compiled()) return true;
-  Handle<Code> code = Compiler::GetUnoptimizedCode(function);
-  if (code.is_null()) {
+  MaybeHandle<Code> maybe_code = Compiler::GetUnoptimizedCode(function);
+  Handle<Code> code;
+  if (!maybe_code.ToHandle(&code)) {
     if (flag == CLEAR_EXCEPTION) {
       function->GetIsolate()->clear_pending_exception();
     }
@@ -713,7 +718,7 @@ bool Compiler::EnsureCompiled(Handle<JSFunction> function,
 // full code without debug break slots to full code with debug break slots
 // depends on the generated code is otherwise exactly the same.
 // If compilation fails, just keep the existing code.
-Handle<Code> Compiler::GetCodeForDebugging(Handle<JSFunction> function) {
+MaybeHandle<Code> Compiler::GetCodeForDebugging(Handle<JSFunction> function) {
   CompilationInfoWithZone info(function);
   Isolate* isolate = info.isolate();
   VMState<COMPILER> state(isolate);
@@ -729,14 +734,15 @@ Handle<Code> Compiler::GetCodeForDebugging(Handle<JSFunction> function) {
   } else {
     info.MarkNonOptimizable();
   }
-  Handle<Code> new_code = GetUnoptimizedCodeCommon(&info);
-  if (new_code.is_null()) {
+  MaybeHandle<Code> maybe_new_code = GetUnoptimizedCodeCommon(&info);
+  Handle<Code> new_code;
+  if (!maybe_new_code.ToHandle(&new_code)) {
     isolate->clear_pending_exception();
   } else {
     ASSERT_EQ(old_code->is_compiled_optimizable(),
               new_code->is_compiled_optimizable());
   }
-  return new_code;
+  return maybe_new_code;
 }
 
 
@@ -866,11 +872,12 @@ static Handle<SharedFunctionInfo> CompileToplevel(CompilationInfo* info) {
 }
 
 
-Handle<JSFunction> Compiler::GetFunctionFromEval(Handle<String> source,
-                                                 Handle<Context> context,
-                                                 StrictMode strict_mode,
-                                                 ParseRestriction restriction,
-                                                 int scope_position) {
+MaybeHandle<JSFunction> Compiler::GetFunctionFromEval(
+    Handle<String> source,
+    Handle<Context> context,
+    StrictMode strict_mode,
+    ParseRestriction restriction,
+    int scope_position) {
   Isolate* isolate = source->GetIsolate();
   int source_length = source->length();
   isolate->counters()->total_eval_size()->Increment(source_length);
@@ -898,7 +905,7 @@ Handle<JSFunction> Compiler::GetFunctionFromEval(Handle<String> source,
     shared_info = CompileToplevel(&info);
 
     if (shared_info.is_null()) {
-      return Handle<JSFunction>::null();
+      return MaybeHandle<JSFunction>();
     } else {
       // Explicitly disable optimization for eval code. We're not yet prepared
       // to handle eval-code in the optimizing compiler.
@@ -1047,8 +1054,9 @@ Handle<SharedFunctionInfo> Compiler::BuildFunctionInfo(FunctionLiteral* literal,
 }
 
 
-static Handle<Code> GetCodeFromOptimizedCodeMap(Handle<JSFunction> function,
-                                                BailoutId osr_ast_id) {
+MUST_USE_RESULT static MaybeHandle<Code> GetCodeFromOptimizedCodeMap(
+    Handle<JSFunction> function,
+    BailoutId osr_ast_id) {
   if (FLAG_cache_optimized_code) {
     Handle<SharedFunctionInfo> shared(function->shared());
     DisallowHeapAllocation no_gc;
@@ -1068,7 +1076,7 @@ static Handle<Code> GetCodeFromOptimizedCodeMap(Handle<JSFunction> function,
       return Handle<Code>(shared->GetCodeFromOptimizedCodeMap(index));
     }
   }
-  return Handle<Code>::null();
+  return MaybeHandle<Code>();
 }
 
 
@@ -1155,12 +1163,15 @@ static bool GetOptimizedCodeLater(CompilationInfo* info) {
 }
 
 
-Handle<Code> Compiler::GetOptimizedCode(Handle<JSFunction> function,
-                                        Handle<Code> current_code,
-                                        ConcurrencyMode mode,
-                                        BailoutId osr_ast_id) {
-  Handle<Code> cached_code = GetCodeFromOptimizedCodeMap(function, osr_ast_id);
-  if (!cached_code.is_null()) return cached_code;
+MaybeHandle<Code> Compiler::GetOptimizedCode(Handle<JSFunction> function,
+                                             Handle<Code> current_code,
+                                             ConcurrencyMode mode,
+                                             BailoutId osr_ast_id) {
+  Handle<Code> cached_code;
+  if (GetCodeFromOptimizedCodeMap(
+          function, osr_ast_id).ToHandle(&cached_code)) {
+    return cached_code;
+  }
 
   SmartPointer<CompilationInfo> info(new CompilationInfoWithZone(function));
   Isolate* isolate = info->isolate();
@@ -1193,7 +1204,7 @@ Handle<Code> Compiler::GetOptimizedCode(Handle<JSFunction> function,
   }
 
   if (isolate->has_pending_exception()) isolate->clear_pending_exception();
-  return Handle<Code>::null();
+  return MaybeHandle<Code>();
 }
 
 
@@ -1257,12 +1268,13 @@ void Compiler::RecordFunctionCompilation(Logger::LogEventsAndTags tag,
       info->isolate()->cpu_profiler()->is_profiling()) {
     Handle<Script> script = info->script();
     Handle<Code> code = info->code();
-    if (code.is_identical_to(info->isolate()->builtins()->CompileUnoptimized()))
+    if (code.is_identical_to(
+            info->isolate()->builtins()->CompileUnoptimized())) {
       return;
-    int line_num = GetScriptLineNumber(script, shared->start_position()) + 1;
+    }
+    int line_num = Script::GetLineNumber(script, shared->start_position()) + 1;
     int column_num =
-        GetScriptColumnNumber(script, shared->start_position()) + 1;
-    USE(line_num);
+        Script::GetColumnNumber(script, shared->start_position()) + 1;
     String* script_name = script->name()->IsString()
         ? String::cast(script->name())
         : info->isolate()->heap()->empty_string();

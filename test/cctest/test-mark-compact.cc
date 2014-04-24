@@ -39,6 +39,7 @@
 
 #include "v8.h"
 
+#include "full-codegen.h"
 #include "global-handles.h"
 #include "snapshot.h"
 #include "cctest.h"
@@ -158,7 +159,7 @@ TEST(MarkCompactCollector) {
   { HandleScope scope(isolate);
     // allocate a garbage
     Handle<String> func_name = factory->InternalizeUtf8String("theFunction");
-    Handle<JSFunction> function = factory->NewFunction(
+    Handle<JSFunction> function = factory->NewFunctionWithPrototype(
         func_name, factory->undefined_value());
     Handle<Map> initial_map = factory->NewMap(
         JS_OBJECT_TYPE, JSObject::kHeaderSize);
@@ -496,18 +497,12 @@ TEST(BootUpMemoryUse) {
     CcTest::InitializeVM();
     intptr_t delta = MemoryInUse() - initial_memory;
     printf("delta: %" V8_PTR_PREFIX "d kB\n", delta / 1024);
-    if (sizeof(initial_memory) == 8) {  // 64-bit.
-      if (v8::internal::Snapshot::IsEnabled()) {
-        CHECK_LE(delta, 4100 * 1024);
-      } else {
-        CHECK_LE(delta, 4600 * 1024);
-      }
-    } else {                            // 32-bit.
-      if (v8::internal::Snapshot::IsEnabled()) {
-        CHECK_LE(delta, 3100 * 1024);
-      } else {
-        CHECK_LE(delta, 3450 * 1024);
-      }
+    if (v8::internal::Snapshot::IsEnabled()) {
+      CHECK_LE(delta,
+          3200 * 1024 * FullCodeGenerator::kBootCodeSizeMultiplier / 100);
+    } else {
+      CHECK_LE(delta,
+          3350 * 1024 * FullCodeGenerator::kBootCodeSizeMultiplier / 100);
     }
   }
 }

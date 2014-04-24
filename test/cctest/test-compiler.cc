@@ -38,10 +38,8 @@ using namespace v8::internal;
 
 static Handle<Object> GetGlobalProperty(const char* name) {
   Isolate* isolate = CcTest::i_isolate();
-  Handle<String> internalized_name =
-      isolate->factory()->InternalizeUtf8String(name);
   return Object::GetProperty(
-      isolate->global_object(), internalized_name).ToHandleChecked();
+      isolate, isolate->global_object(), name).ToHandleChecked();
 }
 
 
@@ -58,8 +56,8 @@ static void SetGlobalProperty(const char* name, Object* value) {
 
 static Handle<JSFunction> Compile(const char* source) {
   Isolate* isolate = CcTest::i_isolate();
-  Handle<String> source_code(
-      isolate->factory()->NewStringFromUtf8(CStrVector(source)));
+  Handle<String> source_code = isolate->factory()->NewStringFromUtf8(
+      CStrVector(source)).ToHandleChecked();
   Handle<SharedFunctionInfo> shared_function =
       Compiler::CompileScript(source_code,
                               Handle<String>(),
@@ -259,9 +257,9 @@ TEST(Regression236) {
 
   Handle<Script> script = factory->NewScript(factory->empty_string());
   script->set_source(CcTest::heap()->undefined_value());
-  CHECK_EQ(-1, GetScriptLineNumber(script, 0));
-  CHECK_EQ(-1, GetScriptLineNumber(script, 100));
-  CHECK_EQ(-1, GetScriptLineNumber(script, -1));
+  CHECK_EQ(-1, Script::GetLineNumber(script, 0));
+  CHECK_EQ(-1, Script::GetLineNumber(script, 100));
+  CHECK_EQ(-1, Script::GetLineNumber(script, -1));
 }
 
 

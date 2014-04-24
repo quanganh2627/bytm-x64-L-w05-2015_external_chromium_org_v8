@@ -46,6 +46,7 @@ namespace internal {
 #ifdef DEBUG
 bool CpuFeatures::initialized_ = false;
 #endif
+bool CpuFeatures::hint_creating_snapshot_ = false;
 unsigned CpuFeatures::supported_ = 0;
 unsigned CpuFeatures::found_by_runtime_probing_only_ = 0;
 unsigned CpuFeatures::cross_compile_ = 0;
@@ -102,10 +103,27 @@ const char* DoubleRegister::AllocationIndexToString(int index) {
 }
 
 
+void CpuFeatures::SetHintCreatingSnapshot() {
+  hint_creating_snapshot_ = true;
+}
+
+
+void CpuFeatures::ProbeWithoutIsolate() {
+  Probe(hint_creating_snapshot_);
+}
+
+
 void CpuFeatures::Probe() {
+  // The Serializer can only be queried after isolate initialization.
+  Probe(Serializer::enabled());
+}
+
+
+void CpuFeatures::Probe(bool serializer_enabled) {
   unsigned standard_features = (OS::CpuFeaturesImpliedByPlatform() |
                                 CpuFeaturesImpliedByCompiler());
-  ASSERT(supported_ == 0 || supported_ == standard_features);
+  ASSERT(supported_ == 0 ||
+         (supported_ & standard_features) == standard_features);
 #ifdef DEBUG
   initialized_ = true;
 #endif
@@ -115,7 +133,7 @@ void CpuFeatures::Probe() {
   // snapshot.
   supported_ |= standard_features;
 
-  if (Serializer::enabled()) {
+  if (serializer_enabled) {
     // No probing for features if we might serialize (generate snapshot).
     return;
   }
@@ -1655,10 +1673,12 @@ void Assembler::lwc1(FPURegister fd, const MemOperand& src) {
 void Assembler::ldc1(FPURegister fd, const MemOperand& src) {
   // Workaround for non-8-byte alignment of HeapNumber, convert 64-bit
   // load to two 32-bit loads.
-  GenInstrImmediate(LWC1, src.rm(), fd, src.offset_);
+  GenInstrImmediate(LWC1, src.rm(), fd, src.offset_ +
+      Register::kMantissaOffset);
   FPURegister nextfpreg;
   nextfpreg.setcode(fd.code() + 1);
-  GenInstrImmediate(LWC1, src.rm(), nextfpreg, src.offset_ + 4);
+  GenInstrImmediate(LWC1, src.rm(), nextfpreg, src.offset_ +
+      Register::kExponentOffset);
 }
 
 
@@ -1670,10 +1690,12 @@ void Assembler::swc1(FPURegister fd, const MemOperand& src) {
 void Assembler::sdc1(FPURegister fd, const MemOperand& src) {
   // Workaround for non-8-byte alignment of HeapNumber, convert 64-bit
   // store to two 32-bit stores.
-  GenInstrImmediate(SWC1, src.rm(), fd, src.offset_);
+  GenInstrImmediate(SWC1, src.rm(), fd, src.offset_ +
+      Register::kMantissaOffset);
   FPURegister nextfpreg;
   nextfpreg.setcode(fd.code() + 1);
-  GenInstrImmediate(SWC1, src.rm(), nextfpreg, src.offset_ + 4);
+  GenInstrImmediate(SWC1, src.rm(), nextfpreg, src.offset_ +
+      Register::kExponentOffset);
 }
 
 
@@ -2075,11 +2097,6 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   if (!RelocInfo::IsNone(rinfo.rmode())) {
     // Don't record external references unless the heap will be serialized.
     if (rmode == RelocInfo::EXTERNAL_REFERENCE) {
-#ifdef DEBUG
-      if (!Serializer::enabled()) {
-        Serializer::TooLateToEnableNow();
-      }
-#endif
       if (!Serializer::enabled() && !emit_debug_code()) {
         return;
       }
@@ -2328,16 +2345,17 @@ void Assembler::JumpLabelToJumpRegister(Address pc) {
 }
 
 
-MaybeObject* Assembler::AllocateConstantPool(Heap* heap) {
+Handle<ConstantPoolArray> Assembler::NewConstantPool(Isolate* isolate) {
   // No out-of-line constant pool support.
-  UNREACHABLE();
-  return NULL;
+  ASSERT(!FLAG_enable_ool_constant_pool);
+  return isolate->factory()->empty_constant_pool_array();
 }
 
 
 void Assembler::PopulateConstantPool(ConstantPoolArray* constant_pool) {
   // No out-of-line constant pool support.
-  UNREACHABLE();
+  ASSERT(!FLAG_enable_ool_constant_pool);
+  return;
 }
 
 

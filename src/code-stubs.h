@@ -74,7 +74,6 @@ namespace internal {
   V(CEntry)                              \
   V(JSEntry)                             \
   V(KeyedLoadElement)                    \
-  V(ArrayPush)                           \
   V(ArrayNoArgumentConstructor)          \
   V(ArraySingleArgumentConstructor)      \
   V(ArrayNArgumentsConstructor)          \
@@ -1165,30 +1164,6 @@ class BinaryOpICStub : public HydrogenCodeStub {
 };
 
 
-class ArrayPushStub: public PlatformCodeStub {
- public:
-  ArrayPushStub(ElementsKind kind, int argc) {
-    bit_field_ = ElementsKindBits::encode(kind) | ArgcBits::encode(argc);
-  }
-
-  void Generate(MacroAssembler* masm);
-
- private:
-  int arguments_count() { return ArgcBits::decode(bit_field_); }
-  ElementsKind elements_kind() {
-    return ElementsKindBits::decode(bit_field_);
-  }
-
-  virtual CodeStub::Major MajorKey() { return ArrayPush; }
-  virtual int MinorKey() { return bit_field_; }
-
-  class ElementsKindBits: public BitField<ElementsKind, 0, 3> {};
-  class ArgcBits: public BitField<int, 3, Code::kArgumentsBits> {};
-
-  int bit_field_;
-};
-
-
 // TODO(bmeurer): Merge this into the BinaryOpICStub once we have proper tail
 // call support for stubs in Hydrogen.
 class BinaryOpICWithAllocationSiteStub V8_FINAL : public PlatformCodeStub {
@@ -1507,12 +1482,6 @@ class CEntryStub : public PlatformCodeStub {
   };
 
  private:
-  void GenerateCore(MacroAssembler* masm,
-                    Label* throw_normal_exception,
-                    Label* throw_termination_exception,
-                    bool do_gc,
-                    bool always_allocate_scope);
-
   // Number of pointers/values returned.
   Isolate* isolate_;
   const int result_size_;
