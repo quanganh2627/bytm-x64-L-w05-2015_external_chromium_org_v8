@@ -12,7 +12,8 @@ gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_VAR_PREFIX))
 gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
-GYP_TARGET_DEPENDENCIES :=
+GYP_TARGET_DEPENDENCIES := \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_libbase.ia32.stamp
 
 GYP_GENERATED_OUTPUTS :=
 

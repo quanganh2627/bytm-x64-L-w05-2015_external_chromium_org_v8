@@ -2,46 +2,34 @@
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE_CLASS := EXECUTABLES
-LOCAL_MODULE := v8_tools_gyp_mksnapshot_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
-LOCAL_MODULE_STEM := mksnapshot.ia32
-LOCAL_MODULE_SUFFIX := 
+LOCAL_MODULE_CLASS := GYP
+LOCAL_MODULE := v8_tools_gyp_v8_libbase_x64_gyp
+LOCAL_MODULE_STEM := v8_libbase.x64
+LOCAL_MODULE_SUFFIX := .stamp
 LOCAL_MODULE_TAGS := optional
-LOCAL_IS_HOST_MODULE := true
 LOCAL_MODULE_TARGET_ARCH := $(TARGET_$(GYP_VAR_PREFIX)ARCH)
 gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_VAR_PREFIX))
 gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
-GYP_TARGET_DEPENDENCIES := \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_base_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_base_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_nosnapshot_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_nosnapshot_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_libbase.ia32.stamp \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
-	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/js2c.stamp \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/generate_trig_table.stamp
+GYP_TARGET_DEPENDENCIES :=
 
 GYP_GENERATED_OUTPUTS :=
 
 # Make sure our deps and generated files are built first.
 LOCAL_ADDITIONAL_DEPENDENCIES := $(GYP_TARGET_DEPENDENCIES) $(GYP_GENERATED_OUTPUTS)
 
-LOCAL_CPP_EXTENSION := .cc
 LOCAL_GENERATED_SOURCES :=
 
 GYP_COPIED_SOURCE_ORIGIN_DIRS :=
 
-LOCAL_SRC_FILES := \
-	v8/src/mksnapshot.cc
+LOCAL_SRC_FILES :=
 
 
 # Flags passed to both C and C++ files.
 MY_CFLAGS_Debug := \
 	-fstack-protector \
 	--param=ssp-buffer-size=4 \
-	-pthread \
 	-fno-exceptions \
 	-fno-strict-aliasing \
 	-Wno-unused-parameter \
@@ -49,8 +37,27 @@ MY_CFLAGS_Debug := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
-	-m32 \
+	-m64 \
+	-march=x86-64 \
+	-fuse-ld=gold \
+	-ffunction-sections \
+	-funwind-tables \
+	-g \
+	-fstack-protector \
+	-fno-short-enums \
+	-finline-limit=64 \
+	-Wa,--noexecstack \
+	-U_FORTIFY_SOURCE \
+	-Wno-extra \
+	-Wno-ignored-qualifiers \
+	-Wno-type-limits \
+	-Wno-unused-but-set-variable \
+	-Wno-address \
+	-Wno-format-security \
+	-Wno-return-type \
+	-Wno-sequence-point \
 	-Os \
 	-g \
 	-fomit-frame-pointer \
@@ -75,11 +82,16 @@ MY_DEFS_Debug := \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
-	'-DV8_TARGET_ARCH_IA32' \
+	'-DV8_TARGET_ARCH_X64' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
+	'-DANDROID' \
+	'-D__GNU_SOURCE=1' \
+	'-DUSE_STLPORT=1' \
+	'-D_STLP_USE_PTR_SPECIALIZATIONS=1' \
+	'-DCHROME_BUILD_ID=""' \
 	'-DDYNAMIC_ANNOTATIONS_ENABLED=1' \
 	'-DWTF_USE_DYNAMIC_ANNOTATIONS=1' \
 	'-D_DEBUG' \
@@ -93,7 +105,10 @@ MY_DEFS_Debug := \
 
 # Include paths placed before CFLAGS/CPPFLAGS
 LOCAL_C_INCLUDES_Debug := \
-	$(LOCAL_PATH)/v8/src
+	$(LOCAL_PATH)/v8/src \
+	$(PWD)/frameworks/wilhelm/include \
+	$(PWD)/bionic \
+	$(PWD)/external/stlport/stlport
 
 
 # Flags passed to only C++ (and not C) files.
@@ -101,14 +116,16 @@ LOCAL_CPPFLAGS_Debug := \
 	-fno-rtti \
 	-fno-threadsafe-statics \
 	-fvisibility-inlines-hidden \
-	-Wno-deprecated
+	-Wno-deprecated \
+	-Wno-non-virtual-dtor \
+	-Wno-sign-promo \
+	-Wno-non-virtual-dtor
 
 
 # Flags passed to both C and C++ files.
 MY_CFLAGS_Release := \
 	-fstack-protector \
 	--param=ssp-buffer-size=4 \
-	-pthread \
 	-fno-exceptions \
 	-fno-strict-aliasing \
 	-Wno-unused-parameter \
@@ -116,8 +133,27 @@ MY_CFLAGS_Release := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
-	-m32 \
+	-m64 \
+	-march=x86-64 \
+	-fuse-ld=gold \
+	-ffunction-sections \
+	-funwind-tables \
+	-g \
+	-fstack-protector \
+	-fno-short-enums \
+	-finline-limit=64 \
+	-Wa,--noexecstack \
+	-U_FORTIFY_SOURCE \
+	-Wno-extra \
+	-Wno-ignored-qualifiers \
+	-Wno-type-limits \
+	-Wno-unused-but-set-variable \
+	-Wno-address \
+	-Wno-format-security \
+	-Wno-return-type \
+	-Wno-sequence-point \
 	-fno-ident \
 	-fdata-sections \
 	-ffunction-sections \
@@ -144,11 +180,16 @@ MY_DEFS_Release := \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
-	'-DV8_TARGET_ARCH_IA32' \
+	'-DV8_TARGET_ARCH_X64' \
 	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
+	'-DANDROID' \
+	'-D__GNU_SOURCE=1' \
+	'-DUSE_STLPORT=1' \
+	'-D_STLP_USE_PTR_SPECIALIZATIONS=1' \
+	'-DCHROME_BUILD_ID=""' \
 	'-DNDEBUG' \
 	'-DNVALGRIND' \
 	'-DDYNAMIC_ANNOTATIONS_ENABLED=0' \
@@ -157,7 +198,10 @@ MY_DEFS_Release := \
 
 # Include paths placed before CFLAGS/CPPFLAGS
 LOCAL_C_INCLUDES_Release := \
-	$(LOCAL_PATH)/v8/src
+	$(LOCAL_PATH)/v8/src \
+	$(PWD)/frameworks/wilhelm/include \
+	$(PWD)/bionic \
+	$(PWD)/external/stlport/stlport
 
 
 # Flags passed to only C++ (and not C) files.
@@ -165,50 +209,34 @@ LOCAL_CPPFLAGS_Release := \
 	-fno-rtti \
 	-fno-threadsafe-statics \
 	-fvisibility-inlines-hidden \
-	-Wno-deprecated
+	-Wno-deprecated \
+	-Wno-non-virtual-dtor \
+	-Wno-sign-promo \
+	-Wno-non-virtual-dtor
 
 
 LOCAL_CFLAGS := $(MY_CFLAGS_$(GYP_CONFIGURATION)) $(MY_DEFS_$(GYP_CONFIGURATION))
-# Undefine ANDROID for host modules
-LOCAL_CFLAGS += -UANDROID
 LOCAL_C_INCLUDES := $(GYP_COPIED_SOURCE_ORIGIN_DIRS) $(LOCAL_C_INCLUDES_$(GYP_CONFIGURATION))
 LOCAL_CPPFLAGS := $(LOCAL_CPPFLAGS_$(GYP_CONFIGURATION))
 LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
 ### Rules for final target.
-
-LOCAL_LDFLAGS_Debug := \
-	-pthread \
-	-fPIC \
-	-m32
-
-
-LOCAL_LDFLAGS_Release := \
-	-pthread \
-	-fPIC \
-	-m32
-
-
-LOCAL_LDFLAGS := $(LOCAL_LDFLAGS_$(GYP_CONFIGURATION))
-
-LOCAL_STATIC_LIBRARIES := \
-	v8_tools_gyp_v8_base_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
-	v8_tools_gyp_v8_nosnapshot_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
-	third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
-	third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp \
-	third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
-
-# Enable grouping to fix circular references
-LOCAL_GROUP_STATIC_LIBRARIES := true
-
-LOCAL_SHARED_LIBRARIES :=
-
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
-gyp_all_modules: v8_tools_gyp_mksnapshot_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+gyp_all_modules: v8_tools_gyp_v8_libbase_x64_gyp
 
 # Alias gyp target name.
-.PHONY: mksnapshot.ia32
-mksnapshot.ia32: v8_tools_gyp_mksnapshot_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+.PHONY: v8_libbase.x64
+v8_libbase.x64: v8_tools_gyp_v8_libbase_x64_gyp
 
-LOCAL_MODULE_PATH := $(gyp_shared_intermediate_dir)
-include $(BUILD_HOST_EXECUTABLE)
+LOCAL_MODULE_PATH := $(PRODUCT_OUT)/gyp_stamp
+LOCAL_UNINSTALLABLE_MODULE := true
+LOCAL_2ND_ARCH_VAR_PREFIX := $(GYP_VAR_PREFIX)
+
+include $(BUILD_SYSTEM)/base_rules.mk
+
+$(LOCAL_BUILT_MODULE): $(LOCAL_ADDITIONAL_DEPENDENCIES)
+	$(hide) echo "Gyp timestamp: $@"
+	$(hide) mkdir -p $(dir $@)
+	$(hide) touch $@
+
+LOCAL_2ND_ARCH_VAR_PREFIX :=

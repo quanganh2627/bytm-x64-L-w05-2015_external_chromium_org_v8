@@ -12,6 +12,7 @@ gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_V
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_x64_gyp,,,$(GYP_VAR_PREFIX))/v8_libbase.x64.stamp \
 	$(call intermediates-dir-for,GYP,third_party_icu_icui18n_gyp,,,$(GYP_VAR_PREFIX))/icui18n.stamp \
 	$(call intermediates-dir-for,GYP,third_party_icu_icuuc_gyp,,,$(GYP_VAR_PREFIX))/icuuc.stamp
 
