@@ -175,9 +175,7 @@ LOCAL_SRC_FILES := \
 	v8/src/utils/random-number-generator.cc \
 	v8/src/v8-counters.cc \
 	v8/src/v8.cc \
-	v8/src/v8conversions.cc \
 	v8/src/v8threads.cc \
-	v8/src/v8utils.cc \
 	v8/src/variables.cc \
 	v8/src/version.cc \
 	v8/src/zone.cc \
@@ -259,7 +257,6 @@ MY_DEFS_Debug := \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
 	'-DV8_TARGET_ARCH_ARM64' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
@@ -359,7 +356,6 @@ MY_DEFS_Release := \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
 	'-DV8_TARGET_ARCH_ARM64' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
