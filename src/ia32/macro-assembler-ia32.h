@@ -221,12 +221,10 @@ class MacroAssembler: public Assembler {
       Register scratch2,
       SaveFPRegsMode save_fp);
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
   // ---------------------------------------------------------------------------
   // Debugger Support
 
   void DebugBreak();
-#endif
 
   // Generates function and stub prologue code.
   void Prologue(PrologueFrameMode frame_mode);
@@ -809,7 +807,7 @@ class MacroAssembler: public Assembler {
   // caller-save registers.  Restores context.  On return removes
   // stack_space * kPointerSize (GCed).
   void CallApiFunctionAndReturn(Register function_address,
-                                Address thunk_address,
+                                ExternalReference thunk_ref,
                                 Operand thunk_last_arg,
                                 int stack_space,
                                 Operand return_value_operand,

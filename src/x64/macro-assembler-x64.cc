@@ -667,7 +667,7 @@ void MacroAssembler::PrepareCallApiFunction(int arg_stack_space) {
 
 void MacroAssembler::CallApiFunctionAndReturn(
     Register function_address,
-    Address thunk_address,
+    ExternalReference thunk_ref,
     Register thunk_last_arg,
     int stack_space,
     Operand return_value_operand,
@@ -714,16 +714,13 @@ void MacroAssembler::CallApiFunctionAndReturn(
 
   Label profiler_disabled;
   Label end_profiler_check;
-  bool* is_profiling_flag =
-      isolate()->cpu_profiler()->is_profiling_address();
-  STATIC_ASSERT(sizeof(*is_profiling_flag) == 1);
-  Move(rax, is_profiling_flag, RelocInfo::EXTERNAL_REFERENCE);
+  Move(rax, ExternalReference::is_profiling_address(isolate()));
   cmpb(Operand(rax, 0), Immediate(0));
   j(zero, &profiler_disabled);
 
   // Third parameter is the address of the actual getter function.
   Move(thunk_last_arg, function_address);
-  Move(rax, thunk_address, RelocInfo::EXTERNAL_REFERENCE);
+  Move(rax, thunk_ref);
   jmp(&end_profiler_check);
 
   bind(&profiler_disabled);
@@ -3692,7 +3689,6 @@ void MacroAssembler::DecrementCounter(StatsCounter* counter, int value) {
 }
 
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
 void MacroAssembler::DebugBreak() {
   Set(rax, 0);  // No arguments.
   LoadAddress(rbx, ExternalReference(Runtime::kDebugBreak, isolate()));
@@ -3700,7 +3696,6 @@ void MacroAssembler::DebugBreak() {
   ASSERT(AllowThisStubCall(&ces));
   Call(ces.GetCode(), RelocInfo::DEBUG_BREAK);
 }
-#endif  // ENABLE_DEBUGGER_SUPPORT
 
 
 void MacroAssembler::InvokeCode(Register code,

@@ -1683,9 +1683,7 @@ void MacroAssembler::CallApiFunctionAndReturn(
 
   Label profiler_disabled;
   Label end_profiler_check;
-  bool* is_profiling_flag = isolate()->cpu_profiler()->is_profiling_address();
-  STATIC_ASSERT(sizeof(*is_profiling_flag) == 1);
-  Mov(x10, reinterpret_cast<uintptr_t>(is_profiling_flag));
+  Mov(x10, ExternalReference::is_profiling_address(isolate()));
   Ldrb(w10, MemOperand(x10));
   Cbz(w10, &profiler_disabled);
   Mov(x3, thunk_ref);
@@ -3186,7 +3184,6 @@ void MacroAssembler::LoadContext(Register dst, int context_chain_length) {
 }
 
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
 void MacroAssembler::DebugBreak() {
   Mov(x0, 0);
   Mov(x1, ExternalReference(Runtime::kDebugBreak, isolate()));
@@ -3194,7 +3191,6 @@ void MacroAssembler::DebugBreak() {
   ASSERT(AllowThisStubCall(&ces));
   Call(ces.GetCode(), RelocInfo::DEBUG_BREAK);
 }
-#endif
 
 
 void MacroAssembler::PushTryHandler(StackHandler::Kind kind,

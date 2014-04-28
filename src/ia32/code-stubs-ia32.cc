@@ -2517,7 +2517,7 @@ void CodeStub::GenerateStubsAheadOfTime(Isolate* isolate) {
   ArrayConstructorStubBase::GenerateStubsAheadOfTime(isolate);
   CreateAllocationSiteStub::GenerateAheadOfTime(isolate);
   if (Serializer::enabled()) {
-    PlatformFeatureScope sse2(SSE2);
+    PlatformFeatureScope sse2(isolate, SSE2);
     BinaryOpICStub::GenerateAheadOfTime(isolate);
     BinaryOpICWithAllocationSiteStub::GenerateAheadOfTime(isolate);
   } else {
@@ -4987,7 +4987,8 @@ void CallApiFunctionStub::Generate(MacroAssembler* masm) {
   __ lea(scratch, ApiParameterOperand(2));
   __ mov(ApiParameterOperand(0), scratch);
 
-  Address thunk_address = FUNCTION_ADDR(&InvokeFunctionCallback);
+  ExternalReference thunk_ref =
+      ExternalReference::invoke_function_callback(isolate());
 
   Operand context_restore_operand(ebp,
                                   (2 + FCA::kContextSaveIndex) * kPointerSize);
@@ -5000,7 +5001,7 @@ void CallApiFunctionStub::Generate(MacroAssembler* masm) {
   }
   Operand return_value_operand(ebp, return_value_offset * kPointerSize);
   __ CallApiFunctionAndReturn(api_function_address,
-                              thunk_address,
+                              thunk_ref,
                               ApiParameterOperand(1),
                               argc + FCA::kArgsLength + 1,
                               return_value_operand,
@@ -5035,10 +5036,11 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
   __ add(scratch, Immediate(kPointerSize));
   __ mov(ApiParameterOperand(1), scratch);  // arguments pointer.
 
-  Address thunk_address = FUNCTION_ADDR(&InvokeAccessorGetterCallback);
+  ExternalReference thunk_ref =
+      ExternalReference::invoke_accessor_getter_callback(isolate());
 
   __ CallApiFunctionAndReturn(api_function_address,
-                              thunk_address,
+                              thunk_ref,
                               ApiParameterOperand(2),
                               kStackSpace,
                               Operand(ebp, 7 * kPointerSize),

@@ -31,10 +31,10 @@
 
 #include "allocation-tracker.h"
 #include "code-stubs.h"
-#include "heap-profiler.h"
+#include "conversions.h"
 #include "debug.h"
+#include "heap-profiler.h"
 #include "types.h"
-#include "v8conversions.h"
 
 namespace v8 {
 namespace internal {
@@ -2151,9 +2151,7 @@ void V8HeapExplorer::SetGcSubrootReference(
       GlobalObject* global = context->global_object();
       if (global->IsJSGlobalObject()) {
         bool is_debug_object = false;
-#ifdef ENABLE_DEBUGGER_SUPPORT
         is_debug_object = heap_->isolate()->debug()->IsDebugGlobal(global);
-#endif
         if (!is_debug_object && !user_roots_.Contains(global)) {
           user_roots_.Insert(global);
           SetUserGlobalReference(global);

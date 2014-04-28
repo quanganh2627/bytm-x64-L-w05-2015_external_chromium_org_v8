@@ -5093,11 +5093,8 @@ void CallApiFunctionStub::Generate(MacroAssembler* masm) {
   __ str(ip, MemOperand(r0, 3 * kPointerSize));
 
   const int kStackUnwindSpace = argc + FCA::kArgsLength + 1;
-  Address thunk_address = FUNCTION_ADDR(&InvokeFunctionCallback);
-  ExternalReference::Type thunk_type = ExternalReference::PROFILING_API_CALL;
-  ApiFunction thunk_fun(thunk_address);
-  ExternalReference thunk_ref = ExternalReference(&thunk_fun, thunk_type,
-      isolate());
+  ExternalReference thunk_ref =
+      ExternalReference::invoke_function_callback(isolate());
 
   AllowExternalCallThatCantCauseGC scope(masm);
   MemOperand context_restore_operand(
@@ -5143,12 +5140,8 @@ void CallApiGetterStub::Generate(MacroAssembler* masm) {
 
   const int kStackUnwindSpace = PropertyCallbackArguments::kArgsLength + 1;
 
-  Address thunk_address = FUNCTION_ADDR(&InvokeAccessorGetterCallback);
-  ExternalReference::Type thunk_type =
-      ExternalReference::PROFILING_GETTER_CALL;
-  ApiFunction thunk_fun(thunk_address);
-  ExternalReference thunk_ref = ExternalReference(&thunk_fun, thunk_type,
-      isolate());
+  ExternalReference thunk_ref =
+      ExternalReference::invoke_accessor_getter_callback(isolate());
   __ CallApiFunctionAndReturn(api_function_address,
                               thunk_ref,
                               kStackUnwindSpace,

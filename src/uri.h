@@ -30,9 +30,9 @@
 
 #include "v8.h"
 
+#include "conversions.h"
 #include "string-search.h"
-#include "v8utils.h"
-#include "v8conversions.h"
+#include "utils.h"
 
 namespace v8 {
 namespace internal {

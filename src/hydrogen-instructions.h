@@ -32,13 +32,13 @@
 
 #include "allocation.h"
 #include "code-stubs.h"
+#include "conversions.h"
 #include "data-flow.h"
 #include "deoptimizer.h"
 #include "small-pointer-list.h"
 #include "string-stream.h"
 #include "unique.h"
-#include "v8conversions.h"
-#include "v8utils.h"
+#include "utils.h"
 #include "zone.h"
 
 namespace v8 {
