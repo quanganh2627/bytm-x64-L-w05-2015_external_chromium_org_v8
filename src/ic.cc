@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "v8.h"
 
@@ -31,11 +8,11 @@
 #include "api.h"
 #include "arguments.h"
 #include "codegen.h"
+#include "conversions.h"
 #include "execution.h"
 #include "ic-inl.h"
 #include "runtime.h"
 #include "stub-cache.h"
-#include "v8conversions.h"
 
 namespace v8 {
 namespace internal {
@@ -167,7 +144,6 @@ IC::IC(FrameDepth depth, Isolate* isolate)
 }
 
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
 SharedFunctionInfo* IC::GetSharedFunctionInfo() const {
   // Compute the JavaScript frame for the frame pointer of this IC
   // structure. We need this to be able to find the function
@@ -198,7 +174,6 @@ Code* IC::GetOriginalCode() const {
   ASSERT(original_code->IsCode());
   return original_code;
 }
-#endif
 
 
 static bool HasInterceptorGetter(JSObject* object) {
@@ -217,7 +192,7 @@ static void LookupForRead(Handle<Object> object,
   // Skip all the objects with named interceptors, but
   // without actual getter.
   while (true) {
-    object->Lookup(*name, lookup);
+    object->Lookup(name, lookup);
     // Besides normal conditions (property not found or it's not
     // an interceptor), bail out if lookup is not cacheable: we won't
     // be able to IC it anyway and regular lookup should work fine.
@@ -230,7 +205,7 @@ static void LookupForRead(Handle<Object> object,
       return;
     }
 
-    holder->LocalLookupRealNamedProperty(*name, lookup);
+    holder->LocalLookupRealNamedProperty(name, lookup);
     if (lookup->IsFound()) {
       ASSERT(!lookup->IsInterceptor());
       return;
@@ -308,7 +283,7 @@ bool IC::TryRemoveInvalidPrototypeDependentStub(Handle<Object> receiver,
   if (receiver->IsGlobalObject()) {
     LookupResult lookup(isolate());
     GlobalObject* global = GlobalObject::cast(*receiver);
-    global->LocalLookupRealNamedProperty(*name, &lookup);
+    global->LocalLookupRealNamedProperty(name, &lookup);
     if (!lookup.IsFound()) return false;
     PropertyCell* cell = global->GetPropertyCell(&lookup);
     return cell->type()->IsConstant();
@@ -588,8 +563,8 @@ MaybeHandle<Object> LoadIC::Load(Handle<Object> object, Handle<String> name) {
       if (state() == UNINITIALIZED) {
         stub = pre_monomorphic_stub();
       } else if (state() == PREMONOMORPHIC) {
-        FunctionPrototypeStub function_prototype_stub(kind());
-        stub = function_prototype_stub.GetCode(isolate());
+        FunctionPrototypeStub function_prototype_stub(isolate(), kind());
+        stub = function_prototype_stub.GetCode();
       } else if (state() != MEGAMORPHIC) {
         ASSERT(state() != GENERIC);
         stub = megamorphic_stub();
@@ -851,11 +826,11 @@ Handle<Code> LoadIC::SimpleFieldLoad(int offset,
                                      bool inobject,
                                      Representation representation) {
   if (kind() == Code::LOAD_IC) {
-    LoadFieldStub stub(inobject, offset, representation);
-    return stub.GetCode(isolate());
+    LoadFieldStub stub(isolate(), inobject, offset, representation);
+    return stub.GetCode();
   } else {
-    KeyedLoadFieldStub stub(inobject, offset, representation);
-    return stub.GetCode(isolate());
+    KeyedLoadFieldStub stub(isolate(), inobject, offset, representation);
+    return stub.GetCode();
   }
 }
 
@@ -940,11 +915,11 @@ Handle<Code> LoadIC::CompileHandler(LookupResult* lookup,
   if (object->IsStringWrapper() &&
       String::Equals(isolate()->factory()->length_string(), name)) {
     if (kind() == Code::LOAD_IC) {
-      StringLengthStub string_length_stub;
-      return string_length_stub.GetCode(isolate());
+      StringLengthStub string_length_stub(isolate());
+      return string_length_stub.GetCode();
     } else {
-      KeyedStringLengthStub string_length_stub;
-      return string_length_stub.GetCode(isolate());
+      KeyedStringLengthStub string_length_stub(isolate());
+      return string_length_stub.GetCode();
     }
   }
 
@@ -1033,9 +1008,7 @@ Handle<Code> LoadIC::CompileHandler(LookupResult* lookup,
         return compiler.CompileLoadViaGetter(type, holder, name, function);
       }
       // TODO(dcarney): Handle correctly.
-      if (callback->IsDeclaredAccessorInfo()) break;
-      ASSERT(callback->IsForeign());
-      // No IC support for old-style native accessors.
+      ASSERT(callback->IsDeclaredAccessorInfo());
       break;
     }
     case INTERCEPTOR:
@@ -1193,10 +1166,10 @@ static bool LookupForWrite(Handle<JSObject> receiver,
                            LookupResult* lookup,
                            IC* ic) {
   Handle<JSObject> holder = receiver;
-  receiver->Lookup(*name, lookup);
+  receiver->Lookup(name, lookup);
   if (lookup->IsFound()) {
     if (lookup->IsInterceptor() && !HasInterceptorSetter(lookup->holder())) {
-      receiver->LocalLookupRealNamedProperty(*name, lookup);
+      receiver->LocalLookupRealNamedProperty(name, lookup);
       if (!lookup->IsFound()) return false;
     }
 
@@ -1424,9 +1397,8 @@ Handle<Code> StoreIC::CompileHandler(LookupResult* lookup,
           Handle<PropertyCell> cell(global->GetPropertyCell(lookup), isolate());
           Handle<HeapType> union_type = PropertyCell::UpdatedType(cell, value);
           StoreGlobalStub stub(
-              union_type->IsConstant(), receiver->IsJSGlobalProxy());
-          Handle<Code> code = stub.GetCodeCopyFromTemplate(
-              isolate(), global, cell);
+              isolate(), union_type->IsConstant(), receiver->IsJSGlobalProxy());
+          Handle<Code> code = stub.GetCodeCopyFromTemplate(global, cell);
           // TODO(verwaest): Move caching of these NORMAL stubs outside as well.
           HeapObject::UpdateMapCodeCache(receiver, name, code);
           return code;
@@ -1459,20 +1431,7 @@ Handle<Code> StoreIC::CompileHandler(LookupResult* lookup,
               receiver, holder, name, Handle<JSFunction>::cast(setter));
         }
         // TODO(dcarney): Handle correctly.
-        if (callback->IsDeclaredAccessorInfo()) break;
-        ASSERT(callback->IsForeign());
-
-        // Use specialized code for setting the length of arrays with fast
-        // properties. Slow properties might indicate redefinition of the length
-        // property.
-        if (receiver->IsJSArray() &&
-            String::Equals(isolate()->factory()->length_string(), name) &&
-            Handle<JSArray>::cast(receiver)->AllowsSetElementsLength() &&
-            receiver->HasFastProperties()) {
-          return compiler.CompileStoreArrayLength(receiver, lookup, name);
-        }
-
-        // No IC support for old-style native accessors.
+        ASSERT(callback->IsDeclaredAccessorInfo());
         break;
       }
       case INTERCEPTOR:
@@ -1655,9 +1614,8 @@ bool IsOutOfBoundsAccess(Handle<JSObject> receiver,
 KeyedAccessStoreMode KeyedStoreIC::GetStoreMode(Handle<JSObject> receiver,
                                                 Handle<Object> key,
                                                 Handle<Object> value) {
-  Handle<Object> smi_key = Object::ToSmi(isolate(), key);
-  ASSERT(!smi_key.is_null() && smi_key->IsSmi());
-  int index = Handle<Smi>::cast(smi_key)->value();
+  Handle<Smi> smi_key = Object::ToSmi(isolate(), key).ToHandleChecked();
+  int index = smi_key->value();
   bool oob_access = IsOutOfBoundsAccess(receiver, index);
   // Don't consider this a growing store if the store would send the receiver to
   // dictionary mode.
@@ -1917,7 +1875,7 @@ RUNTIME_FUNCTION(StoreIC_ArrayLength) {
 #ifdef DEBUG
   // The length property has to be a writable callback property.
   LookupResult debug_lookup(isolate);
-  receiver->LocalLookup(isolate->heap()->length_string(), &debug_lookup);
+  receiver->LocalLookup(isolate->factory()->length_string(), &debug_lookup);
   ASSERT(debug_lookup.IsPropertyCallbacks() && !debug_lookup.IsReadOnly());
 #endif
 
@@ -1948,8 +1906,7 @@ RUNTIME_FUNCTION(SharedStoreIC_ExtendStorage) {
   int new_unused = transition->unused_property_fields();
   int new_size = old_storage->length() + new_unused + 1;
 
-  Handle<FixedArray> new_storage = isolate->factory()->CopySizeFixedArray(
-      old_storage, new_size);
+  Handle<FixedArray> new_storage = FixedArray::CopySize(old_storage, new_size);
 
   Handle<Object> to_store = value;
 
@@ -2059,7 +2016,8 @@ RUNTIME_FUNCTION(ElementsTransitionAndStoreIC_Miss) {
 }
 
 
-BinaryOpIC::State::State(ExtraICState extra_ic_state) {
+BinaryOpIC::State::State(Isolate* isolate, ExtraICState extra_ic_state)
+    : isolate_(isolate) {
   // We don't deserialize the SSE2 Field, since this is only used to be able
   // to include SSE2 as well as non-SSE2 versions in the snapshot. For code
   // generation we always want it to reflect the current state.
@@ -2110,7 +2068,7 @@ void BinaryOpIC::State::GenerateAheadOfTime(
   // Generated list of commonly used stubs
 #define GENERATE(op, left_kind, right_kind, result_kind, mode)  \
   do {                                                          \
-    State state(op, mode);                                      \
+    State state(isolate, op, mode);                             \
     state.left_kind_ = left_kind;                               \
     state.fixed_right_arg_.has_value = false;                   \
     state.right_kind_ = right_kind;                             \
@@ -2305,7 +2263,7 @@ void BinaryOpIC::State::GenerateAheadOfTime(
 #undef GENERATE
 #define GENERATE(op, left_kind, fixed_right_arg_value, result_kind, mode) \
   do {                                                                    \
-    State state(op, mode);                                                \
+    State state(isolate, op, mode);                                       \
     state.left_kind_ = left_kind;                                         \
     state.fixed_right_arg_.has_value = true;                              \
     state.fixed_right_arg_.value = fixed_right_arg_value;                 \
@@ -2483,7 +2441,7 @@ MaybeHandle<Object> BinaryOpIC::Transition(
     Handle<AllocationSite> allocation_site,
     Handle<Object> left,
     Handle<Object> right) {
-  State state(target()->extra_ic_state());
+  State state(isolate(), target()->extra_ic_state());
 
   // Compute the actual result using the builtin for the binary operation.
   Object* builtin = isolate()->js_builtins_object()->javascript_builtin(
@@ -2500,7 +2458,7 @@ MaybeHandle<Object> BinaryOpIC::Transition(
   // update the state of this very IC, so we must update the stored state.
   UpdateTarget();
   // Compute the new state.
-  State old_state(target()->extra_ic_state());
+  State old_state(isolate(), target()->extra_ic_state());
   state.Update(left, right, result);
 
   // Check if we have a string operation here.
@@ -2512,15 +2470,15 @@ MaybeHandle<Object> BinaryOpIC::Transition(
     }
 
     // Install the stub with an allocation site.
-    BinaryOpICWithAllocationSiteStub stub(state);
-    target = stub.GetCodeCopyFromTemplate(isolate(), allocation_site);
+    BinaryOpICWithAllocationSiteStub stub(isolate(), state);
+    target = stub.GetCodeCopyFromTemplate(allocation_site);
 
     // Sanity check the trampoline stub.
     ASSERT_EQ(*allocation_site, target->FindFirstAllocationSite());
   } else {
     // Install the generic stub.
-    BinaryOpICStub stub(state);
-    target = stub.GetCode(isolate());
+    BinaryOpICStub stub(isolate(), state);
+    target = stub.GetCode();
 
     // Sanity check the generic stub.
     ASSERT_EQ(NULL, target->FindFirstAllocationSite());
@@ -2591,16 +2549,16 @@ RUNTIME_FUNCTION(BinaryOpIC_MissWithAllocationSite) {
 
 
 Code* CompareIC::GetRawUninitialized(Isolate* isolate, Token::Value op) {
-  ICCompareStub stub(op, UNINITIALIZED, UNINITIALIZED, UNINITIALIZED);
+  ICCompareStub stub(isolate, op, UNINITIALIZED, UNINITIALIZED, UNINITIALIZED);
   Code* code = NULL;
-  CHECK(stub.FindCodeInCache(&code, isolate));
+  CHECK(stub.FindCodeInCache(&code));
   return code;
 }
 
 
 Handle<Code> CompareIC::GetUninitialized(Isolate* isolate, Token::Value op) {
-  ICCompareStub stub(op, UNINITIALIZED, UNINITIALIZED, UNINITIALIZED);
-  return stub.GetCode(isolate);
+  ICCompareStub stub(isolate, op, UNINITIALIZED, UNINITIALIZED, UNINITIALIZED);
+  return stub.GetCode();
 }
 
 
@@ -2772,12 +2730,12 @@ Code* CompareIC::UpdateCaches(Handle<Object> x, Handle<Object> y) {
   State new_right = NewInputState(previous_right, y);
   State state = TargetState(previous_state, previous_left, previous_right,
                             HasInlinedSmiCode(address()), x, y);
-  ICCompareStub stub(op_, new_left, new_right, state);
+  ICCompareStub stub(isolate(), op_, new_left, new_right, state);
   if (state == KNOWN_OBJECT) {
     stub.set_known_map(
         Handle<Map>(Handle<JSObject>::cast(x)->map(), isolate()));
   }
-  Handle<Code> new_target = stub.GetCode(isolate());
+  Handle<Code> new_target = stub.GetCode();
   set_target(*new_target);
 
   if (FLAG_trace_ic) {
@@ -2791,7 +2749,7 @@ Code* CompareIC::UpdateCaches(Handle<Object> x, Handle<Object> y) {
            GetStateName(new_right),
            GetStateName(state),
            Token::Name(op_),
-           static_cast<void*>(*stub.GetCode(isolate())));
+           static_cast<void*>(*stub.GetCode()));
   }
 
   // Activate inlined smi code.
@@ -2818,11 +2776,13 @@ void CompareNilIC::Clear(Address address,
   if (IsCleared(target)) return;
   ExtraICState state = target->extra_ic_state();
 
-  CompareNilICStub stub(state, HydrogenCodeStub::UNINITIALIZED);
+  CompareNilICStub stub(target->GetIsolate(),
+                        state,
+                        HydrogenCodeStub::UNINITIALIZED);
   stub.ClearState();
 
   Code* code = NULL;
-  CHECK(stub.FindCodeInCache(&code, target->GetIsolate()));
+  CHECK(stub.FindCodeInCache(&code));
 
   SetTargetAtAddress(address, code, constant_pool);
 }
@@ -2841,7 +2801,7 @@ Handle<Object> CompareNilIC::DoCompareNilSlow(Isolate* isolate,
 Handle<Object> CompareNilIC::CompareNil(Handle<Object> object) {
   ExtraICState extra_ic_state = target()->extra_ic_state();
 
-  CompareNilICStub stub(extra_ic_state);
+  CompareNilICStub stub(isolate(), extra_ic_state);
 
   // Extract the current supported types from the patched IC and calculate what
   // types must be supported as a result of the miss.
@@ -2859,7 +2819,7 @@ Handle<Object> CompareNilIC::CompareNil(Handle<Object> object) {
                                 : HeapObject::cast(*object)->map());
     code = isolate()->stub_cache()->ComputeCompareNil(monomorphic_map, stub);
   } else {
-    code = stub.GetCode(isolate());
+    code = stub.GetCode();
   }
   set_target(*code);
   return DoCompareNilSlow(isolate(), nil, object);
@@ -2923,9 +2883,9 @@ Builtins::JavaScript BinaryOpIC::TokenToJSBuiltin(Token::Value op) {
 
 
 Handle<Object> ToBooleanIC::ToBoolean(Handle<Object> object) {
-  ToBooleanStub stub(target()->extra_ic_state());
+  ToBooleanStub stub(isolate(), target()->extra_ic_state());
   bool to_boolean_value = stub.UpdateStatus(object);
-  Handle<Code> code = stub.GetCode(isolate());
+  Handle<Code> code = stub.GetCode();
   set_target(*code);
   return handle(Smi::FromInt(to_boolean_value ? 1 : 0), isolate());
 }

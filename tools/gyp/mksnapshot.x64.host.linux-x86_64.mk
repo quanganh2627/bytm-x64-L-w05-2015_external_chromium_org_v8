@@ -16,6 +16,7 @@ gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_V
 GYP_TARGET_DEPENDENCIES := \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_base_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_base_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_nosnapshot_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_nosnapshot_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_libbase.x64.stamp \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
@@ -76,7 +77,6 @@ MY_DEFS_Debug := \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
 	'-DV8_TARGET_ARCH_X64' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
@@ -146,7 +146,6 @@ MY_DEFS_Release := \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
 	'-DV8_TARGET_ARCH_X64' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \

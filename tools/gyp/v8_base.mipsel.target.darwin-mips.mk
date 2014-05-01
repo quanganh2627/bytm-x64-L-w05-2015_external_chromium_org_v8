@@ -12,6 +12,7 @@ gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_V
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_mipsel_gyp,,,$(GYP_VAR_PREFIX))/v8_libbase.mipsel.stamp \
 	$(call intermediates-dir-for,GYP,third_party_icu_icui18n_gyp,,,$(GYP_VAR_PREFIX))/icui18n.stamp \
 	$(call intermediates-dir-for,GYP,third_party_icu_icuuc_gyp,,,$(GYP_VAR_PREFIX))/icuuc.stamp
 
@@ -174,9 +175,7 @@ LOCAL_SRC_FILES := \
 	v8/src/utils/random-number-generator.cc \
 	v8/src/v8-counters.cc \
 	v8/src/v8.cc \
-	v8/src/v8conversions.cc \
 	v8/src/v8threads.cc \
-	v8/src/v8utils.cc \
 	v8/src/variables.cc \
 	v8/src/version.cc \
 	v8/src/zone.cc \
@@ -262,7 +261,6 @@ MY_DEFS_Debug := \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
 	'-D_MIPS_ARCH_MIPS32R2' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
@@ -370,7 +368,6 @@ MY_DEFS_Release := \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
 	'-D_MIPS_ARCH_MIPS32R2' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \

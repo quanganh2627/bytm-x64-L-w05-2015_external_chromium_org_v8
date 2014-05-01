@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include <limits.h>  // For LONG_MIN, LONG_MAX.
 
@@ -302,7 +279,8 @@ void MacroAssembler::RecordWrite(Register object,
   if (ra_status == kRAHasNotBeenSaved) {
     push(ra);
   }
-  RecordWriteStub stub(object, value, address, remembered_set_action, fp_mode);
+  RecordWriteStub stub(isolate(), object, value, address, remembered_set_action,
+                       fp_mode);
   CallStub(&stub);
   if (ra_status == kRAHasNotBeenSaved) {
     pop(ra);
@@ -352,7 +330,7 @@ void MacroAssembler::RememberedSetHelper(Register object,  // For debug tests.
   }
   push(ra);
   StoreBufferOverflowStub store_buffer_overflow =
-      StoreBufferOverflowStub(fp_mode);
+      StoreBufferOverflowStub(isolate(), fp_mode);
   CallStub(&store_buffer_overflow);
   pop(ra);
   bind(&done);
@@ -1456,7 +1434,7 @@ void MacroAssembler::TruncateDoubleToI(Register result,
   Subu(sp, sp, Operand(kDoubleSize));  // Put input on stack.
   sdc1(double_input, MemOperand(sp, 0));
 
-  DoubleToIStub stub(sp, result, 0, true, true);
+  DoubleToIStub stub(isolate(), sp, result, 0, true, true);
   CallStub(&stub);
 
   Addu(sp, sp, Operand(kDoubleSize));
@@ -1477,7 +1455,8 @@ void MacroAssembler::TruncateHeapNumberToI(Register result, Register object) {
 
   // If we fell through then inline version didn't succeed - call stub instead.
   push(ra);
-  DoubleToIStub stub(object,
+  DoubleToIStub stub(isolate(),
+                     object,
                      result,
                      HeapNumber::kValueOffset - kHeapObjectTag,
                      true,
@@ -2686,17 +2665,13 @@ void MacroAssembler::Push(Handle<Object> handle) {
 }
 
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
-
 void MacroAssembler::DebugBreak() {
   PrepareCEntryArgs(0);
   PrepareCEntryFunction(ExternalReference(Runtime::kDebugBreak, isolate()));
-  CEntryStub ces(1);
+  CEntryStub ces(isolate(), 1);
   ASSERT(AllowThisStubCall(&ces));
-  Call(ces.GetCode(isolate()), RelocInfo::DEBUG_BREAK);
+  Call(ces.GetCode(), RelocInfo::DEBUG_BREAK);
 }
-
-#endif  // ENABLE_DEBUGGER_SUPPORT
 
 
 // ---------------------------------------------------------------------------
@@ -3892,7 +3867,7 @@ void MacroAssembler::CallStub(CodeStub* stub,
                               const Operand& r2,
                               BranchDelaySlot bd) {
   ASSERT(AllowThisStubCall(stub));  // Stub calls are not allowed in some stubs.
-  Call(stub->GetCode(isolate()), RelocInfo::CODE_TARGET, ast_id,
+  Call(stub->GetCode(), RelocInfo::CODE_TARGET, ast_id,
        cond, r1, r2, bd);
 }
 
@@ -3902,7 +3877,7 @@ void MacroAssembler::TailCallStub(CodeStub* stub,
                                   Register r1,
                                   const Operand& r2,
                                   BranchDelaySlot bd) {
-  Jump(stub->GetCode(isolate()), RelocInfo::CODE_TARGET, cond, r1, r2, bd);
+  Jump(stub->GetCode(), RelocInfo::CODE_TARGET, cond, r1, r2, bd);
 }
 
 
@@ -3931,10 +3906,7 @@ void MacroAssembler::CallApiFunctionAndReturn(
 
   Label profiler_disabled;
   Label end_profiler_check;
-  bool* is_profiling_flag =
-      isolate()->cpu_profiler()->is_profiling_address();
-  STATIC_ASSERT(sizeof(*is_profiling_flag) == 1);
-  li(t9, reinterpret_cast<int32_t>(is_profiling_flag));
+  li(t9, Operand(ExternalReference::is_profiling_address(isolate())));
   lb(t9, MemOperand(t9, 0));
   Branch(&profiler_disabled, eq, t9, Operand(zero_reg));
 
@@ -3966,7 +3938,7 @@ void MacroAssembler::CallApiFunctionAndReturn(
   // Native call returns to the DirectCEntry stub which redirects to the
   // return address pushed on stack (could have moved after GC).
   // DirectCEntry stub itself is generated early and never moves.
-  DirectCEntryStub stub;
+  DirectCEntryStub stub(isolate());
   stub.GenerateCall(this, t9);
 
   if (FLAG_log_timer_events) {
@@ -4216,7 +4188,7 @@ void MacroAssembler::CallRuntime(const Runtime::Function* f,
   // smarter.
   PrepareCEntryArgs(num_arguments);
   PrepareCEntryFunction(ExternalReference(f, isolate()));
-  CEntryStub stub(1, save_doubles);
+  CEntryStub stub(isolate(), 1, save_doubles);
   CallStub(&stub);
 }
 
@@ -4227,7 +4199,7 @@ void MacroAssembler::CallExternalReference(const ExternalReference& ext,
   PrepareCEntryArgs(num_arguments);
   PrepareCEntryFunction(ext);
 
-  CEntryStub stub(1);
+  CEntryStub stub(isolate(), 1);
   CallStub(&stub, TypeFeedbackId::None(), al, zero_reg, Operand(zero_reg), bd);
 }
 
@@ -4256,8 +4228,8 @@ void MacroAssembler::TailCallRuntime(Runtime::FunctionId fid,
 void MacroAssembler::JumpToExternalReference(const ExternalReference& builtin,
                                              BranchDelaySlot bd) {
   PrepareCEntryFunction(builtin);
-  CEntryStub stub(1);
-  Jump(stub.GetCode(isolate()),
+  CEntryStub stub(isolate(), 1);
+  Jump(stub.GetCode(),
        RelocInfo::CODE_TARGET,
        al,
        zero_reg,

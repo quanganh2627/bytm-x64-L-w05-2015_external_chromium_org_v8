@@ -12,7 +12,8 @@ gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_VAR_PREFIX))
 gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
-GYP_TARGET_DEPENDENCIES :=
+GYP_TARGET_DEPENDENCIES := \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_arm_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_libbase.arm.stamp
 
 GYP_GENERATED_OUTPUTS :=
 
@@ -173,9 +174,7 @@ LOCAL_SRC_FILES := \
 	v8/src/utils/random-number-generator.cc \
 	v8/src/v8-counters.cc \
 	v8/src/v8.cc \
-	v8/src/v8conversions.cc \
 	v8/src/v8threads.cc \
-	v8/src/v8utils.cc \
 	v8/src/variables.cc \
 	v8/src/version.cc \
 	v8/src/zone.cc \
@@ -241,7 +240,6 @@ MY_DEFS_Debug := \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
 	'-DV8_TARGET_ARCH_ARM' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \
@@ -318,7 +316,6 @@ MY_DEFS_Release := \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
 	'-DV8_TARGET_ARCH_ARM' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DCAN_USE_VFP_INSTRUCTIONS' \
 	'-DICU_UTIL_DATA_IMPL=ICU_UTIL_DATA_STATIC' \

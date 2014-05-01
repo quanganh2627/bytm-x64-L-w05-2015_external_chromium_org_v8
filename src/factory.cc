@@ -4,9 +4,9 @@
 
 #include "factory.h"
 
-#include "macro-assembler.h"
+#include "conversions.h"
 #include "isolate-inl.h"
-#include "v8conversions.h"
+#include "macro-assembler.h"
 
 namespace v8 {
 namespace internal {
@@ -88,23 +88,27 @@ Handle<FixedArray> Factory::NewUninitializedFixedArray(int size) {
 }
 
 
-Handle<FixedDoubleArray> Factory::NewFixedDoubleArray(int size,
-                                                      PretenureFlag pretenure) {
+Handle<FixedArrayBase> Factory::NewFixedDoubleArray(int size,
+                                                    PretenureFlag pretenure) {
   ASSERT(0 <= size);
   CALL_HEAP_FUNCTION(
       isolate(),
       isolate()->heap()->AllocateUninitializedFixedDoubleArray(size, pretenure),
-      FixedDoubleArray);
+      FixedArrayBase);
 }
 
 
-Handle<FixedDoubleArray> Factory::NewFixedDoubleArrayWithHoles(
+Handle<FixedArrayBase> Factory::NewFixedDoubleArrayWithHoles(
     int size,
     PretenureFlag pretenure) {
   ASSERT(0 <= size);
-  Handle<FixedDoubleArray> array = NewFixedDoubleArray(size, pretenure);
-  for (int i = 0; i < size; ++i) {
-    array->set_the_hole(i);
+  Handle<FixedArrayBase> array = NewFixedDoubleArray(size, pretenure);
+  if (size > 0) {
+    Handle<FixedDoubleArray> double_array =
+        Handle<FixedDoubleArray>::cast(array);
+    for (int i = 0; i < size; ++i) {
+      double_array->set_the_hole(i);
+    }
   }
   return array;
 }
@@ -127,35 +131,6 @@ Handle<ConstantPoolArray> Factory::NewConstantPoolArray(
 }
 
 
-Handle<NameDictionary> Factory::NewNameDictionary(int at_least_space_for) {
-  ASSERT(0 <= at_least_space_for);
-  CALL_HEAP_FUNCTION(isolate(),
-                     NameDictionary::Allocate(isolate()->heap(),
-                                              at_least_space_for),
-                     NameDictionary);
-}
-
-
-Handle<SeededNumberDictionary> Factory::NewSeededNumberDictionary(
-    int at_least_space_for) {
-  ASSERT(0 <= at_least_space_for);
-  CALL_HEAP_FUNCTION(isolate(),
-                     SeededNumberDictionary::Allocate(isolate()->heap(),
-                                                      at_least_space_for),
-                     SeededNumberDictionary);
-}
-
-
-Handle<UnseededNumberDictionary> Factory::NewUnseededNumberDictionary(
-    int at_least_space_for) {
-  ASSERT(0 <= at_least_space_for);
-  CALL_HEAP_FUNCTION(isolate(),
-                     UnseededNumberDictionary::Allocate(isolate()->heap(),
-                                                        at_least_space_for),
-                     UnseededNumberDictionary);
-}
-
-
 Handle<OrderedHashSet> Factory::NewOrderedHashSet() {
   return OrderedHashSet::Allocate(isolate(), 4);
 }
@@ -163,54 +138,6 @@ Handle<OrderedHashSet> Factory::NewOrderedHashSet() {
 
 Handle<OrderedHashMap> Factory::NewOrderedHashMap() {
   return OrderedHashMap::Allocate(isolate(), 4);
-}
-
-
-Handle<ObjectHashTable> Factory::NewObjectHashTable(
-    int at_least_space_for,
-    MinimumCapacity capacity_option) {
-  ASSERT(0 <= at_least_space_for);
-  CALL_HEAP_FUNCTION(isolate(),
-                     ObjectHashTable::Allocate(isolate()->heap(),
-                                               at_least_space_for,
-                                               capacity_option),
-                     ObjectHashTable);
-}
-
-
-Handle<WeakHashTable> Factory::NewWeakHashTable(int at_least_space_for) {
-  ASSERT(0 <= at_least_space_for);
-  CALL_HEAP_FUNCTION(
-      isolate(),
-      WeakHashTable::Allocate(isolate()->heap(),
-                              at_least_space_for,
-                              USE_DEFAULT_MINIMUM_CAPACITY,
-                              TENURED),
-      WeakHashTable);
-}
-
-
-Handle<DeoptimizationInputData> Factory::NewDeoptimizationInputData(
-    int deopt_entry_count,
-    PretenureFlag pretenure) {
-  ASSERT(deopt_entry_count > 0);
-  CALL_HEAP_FUNCTION(isolate(),
-                     DeoptimizationInputData::Allocate(isolate(),
-                                                       deopt_entry_count,
-                                                       pretenure),
-                     DeoptimizationInputData);
-}
-
-
-Handle<DeoptimizationOutputData> Factory::NewDeoptimizationOutputData(
-    int deopt_entry_count,
-    PretenureFlag pretenure) {
-  ASSERT(deopt_entry_count > 0);
-  CALL_HEAP_FUNCTION(isolate(),
-                     DeoptimizationOutputData::Allocate(isolate(),
-                                                        deopt_entry_count,
-                                                        pretenure),
-                     DeoptimizationOutputData);
 }
 
 
@@ -242,9 +169,8 @@ Handle<String> Factory::InternalizeUtf8String(Vector<const char> string) {
 
 // Internalized strings are created in the old generation (data space).
 Handle<String> Factory::InternalizeString(Handle<String> string) {
-  CALL_HEAP_FUNCTION(isolate(),
-                     isolate()->heap()->InternalizeString(*string),
-                     String);
+  if (string->IsInternalizedString()) return string;
+  return StringTable::LookupString(isolate(), string);
 }
 
 
@@ -269,9 +195,7 @@ Handle<String> Factory::InternalizeTwoByteString(Vector<const uc16> string) {
 
 template<class StringTableKey>
 Handle<String> Factory::InternalizeStringWithKey(StringTableKey* key) {
-  CALL_HEAP_FUNCTION(isolate(),
-                     isolate()->heap()->InternalizeStringWithKey(key),
-                     String);
+  return StringTable::LookupKey(isolate(), key);
 }
 
 
@@ -332,6 +256,72 @@ MaybeHandle<String> Factory::NewStringFromTwoByte(Vector<const uc16> string,
 }
 
 
+Handle<String> Factory::NewInternalizedStringFromUtf8(Vector<const char> str,
+                                                      int chars,
+                                                      uint32_t hash_field) {
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateInternalizedStringFromUtf8(
+          str, chars, hash_field),
+      String);
+}
+
+
+MUST_USE_RESULT Handle<String> Factory::NewOneByteInternalizedString(
+      Vector<const uint8_t> str,
+      uint32_t hash_field) {
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateOneByteInternalizedString(str, hash_field),
+      String);
+}
+
+
+MUST_USE_RESULT Handle<String> Factory::NewTwoByteInternalizedString(
+      Vector<const uc16> str,
+      uint32_t hash_field) {
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateTwoByteInternalizedString(str, hash_field),
+      String);
+}
+
+
+Handle<String> Factory::NewInternalizedStringImpl(
+    Handle<String> string, int chars, uint32_t hash_field) {
+  CALL_HEAP_FUNCTION(
+      isolate(),
+      isolate()->heap()->AllocateInternalizedStringImpl(
+          *string, chars, hash_field),
+      String);
+}
+
+
+MaybeHandle<Map> Factory::InternalizedStringMapForString(
+    Handle<String> string) {
+  // If the string is in new space it cannot be used as internalized.
+  if (isolate()->heap()->InNewSpace(*string)) return MaybeHandle<Map>();
+
+  // Find the corresponding internalized string map for strings.
+  switch (string->map()->instance_type()) {
+    case STRING_TYPE: return internalized_string_map();
+    case ASCII_STRING_TYPE: return ascii_internalized_string_map();
+    case EXTERNAL_STRING_TYPE: return external_internalized_string_map();
+    case EXTERNAL_ASCII_STRING_TYPE:
+      return external_ascii_internalized_string_map();
+    case EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE:
+      return external_internalized_string_with_one_byte_data_map();
+    case SHORT_EXTERNAL_STRING_TYPE:
+      return short_external_internalized_string_map();
+    case SHORT_EXTERNAL_ASCII_STRING_TYPE:
+      return short_external_ascii_internalized_string_map();
+    case SHORT_EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE:
+      return short_external_internalized_string_with_one_byte_data_map();
+    default: return MaybeHandle<Map>();  // No match found.
+  }
+}
+
+
 MaybeHandle<SeqOneByteString> Factory::NewRawOneByteString(
     int length, PretenureFlag pretenure) {
   CALL_HEAP_FUNCTION(
@@ -350,11 +340,27 @@ MaybeHandle<SeqTwoByteString> Factory::NewRawTwoByteString(
 }
 
 
-Handle<String> Factory::LookupSingleCharacterStringFromCode(uint32_t index) {
-  CALL_HEAP_FUNCTION(
-      isolate(),
-      isolate()->heap()->LookupSingleCharacterStringFromCode(index),
-      String);
+Handle<String> Factory::LookupSingleCharacterStringFromCode(uint32_t code) {
+  if (code <= String::kMaxOneByteCharCodeU) {
+    {
+      DisallowHeapAllocation no_allocation;
+      Object* value = single_character_string_cache()->get(code);
+      if (value != *undefined_value()) {
+        return handle(String::cast(value), isolate());
+      }
+    }
+    uint8_t buffer[1];
+    buffer[0] = static_cast<uint8_t>(code);
+    Handle<String> result =
+        InternalizeOneByteString(Vector<const uint8_t>(buffer, 1));
+    single_character_string_cache()->set(code, *result);
+    return result;
+  }
+  ASSERT(code <= String::kMaxUtf16CodeUnitU);
+
+  Handle<SeqTwoByteString> result = NewRawTwoByteString(1).ToHandleChecked();
+  result->SeqTwoByteStringSet(0, static_cast<uint16_t>(code));
+  return result;
 }
 
 
@@ -409,13 +415,6 @@ Handle<String> ConcatStringContent(Handle<StringType> result,
   String::WriteToFlat(*first, sink, 0, first->length());
   String::WriteToFlat(*second, sink + first->length(), 0, second->length());
   return result;
-}
-
-
-Handle<ConsString> Factory::NewRawConsString(String::Encoding encoding) {
-  Handle<Map> map = (encoding == String::ONE_BYTE_ENCODING)
-      ? cons_ascii_string_map() : cons_string_map();
-  return New<ConsString>(map, NEW_SPACE);
 }
 
 
@@ -488,10 +487,9 @@ MaybeHandle<String> Factory::NewConsString(Handle<String> left,
             NewRawTwoByteString(length).ToHandleChecked(), left, right);
   }
 
-  Handle<ConsString> result = NewRawConsString(
-      (is_one_byte || is_one_byte_data_in_two_byte_string)
-          ? String::ONE_BYTE_ENCODING
-          : String::TWO_BYTE_ENCODING);
+  Handle<Map> map = (is_one_byte || is_one_byte_data_in_two_byte_string)
+      ? cons_ascii_string_map()  : cons_string_map();
+  Handle<ConsString> result =  New<ConsString>(map, NEW_SPACE);
 
   DisallowHeapAllocation no_gc;
   WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
@@ -514,13 +512,6 @@ Handle<String> Factory::NewFlatConcatString(Handle<String> first,
     return ConcatStringContent<uc16>(
         NewRawTwoByteString(total_length).ToHandleChecked(), first, second);
   }
-}
-
-
-Handle<SlicedString> Factory::NewRawSlicedString(String::Encoding encoding) {
-  Handle<Map> map = (encoding == String::ONE_BYTE_ENCODING)
-      ? sliced_ascii_string_map() : sliced_string_map();
-  return New<SlicedString>(map, NEW_SPACE);
 }
 
 
@@ -575,9 +566,9 @@ Handle<String> Factory::NewProperSubString(Handle<String> str,
   }
 
   ASSERT(str->IsSeqString() || str->IsExternalString());
-  Handle<SlicedString> slice = NewRawSlicedString(
-      str->IsOneByteRepresentation() ? String::ONE_BYTE_ENCODING
-                                     : String::TWO_BYTE_ENCODING);
+  Handle<Map> map = str->IsOneByteRepresentation() ? sliced_ascii_string_map()
+                                                   : sliced_string_map();
+  Handle<SlicedString> slice = New<SlicedString>(map, NEW_SPACE);
 
   slice->set_hash_field(String::kEmptyHashField);
   slice->set_length(length);
@@ -640,10 +631,9 @@ Handle<Symbol> Factory::NewSymbol() {
 
 
 Handle<Symbol> Factory::NewPrivateSymbol() {
-  CALL_HEAP_FUNCTION(
-      isolate(),
-      isolate()->heap()->AllocatePrivateSymbol(),
-      Symbol);
+  Handle<Symbol> symbol = NewSymbol();
+  symbol->set_is_private(true);
+  return symbol;
 }
 
 
@@ -947,8 +937,36 @@ Handle<JSObject> Factory::NewFunctionPrototype(Handle<JSFunction> function) {
 }
 
 
+Handle<JSObject> Factory::CopyJSObject(Handle<JSObject> object) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->CopyJSObject(*object, NULL),
+                     JSObject);
+}
+
+
+Handle<JSObject> Factory::CopyJSObjectWithAllocationSite(
+    Handle<JSObject> object,
+    Handle<AllocationSite> site) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->CopyJSObject(
+                         *object,
+                         site.is_null() ? NULL : *site),
+                     JSObject);
+}
+
+
+Handle<FixedArray> Factory::CopyFixedArrayWithMap(Handle<FixedArray> array,
+                                                  Handle<Map> map) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->CopyFixedArrayWithMap(*array, *map),
+                     FixedArray);
+}
+
+
 Handle<FixedArray> Factory::CopyFixedArray(Handle<FixedArray> array) {
-  CALL_HEAP_FUNCTION(isolate(), array->Copy(), FixedArray);
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->CopyFixedArray(*array),
+                     FixedArray);
 }
 
 
@@ -961,24 +979,19 @@ Handle<FixedArray> Factory::CopyAndTenureFixedCOWArray(
 }
 
 
-Handle<FixedArray> Factory::CopySizeFixedArray(Handle<FixedArray> array,
-                                               int new_length,
-                                               PretenureFlag pretenure) {
-  CALL_HEAP_FUNCTION(isolate(),
-                     array->CopySize(new_length, pretenure),
-                     FixedArray);
-}
-
-
 Handle<FixedDoubleArray> Factory::CopyFixedDoubleArray(
     Handle<FixedDoubleArray> array) {
-  CALL_HEAP_FUNCTION(isolate(), array->Copy(), FixedDoubleArray);
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->CopyFixedDoubleArray(*array),
+                     FixedDoubleArray);
 }
 
 
 Handle<ConstantPoolArray> Factory::CopyConstantPoolArray(
     Handle<ConstantPoolArray> array) {
-  CALL_HEAP_FUNCTION(isolate(), array->Copy(), ConstantPoolArray);
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->CopyConstantPoolArray(*array),
+                     ConstantPoolArray);
 }
 
 
@@ -1069,15 +1082,6 @@ Handle<HeapNumber> Factory::NewHeapNumber(double value,
   CALL_HEAP_FUNCTION(
       isolate(),
       isolate()->heap()->AllocateHeapNumber(value, pretenure), HeapNumber);
-}
-
-
-Handle<JSObject> Factory::NewNeanderObject() {
-  CALL_HEAP_FUNCTION(
-      isolate(),
-      isolate()->heap()->AllocateJSObjectFromMap(
-          isolate()->heap()->neander_map()),
-      JSObject);
 }
 
 
@@ -1328,9 +1332,9 @@ Handle<JSObject> Factory::NewExternal(void* value) {
 }
 
 
-Handle<Code> NewCodeHelper(Isolate* isolate, int object_size, bool immovable) {
-  CALL_HEAP_FUNCTION(isolate,
-                     isolate->heap()->AllocateCode(object_size, immovable),
+Handle<Code> Factory::NewCodeRaw(int object_size, bool immovable) {
+  CALL_HEAP_FUNCTION(isolate(),
+                     isolate()->heap()->AllocateCode(object_size, immovable),
                      Code);
 }
 
@@ -1349,7 +1353,7 @@ Handle<Code> Factory::NewCode(const CodeDesc& desc,
   int body_size = RoundUp(desc.instr_size, kObjectAlignment);
   int obj_size = Code::SizeFor(body_size);
 
-  Handle<Code> code = NewCodeHelper(isolate(), obj_size, immovable);
+  Handle<Code> code = NewCodeRaw(obj_size, immovable);
   ASSERT(!isolate()->code_range()->exists() ||
          isolate()->code_range()->contains(code->address()));
 
@@ -1376,11 +1380,9 @@ Handle<Code> Factory::NewCode(const CodeDesc& desc,
   desc.origin->PopulateConstantPool(*constant_pool);
   code->set_constant_pool(*constant_pool);
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
   if (code->kind() == Code::FUNCTION) {
     code->set_has_debug_break_slots(isolate()->debugger()->IsDebuggerActive());
   }
-#endif
 
   // Allow self references to created code object by patching the handle to
   // point to the newly allocated Code object.
@@ -1471,7 +1473,8 @@ Handle<GlobalObject> Factory::NewGlobalObject(Handle<JSFunction> constructor) {
 
   // Allocate a dictionary object for backing storage.
   int at_least_space_for = map->NumberOfOwnDescriptors() * 2 + initial_size;
-  Handle<NameDictionary> dictionary = NewNameDictionary(at_least_space_for);
+  Handle<NameDictionary> dictionary =
+      NameDictionary::New(isolate(), at_least_space_for);
 
   // The global object might be created from an object template with accessors.
   // Fill these accessors into the dictionary.
@@ -1483,7 +1486,8 @@ Handle<GlobalObject> Factory::NewGlobalObject(Handle<JSFunction> constructor) {
     Handle<Name> name(descs->GetKey(i));
     Handle<Object> value(descs->GetCallbacksObject(i), isolate());
     Handle<PropertyCell> cell = NewPropertyCell(value);
-    NameDictionary::AddNameEntry(dictionary, name, cell, d);
+    // |dictionary| already contains enough space for all properties.
+    USE(NameDictionary::Add(dictionary, name, cell, d));
   }
 
   // Allocate the global object and initialize it with the backing store.
@@ -1707,7 +1711,7 @@ void Factory::ReinitializeJSReceiver(Handle<JSReceiver> object,
   map->set_prototype(object->map()->prototype());
 
   // Allocate the backing storage for the properties.
-  int prop_size = map->unused_property_fields() - map->inobject_properties();
+  int prop_size = map->InitialPropertiesLength();
   Handle<FixedArray> properties = NewFixedArray(prop_size, TENURED);
 
   Heap* heap = isolate()->heap();
@@ -1758,7 +1762,7 @@ void Factory::ReinitializeJSGlobalProxy(Handle<JSGlobalProxy> object,
   ASSERT(map->instance_type() == object->map()->instance_type());
 
   // Allocate the backing storage for the properties.
-  int prop_size = map->unused_property_fields() - map->inobject_properties();
+  int prop_size = map->InitialPropertiesLength();
   Handle<FixedArray> properties = NewFixedArray(prop_size, TENURED);
 
   // In order to keep heap in consistent state there must be no allocations
@@ -1946,26 +1950,6 @@ Handle<String> Factory::NumberToString(Handle<Object> number,
 }
 
 
-Handle<SeededNumberDictionary> Factory::DictionaryAtNumberPut(
-    Handle<SeededNumberDictionary> dictionary,
-    uint32_t key,
-    Handle<Object> value) {
-  CALL_HEAP_FUNCTION(isolate(),
-                     dictionary->AtNumberPut(key, *value),
-                     SeededNumberDictionary);
-}
-
-
-Handle<UnseededNumberDictionary> Factory::DictionaryAtNumberPut(
-    Handle<UnseededNumberDictionary> dictionary,
-    uint32_t key,
-    Handle<Object> value) {
-  CALL_HEAP_FUNCTION(isolate(),
-                     dictionary->AtNumberPut(key, *value),
-                     UnseededNumberDictionary);
-}
-
-
 void Factory::InitializeFunction(Handle<JSFunction> function,
                                  Handle<SharedFunctionInfo> info,
                                  Handle<Context> context,
@@ -2033,7 +2017,6 @@ Handle<JSFunction> Factory::NewFunctionWithPrototype(Handle<String> name,
 }
 
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
 Handle<DebugInfo> Factory::NewDebugInfo(Handle<SharedFunctionInfo> shared) {
   // Get the original code of the function.
   Handle<Code> code(shared->code());
@@ -2063,7 +2046,6 @@ Handle<DebugInfo> Factory::NewDebugInfo(Handle<SharedFunctionInfo> shared) {
 
   return debug_info;
 }
-#endif
 
 
 Handle<JSObject> Factory::NewArgumentsObject(Handle<Object> callee,
@@ -2232,14 +2214,6 @@ Handle<JSFunction> Factory::CreateApiFunction(
 }
 
 
-Handle<MapCache> Factory::NewMapCache(int at_least_space_for) {
-  CALL_HEAP_FUNCTION(isolate(),
-                     MapCache::Allocate(isolate()->heap(),
-                                        at_least_space_for),
-                     MapCache);
-}
-
-
 Handle<MapCache> Factory::AddToMapCache(Handle<Context> context,
                                         Handle<FixedArray> keys,
                                         Handle<Map> map) {
@@ -2254,7 +2228,7 @@ Handle<Map> Factory::ObjectLiteralMapFromCache(Handle<Context> context,
                                                Handle<FixedArray> keys) {
   if (context->map_cache()->IsUndefined()) {
     // Allocate the new map cache for the native context.
-    Handle<MapCache> new_cache = NewMapCache(24);
+    Handle<MapCache> new_cache = MapCache::New(isolate(), 24);
     context->set_map_cache(*new_cache);
   }
   // Check to see whether there is a matching element in the cache.

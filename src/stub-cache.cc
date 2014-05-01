@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "v8.h"
 
@@ -335,7 +312,7 @@ Handle<Code> StubCache::ComputeCompareNil(Handle<Map> receiver_map,
 
   Code::FindAndReplacePattern pattern;
   pattern.Add(isolate_->factory()->meta_map(), receiver_map);
-  Handle<Code> ic = stub.GetCodeCopy(isolate_, pattern);
+  Handle<Code> ic = stub.GetCodeCopy(pattern);
 
   if (!receiver_map->is_shared()) {
     Map::UpdateCodeCache(receiver_map, name, ic);
@@ -782,10 +759,10 @@ Handle<Code> StubCompiler::GetCodeWithFlags(Code::Flags flags,
 void StubCompiler::LookupPostInterceptor(Handle<JSObject> holder,
                                          Handle<Name> name,
                                          LookupResult* lookup) {
-  holder->LocalLookupRealNamedProperty(*name, lookup);
+  holder->LocalLookupRealNamedProperty(name, lookup);
   if (lookup->IsFound()) return;
   if (holder->GetPrototype()->IsNull()) return;
-  holder->GetPrototype()->Lookup(*name, lookup);
+  holder->GetPrototype()->Lookup(name, lookup);
 }
 
 
@@ -891,7 +868,7 @@ void LoadStubCompiler::NonexistentHandlerFrontend(Handle<HeapType> type,
       name = factory()->InternalizeString(Handle<String>::cast(name));
     }
     ASSERT(last.is_null() ||
-           last->property_dictionary()->FindEntry(*name) ==
+           last->property_dictionary()->FindEntry(name) ==
                NameDictionary::kNotFound);
     GenerateDictionaryNegativeLookup(masm(), &miss, holder, name,
                                      scratch2(), scratch3());
@@ -1188,13 +1165,14 @@ Handle<Code> KeyedLoadStubCompiler::CompileLoadElement(
       receiver_map->has_external_array_elements() ||
       receiver_map->has_fixed_typed_array_elements()) {
     Handle<Code> stub = KeyedLoadFastElementStub(
+        isolate(),
         receiver_map->instance_type() == JS_ARRAY_TYPE,
-        elements_kind).GetCode(isolate());
+        elements_kind).GetCode();
     __ DispatchMap(receiver(), scratch1(), receiver_map, stub, DO_SMI_CHECK);
   } else {
     Handle<Code> stub = FLAG_compiled_keyed_dictionary_loads
-        ? KeyedLoadDictionaryElementStub().GetCode(isolate())
-        : KeyedLoadDictionaryElementPlatformStub().GetCode(isolate());
+        ? KeyedLoadDictionaryElementStub(isolate()).GetCode()
+        : KeyedLoadDictionaryElementPlatformStub(isolate()).GetCode();
     __ DispatchMap(receiver(), scratch1(), receiver_map, stub, DO_SMI_CHECK);
   }
 
@@ -1214,13 +1192,15 @@ Handle<Code> KeyedStoreStubCompiler::CompileStoreElement(
       receiver_map->has_external_array_elements() ||
       receiver_map->has_fixed_typed_array_elements()) {
     stub = KeyedStoreFastElementStub(
+        isolate(),
         is_jsarray,
         elements_kind,
-        store_mode()).GetCode(isolate());
+        store_mode()).GetCode();
   } else {
-    stub = KeyedStoreElementStub(is_jsarray,
+    stub = KeyedStoreElementStub(isolate(),
+                                 is_jsarray,
                                  elements_kind,
-                                 store_mode()).GetCode(isolate());
+                                 store_mode()).GetCode();
   }
 
   __ DispatchMap(receiver(), scratch1(), receiver_map, stub, DO_SMI_CHECK);
@@ -1314,13 +1294,15 @@ void KeyedLoadStubCompiler::CompileElementHandlers(MapHandleList* receiver_maps,
           IsExternalArrayElementsKind(elements_kind) ||
           IsFixedTypedArrayElementsKind(elements_kind)) {
         cached_stub =
-            KeyedLoadFastElementStub(is_js_array,
-                                     elements_kind).GetCode(isolate());
+            KeyedLoadFastElementStub(isolate(),
+                                     is_js_array,
+                                     elements_kind).GetCode();
       } else if (elements_kind == SLOPPY_ARGUMENTS_ELEMENTS) {
         cached_stub = isolate()->builtins()->KeyedLoadIC_SloppyArguments();
       } else {
         ASSERT(elements_kind == DICTIONARY_ELEMENTS);
-        cached_stub = KeyedLoadDictionaryElementStub().GetCode(isolate());
+        cached_stub =
+            KeyedLoadDictionaryElementStub(isolate()).GetCode();
       }
     }
 
@@ -1349,10 +1331,11 @@ Handle<Code> KeyedStoreStubCompiler::CompileStoreElementPolymorphic(
     ElementsKind elements_kind = receiver_map->elements_kind();
     if (!transitioned_map.is_null()) {
       cached_stub = ElementsTransitionAndStoreStub(
+          isolate(),
           elements_kind,
           transitioned_map->elements_kind(),
           is_js_array,
-          store_mode()).GetCode(isolate());
+          store_mode()).GetCode();
     } else if (receiver_map->instance_type() < FIRST_JS_RECEIVER_TYPE) {
       cached_stub = isolate()->builtins()->KeyedStoreIC_Slow();
     } else {
@@ -1360,14 +1343,16 @@ Handle<Code> KeyedStoreStubCompiler::CompileStoreElementPolymorphic(
           receiver_map->has_external_array_elements() ||
           receiver_map->has_fixed_typed_array_elements()) {
         cached_stub = KeyedStoreFastElementStub(
+            isolate(),
             is_js_array,
             elements_kind,
-            store_mode()).GetCode(isolate());
+            store_mode()).GetCode();
       } else {
         cached_stub = KeyedStoreElementStub(
+            isolate(),
             is_js_array,
             elements_kind,
-            store_mode()).GetCode(isolate());
+            store_mode()).GetCode();
       }
     }
     ASSERT(!cached_stub.is_null());

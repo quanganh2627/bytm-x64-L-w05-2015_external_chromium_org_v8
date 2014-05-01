@@ -16,6 +16,7 @@ gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_V
 GYP_TARGET_DEPENDENCIES := \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_base_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,v8_tools_gyp_v8_nosnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_tools_gyp_v8_nosnapshot_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/v8_libbase.mipsel.stamp \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icui18n_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icuuc_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
 	$(call intermediates-dir-for,STATIC_LIBRARIES,third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/third_party_icu_icudata_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp.a \
@@ -79,7 +80,6 @@ MY_DEFS_Debug := \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
 	'-D_MIPS_ARCH_MIPS32R2' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
@@ -152,7 +152,6 @@ MY_DEFS_Release := \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
 	'-D_MIPS_ARCH_MIPS32R2' \
-	'-DENABLE_DEBUGGER_SUPPORT' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \

@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "v8.h"
 
@@ -32,6 +9,7 @@
 #include "bootstrapper.h"
 #include "codegen.h"
 #include "compilation-cache.h"
+#include "conversions.h"
 #include "cpu-profiler.h"
 #include "debug.h"
 #include "deoptimizer.h"
@@ -49,9 +27,8 @@
 #include "snapshot.h"
 #include "store-buffer.h"
 #include "utils/random-number-generator.h"
-#include "v8conversions.h"
+#include "utils.h"
 #include "v8threads.h"
-#include "v8utils.h"
 #include "vm-state-inl.h"
 #if V8_TARGET_ARCH_ARM && !V8_INTERPRETED_REGEXP
 #include "regexp-macro-assembler.h"
@@ -711,12 +688,10 @@ void Heap::GarbageCollectionEpilogue() {
 #undef UPDATE_FRAGMENTATION_FOR_SPACE
 #undef UPDATE_COUNTERS_AND_FRAGMENTATION_FOR_SPACE
 
-#if defined(DEBUG)
+#ifdef DEBUG
   ReportStatisticsAfterGC();
 #endif  // DEBUG
-#ifdef ENABLE_DEBUGGER_SUPPORT
   isolate_->debug()->AfterGarbageCollection();
-#endif  // ENABLE_DEBUGGER_SUPPORT
 }
 
 
@@ -1518,9 +1493,6 @@ void Heap::Scavenge() {
   SelectScavengingVisitorsTable();
 
   incremental_marking()->PrepareForScavenge();
-
-  paged_space(OLD_DATA_SPACE)->EnsureSweeperProgress(new_space_.Size());
-  paged_space(OLD_POINTER_SPACE)->EnsureSweeperProgress(new_space_.Size());
 
   // Flip the semispaces.  After flipping, to space is empty, from space has
   // live objects.
@@ -2425,11 +2397,6 @@ MaybeObject* Heap::AllocateFillerObject(int size,
 }
 
 
-MaybeObject* Heap::AllocatePolymorphicCodeCache() {
-  return AllocateStruct(POLYMORPHIC_CODE_CACHE_TYPE);
-}
-
-
 const Heap::StringTypeTable Heap::string_type_table[] = {
 #define STRING_TYPE_ELEMENT(type, size, name, camel_name)                      \
   {type, size, k##camel_name##MapRootIndex},
@@ -2749,44 +2716,36 @@ MaybeObject* Heap::AllocatePropertyCell() {
 }
 
 
-bool Heap::CreateApiObjects() {
-  Object* obj;
+void Heap::CreateApiObjects() {
+  HandleScope scope(isolate());
+  Factory* factory = isolate()->factory();
+  Handle<Map> new_neander_map =
+      factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
 
-  { MaybeObject* maybe_obj = AllocateMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
   // Don't use Smi-only elements optimizations for objects with the neander
   // map. There are too many cases where element values are set directly with a
   // bottleneck to trap the Smi-only -> fast elements transition, and there
   // appears to be no benefit for optimize this case.
-  Map* new_neander_map = Map::cast(obj);
   new_neander_map->set_elements_kind(TERMINAL_FAST_ELEMENTS_KIND);
-  set_neander_map(new_neander_map);
+  set_neander_map(*new_neander_map);
 
-  { MaybeObject* maybe_obj = AllocateJSObjectFromMap(neander_map());
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  Object* elements;
-  { MaybeObject* maybe_elements = AllocateFixedArray(2);
-    if (!maybe_elements->ToObject(&elements)) return false;
-  }
-  FixedArray::cast(elements)->set(0, Smi::FromInt(0));
-  JSObject::cast(obj)->set_elements(FixedArray::cast(elements));
-  set_message_listeners(JSObject::cast(obj));
-
-  return true;
+  Handle<JSObject> listeners = factory->NewNeanderObject();
+  Handle<FixedArray> elements = factory->NewFixedArray(2);
+  elements->set(0, Smi::FromInt(0));
+  listeners->set_elements(*elements);
+  set_message_listeners(*listeners);
 }
 
 
 void Heap::CreateJSEntryStub() {
-  JSEntryStub stub;
-  set_js_entry_code(*stub.GetCode(isolate()));
+  JSEntryStub stub(isolate());
+  set_js_entry_code(*stub.GetCode());
 }
 
 
 void Heap::CreateJSConstructEntryStub() {
-  JSConstructEntryStub stub;
-  set_js_construct_entry_code(*stub.GetCode(isolate()));
+  JSConstructEntryStub stub(isolate());
+  set_js_construct_entry_code(*stub.GetCode());
 }
 
 
@@ -2820,7 +2779,7 @@ void Heap::CreateFixedStubs() {
 }
 
 
-bool Heap::CreateInitialObjects() {
+void Heap::CreateInitialObjects() {
   HandleScope scope(isolate());
   Factory* factory = isolate()->factory();
 
@@ -2902,39 +2861,25 @@ bool Heap::CreateInitialObjects() {
     roots_[constant_string_table[i].index] = *str;
   }
 
-  Object* obj;
-
   // Allocate the hidden string which is used to identify the hidden properties
   // in JSObjects. The hash code has a special value so that it will not match
   // the empty string when searching for the property. It cannot be part of the
   // loop above because it needs to be allocated manually with the special
   // hash code in place. The hash code for the hidden_string is zero to ensure
   // that it will always be at the first entry in property descriptors.
-  { MaybeObject* maybe_obj = AllocateOneByteInternalizedString(
+  hidden_string_ = *factory->NewOneByteInternalizedString(
       OneByteVector("", 0), String::kEmptyStringHash);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  hidden_string_ = String::cast(obj);
 
-  // Allocate the code_stubs dictionary. The initial size is set to avoid
+  // Create the code_stubs dictionary. The initial size is set to avoid
   // expanding the dictionary during bootstrapping.
-  { MaybeObject* maybe_obj = UnseededNumberDictionary::Allocate(this, 128);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_code_stubs(UnseededNumberDictionary::cast(obj));
+  set_code_stubs(*UnseededNumberDictionary::New(isolate(), 128));
 
-
-  // Allocate the non_monomorphic_cache used in stub-cache.cc. The initial size
+  // Create the non_monomorphic_cache used in stub-cache.cc. The initial size
   // is set to avoid expanding the dictionary during bootstrapping.
-  { MaybeObject* maybe_obj = UnseededNumberDictionary::Allocate(this, 64);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_non_monomorphic_cache(UnseededNumberDictionary::cast(obj));
+  set_non_monomorphic_cache(*UnseededNumberDictionary::New(isolate(), 64));
 
-  { MaybeObject* maybe_obj = AllocatePolymorphicCodeCache();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_polymorphic_code_cache(PolymorphicCodeCache::cast(obj));
+  set_polymorphic_code_cache(PolymorphicCodeCache::cast(
+      *factory->NewStruct(POLYMORPHIC_CODE_CACHE_TYPE)));
 
   set_instanceof_cache_function(Smi::FromInt(0));
   set_instanceof_cache_map(Smi::FromInt(0));
@@ -2943,124 +2888,60 @@ bool Heap::CreateInitialObjects() {
   CreateFixedStubs();
 
   // Allocate the dictionary of intrinsic function names.
-  {
-    Handle<NameDictionary> function_names =
-        NameDictionary::New(isolate(), Runtime::kNumFunctions);
-    Runtime::InitializeIntrinsicFunctionNames(isolate(), function_names);
-    set_intrinsic_function_names(*function_names);
-  }
+  Handle<NameDictionary> intrinsic_names =
+      NameDictionary::New(isolate(), Runtime::kNumFunctions);
+  Runtime::InitializeIntrinsicFunctionNames(isolate(), intrinsic_names);
+  set_intrinsic_function_names(*intrinsic_names);
 
-  { MaybeObject* maybe_obj = AllocateInitialNumberStringCache();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_number_string_cache(FixedArray::cast(obj));
+  set_number_string_cache(*factory->NewFixedArray(
+      kInitialNumberStringCacheSize * 2, TENURED));
 
   // Allocate cache for single character one byte strings.
-  { MaybeObject* maybe_obj =
-        AllocateFixedArray(String::kMaxOneByteCharCode + 1, TENURED);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_single_character_string_cache(FixedArray::cast(obj));
+  set_single_character_string_cache(*factory->NewFixedArray(
+      String::kMaxOneByteCharCode + 1, TENURED));
 
-  // Allocate cache for string split.
-  { MaybeObject* maybe_obj = AllocateFixedArray(
-      RegExpResultsCache::kRegExpResultsCacheSize, TENURED);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_string_split_cache(FixedArray::cast(obj));
-
-  { MaybeObject* maybe_obj = AllocateFixedArray(
-      RegExpResultsCache::kRegExpResultsCacheSize, TENURED);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_regexp_multiple_cache(FixedArray::cast(obj));
+  // Allocate cache for string split and regexp-multiple.
+  set_string_split_cache(*factory->NewFixedArray(
+      RegExpResultsCache::kRegExpResultsCacheSize, TENURED));
+  set_regexp_multiple_cache(*factory->NewFixedArray(
+      RegExpResultsCache::kRegExpResultsCacheSize, TENURED));
 
   // Allocate cache for external strings pointing to native source code.
-  { MaybeObject* maybe_obj = AllocateFixedArray(Natives::GetBuiltinsCount());
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_natives_source_cache(FixedArray::cast(obj));
+  set_natives_source_cache(*factory->NewFixedArray(
+      Natives::GetBuiltinsCount()));
 
-  { MaybeObject* maybe_obj = AllocateCell(undefined_value());
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_undefined_cell(Cell::cast(obj));
+  set_undefined_cell(*factory->NewCell(factory->undefined_value()));
 
   // The symbol registry is initialized lazily.
   set_symbol_registry(undefined_value());
 
   // Allocate object to hold object observation state.
-  { MaybeObject* maybe_obj = AllocateMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  { MaybeObject* maybe_obj = AllocateJSObjectFromMap(Map::cast(obj));
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_observation_state(JSObject::cast(obj));
+  set_observation_state(*factory->NewJSObjectFromMap(
+      factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize)));
 
   // Allocate object to hold object microtask state.
-  { MaybeObject* maybe_obj = AllocateMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  { MaybeObject* maybe_obj = AllocateJSObjectFromMap(Map::cast(obj));
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_microtask_state(JSObject::cast(obj));
+  set_microtask_state(*factory->NewJSObjectFromMap(
+      factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize)));
 
-  { MaybeObject* maybe_obj = AllocateSymbol();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  Symbol::cast(obj)->set_is_private(true);
-  set_frozen_symbol(Symbol::cast(obj));
+  set_frozen_symbol(*factory->NewPrivateSymbol());
+  set_nonexistent_symbol(*factory->NewPrivateSymbol());
+  set_elements_transition_symbol(*factory->NewPrivateSymbol());
+  set_uninitialized_symbol(*factory->NewPrivateSymbol());
+  set_megamorphic_symbol(*factory->NewPrivateSymbol());
+  set_observed_symbol(*factory->NewPrivateSymbol());
 
-  { MaybeObject* maybe_obj = AllocateSymbol();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  Symbol::cast(obj)->set_is_private(true);
-  set_nonexistent_symbol(Symbol::cast(obj));
+  Handle<SeededNumberDictionary> slow_element_dictionary =
+      SeededNumberDictionary::New(isolate(), 0, TENURED);
+  slow_element_dictionary->set_requires_slow_elements();
+  set_empty_slow_element_dictionary(*slow_element_dictionary);
 
-  { MaybeObject* maybe_obj = AllocateSymbol();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  Symbol::cast(obj)->set_is_private(true);
-  set_elements_transition_symbol(Symbol::cast(obj));
-
-  { MaybeObject* maybe_obj = AllocateSymbol();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  Symbol::cast(obj)->set_is_private(true);
-  set_uninitialized_symbol(Symbol::cast(obj));
-
-  { MaybeObject* maybe_obj = AllocateSymbol();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  Symbol::cast(obj)->set_is_private(true);
-  set_megamorphic_symbol(Symbol::cast(obj));
-
-  { MaybeObject* maybe_obj = SeededNumberDictionary::Allocate(this, 0, TENURED);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  SeededNumberDictionary::cast(obj)->set_requires_slow_elements();
-  set_empty_slow_element_dictionary(SeededNumberDictionary::cast(obj));
-
-  { MaybeObject* maybe_obj = AllocateSymbol();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  Symbol::cast(obj)->set_is_private(true);
-  set_observed_symbol(Symbol::cast(obj));
-
-  { MaybeObject* maybe_obj = AllocateFixedArray(0, TENURED);
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_materialized_objects(FixedArray::cast(obj));
+  set_materialized_objects(*factory->NewFixedArray(0, TENURED));
 
   // Handling of script id generation is in Factory::NewScript.
   set_last_script_id(Smi::FromInt(v8::UnboundScript::kNoScriptId));
 
-  { MaybeObject* maybe_obj = AllocateAllocationSitesScratchpad();
-    if (!maybe_obj->ToObject(&obj)) return false;
-  }
-  set_allocation_sites_scratchpad(FixedArray::cast(obj));
+  set_allocation_sites_scratchpad(*factory->NewFixedArray(
+      kAllocationSiteScratchpadSize, TENURED));
   InitializeAllocationSitesScratchpad();
 
   // Initialize keyed lookup cache.
@@ -3074,8 +2955,6 @@ bool Heap::CreateInitialObjects() {
 
   // Initialize compilation cache.
   isolate_->compilation_cache()->Clear();
-
-  return true;
 }
 
 
@@ -3209,13 +3088,6 @@ void RegExpResultsCache::Clear(FixedArray* cache) {
 }
 
 
-MaybeObject* Heap::AllocateInitialNumberStringCache() {
-  MaybeObject* maybe_obj =
-      AllocateFixedArray(kInitialNumberStringCacheSize * 2, TENURED);
-  return maybe_obj;
-}
-
-
 int Heap::FullSizeNumberStringCacheLength() {
   // Compute the size of the number string cache based on the max newspace size.
   // The number string cache has a minimum size based on twice the initial cache
@@ -3235,13 +3107,6 @@ void Heap::FlushNumberStringCache() {
   for (int i = 0; i < len; i++) {
     number_string_cache()->set_undefined(i);
   }
-}
-
-
-MaybeObject* Heap::AllocateAllocationSitesScratchpad() {
-  MaybeObject* maybe_obj =
-      AllocateFixedArray(kAllocationSiteScratchpadSize, TENURED);
-  return maybe_obj;
 }
 
 
@@ -3387,31 +3252,6 @@ MaybeObject* Heap::AllocateForeign(Address address, PretenureFlag pretenure) {
 }
 
 
-MaybeObject* Heap::LookupSingleCharacterStringFromCode(uint16_t code) {
-  if (code <= String::kMaxOneByteCharCode) {
-    Object* value = single_character_string_cache()->get(code);
-    if (value != undefined_value()) return value;
-
-    uint8_t buffer[1];
-    buffer[0] = static_cast<uint8_t>(code);
-    Object* result;
-    OneByteStringKey key(Vector<const uint8_t>(buffer, 1), HashSeed());
-    MaybeObject* maybe_result = InternalizeStringWithKey(&key);
-
-    if (!maybe_result->ToObject(&result)) return maybe_result;
-    single_character_string_cache()->set(code, result);
-    return result;
-  }
-
-  SeqTwoByteString* result;
-  { MaybeObject* maybe_result = AllocateRawTwoByteString(1, NOT_TENURED);
-    if (!maybe_result->To<SeqTwoByteString>(&result)) return maybe_result;
-  }
-  result->SeqTwoByteStringSet(0, code);
-  return result;
-}
-
-
 MaybeObject* Heap::AllocateByteArray(int length, PretenureFlag pretenure) {
   if (length < 0 || length > ByteArray::kMaxLength) {
     v8::internal::Heap::FatalProcessOutOfMemory("invalid array length", true);
@@ -3451,11 +3291,18 @@ bool Heap::CanMoveObjectStart(HeapObject* object) {
 
   if (lo_space()->Contains(object)) return false;
 
-  // We cannot move the object start if the given old space page is
-  // concurrently swept.
+  Page* page = Page::FromAddress(address);
+  // We can move the object start if:
+  // (1) the object is not in old pointer or old data space,
+  // (2) the page of the object was already swept,
+  // (3) the page was already concurrently swept. This case is an optimization
+  // for concurrent sweeping. The WasSwept predicate for concurrently swept
+  // pages is set after sweeping all pages.
   return (!is_in_old_pointer_space && !is_in_old_data_space) ||
-      Page::FromAddress(address)->parallel_sweeping() <=
-          MemoryChunk::PARALLEL_SWEEPING_FINALIZE;
+         page->WasSwept() ||
+         (mark_compact_collector()->AreSweeperThreadsActivated() &&
+              page->parallel_sweeping() <=
+                  MemoryChunk::PARALLEL_SWEEPING_FINALIZE);
 }
 
 
@@ -4023,30 +3870,6 @@ MaybeObject* Heap::AllocateStringFromTwoByte(Vector<const uc16> string,
 }
 
 
-Map* Heap::InternalizedStringMapForString(String* string) {
-  // If the string is in new space it cannot be used as internalized.
-  if (InNewSpace(string)) return NULL;
-
-  // Find the corresponding internalized string map for strings.
-  switch (string->map()->instance_type()) {
-    case STRING_TYPE: return internalized_string_map();
-    case ASCII_STRING_TYPE: return ascii_internalized_string_map();
-    case EXTERNAL_STRING_TYPE: return external_internalized_string_map();
-    case EXTERNAL_ASCII_STRING_TYPE:
-      return external_ascii_internalized_string_map();
-    case EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return external_internalized_string_with_one_byte_data_map();
-    case SHORT_EXTERNAL_STRING_TYPE:
-      return short_external_internalized_string_map();
-    case SHORT_EXTERNAL_ASCII_STRING_TYPE:
-      return short_external_ascii_internalized_string_map();
-    case SHORT_EXTERNAL_STRING_WITH_ONE_BYTE_DATA_TYPE:
-      return short_external_internalized_string_with_one_byte_data_map();
-    default: return NULL;  // No match found.
-  }
-}
-
-
 static inline void WriteOneByteData(Vector<const char> vector,
                                     uint8_t* chars,
                                     int len) {
@@ -4513,15 +4336,6 @@ MaybeObject* Heap::AllocateSymbol() {
 }
 
 
-MaybeObject* Heap::AllocatePrivateSymbol() {
-  MaybeObject* maybe = AllocateSymbol();
-  Symbol* symbol;
-  if (!maybe->To(&symbol)) return maybe;
-  symbol->set_is_private(true);
-  return symbol;
-}
-
-
 MaybeObject* Heap::AllocateStruct(InstanceType type) {
   Map* map;
   switch (type) {
@@ -4531,7 +4345,7 @@ STRUCT_LIST(MAKE_CASE)
 #undef MAKE_CASE
     default:
       UNREACHABLE();
-      return Failure::InternalError();
+      return exception();
   }
   int size = map->instance_size();
   AllocationSpace space = SelectSpace(size, OLD_POINTER_SPACE, TENURED);
@@ -4624,16 +4438,7 @@ bool Heap::IdleNotification(int hint) {
   // An incremental GC progresses as follows:
   // 1. many incremental marking steps,
   // 2. one old space mark-sweep-compact,
-  // 3. many lazy sweep steps.
   // Use mark-sweep-compact events to count incremental GCs in a round.
-
-  if (incremental_marking()->IsStopped()) {
-    if (!mark_compact_collector()->AreSweeperThreadsActivated() &&
-        !IsSweepingComplete() &&
-        !AdvanceSweepers(static_cast<int>(step_size))) {
-      return false;
-    }
-  }
 
   if (mark_sweeps_since_idle_round_started_ >= kMaxMarkSweepsInIdleRound) {
     if (EnoughGarbageSinceLastIdleRound()) {
@@ -4875,49 +4680,12 @@ void Heap::Verify() {
 #endif
 
 
-MaybeObject* Heap::InternalizeUtf8String(Vector<const char> string) {
-  Utf8StringKey key(string, HashSeed());
-  return InternalizeStringWithKey(&key);
-}
-
-
-MaybeObject* Heap::InternalizeString(String* string) {
-  if (string->IsInternalizedString()) return string;
-  Object* result = NULL;
-  Object* new_table;
-  { MaybeObject* maybe_new_table =
-        string_table()->LookupString(string, &result);
-    if (!maybe_new_table->ToObject(&new_table)) return maybe_new_table;
-  }
-  // Can't use set_string_table because StringTable::cast knows that
-  // StringTable is a singleton and checks for identity.
-  roots_[kStringTableRootIndex] = new_table;
-  ASSERT(result != NULL);
-  return result;
-}
-
-
 bool Heap::InternalizeStringIfExists(String* string, String** result) {
   if (string->IsInternalizedString()) {
     *result = string;
     return true;
   }
   return string_table()->LookupStringIfExists(string, result);
-}
-
-
-MaybeObject* Heap::InternalizeStringWithKey(HashTableKey* key) {
-  Object* result = NULL;
-  Object* new_table;
-  { MaybeObject* maybe_new_table =
-        string_table()->LookupKey(key, &result);
-    if (!maybe_new_table->ToObject(&new_table)) return maybe_new_table;
-  }
-  // Can't use set_string_table because StringTable::cast knows that
-  // StringTable is a singleton and checks for identity.
-  roots_[kStringTableRootIndex] = new_table;
-  ASSERT(result != NULL);
-  return result;
 }
 
 
@@ -5178,12 +4946,10 @@ void Heap::IterateStrongRoots(ObjectVisitor* v, VisitMode mode) {
   Relocatable::Iterate(isolate_, v);
   v->Synchronize(VisitorSynchronization::kRelocatable);
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
   isolate_->debug()->Iterate(v);
   if (isolate_->deoptimizer_data() != NULL) {
     isolate_->deoptimizer_data()->Iterate(v);
   }
-#endif
   v->Synchronize(VisitorSynchronization::kDebug);
   isolate_->compilation_cache()->Iterate(v);
   v->Synchronize(VisitorSynchronization::kCompilationCache);
@@ -5395,14 +5161,6 @@ intptr_t Heap::PromotedSpaceSizeOfObjects() {
 }
 
 
-bool Heap::AdvanceSweepers(int step_size) {
-  ASSERT(!mark_compact_collector()->AreSweeperThreadsActivated());
-  bool sweeping_complete = old_data_space()->AdvanceSweeper(step_size);
-  sweeping_complete &= old_pointer_space()->AdvanceSweeper(step_size);
-  return sweeping_complete;
-}
-
-
 int64_t Heap::PromotedExternalMemorySize() {
   if (amount_of_external_allocated_memory_
       <= amount_of_external_allocated_memory_at_last_global_gc_) return 0;
@@ -5551,10 +5309,10 @@ bool Heap::SetUp() {
 bool Heap::CreateHeapObjects() {
   // Create initial maps.
   if (!CreateInitialMaps()) return false;
-  if (!CreateApiObjects()) return false;
+  CreateApiObjects();
 
   // Create initial objects
-  if (!CreateInitialObjects()) return false;
+  CreateInitialObjects();
   CHECK_EQ(0, gc_count_);
 
   native_contexts_list_ = undefined_value();
@@ -5733,24 +5491,25 @@ void Heap::RemoveGCEpilogueCallback(v8::Isolate::GCEpilogueCallback callback) {
 }
 
 
-MaybeObject* Heap::AddWeakObjectToCodeDependency(Object* obj,
-                                                 DependentCode* dep) {
-  ASSERT(!InNewSpace(obj));
-  ASSERT(!InNewSpace(dep));
-  MaybeObject* maybe_obj =
-      WeakHashTable::cast(weak_object_to_code_table_)->Put(obj, dep);
-  WeakHashTable* table;
-  if (!maybe_obj->To(&table)) return maybe_obj;
-  if (ShouldZapGarbage() && weak_object_to_code_table_ != table) {
+// TODO(ishell): Find a better place for this.
+void Heap::AddWeakObjectToCodeDependency(Handle<Object> obj,
+                                         Handle<DependentCode> dep) {
+  ASSERT(!InNewSpace(*obj));
+  ASSERT(!InNewSpace(*dep));
+  HandleScope scope(isolate());
+  Handle<WeakHashTable> table(WeakHashTable::cast(weak_object_to_code_table_),
+                              isolate());
+  table = WeakHashTable::Put(table, obj, dep);
+
+  if (ShouldZapGarbage() && weak_object_to_code_table_ != *table) {
     WeakHashTable::cast(weak_object_to_code_table_)->Zap(the_hole_value());
   }
-  set_weak_object_to_code_table(table);
-  ASSERT_EQ(dep, WeakHashTable::cast(weak_object_to_code_table_)->Lookup(obj));
-  return weak_object_to_code_table_;
+  set_weak_object_to_code_table(*table);
+  ASSERT_EQ(*dep, table->Lookup(obj));
 }
 
 
-DependentCode* Heap::LookupWeakObjectToCodeDependency(Object* obj) {
+DependentCode* Heap::LookupWeakObjectToCodeDependency(Handle<Object> obj) {
   Object* dep = WeakHashTable::cast(weak_object_to_code_table_)->Lookup(obj);
   if (dep->IsDependentCode()) return DependentCode::cast(dep);
   return DependentCode::cast(empty_fixed_array());
@@ -5759,7 +5518,8 @@ DependentCode* Heap::LookupWeakObjectToCodeDependency(Object* obj) {
 
 void Heap::EnsureWeakObjectToCodeTable() {
   if (!weak_object_to_code_table()->IsHashTable()) {
-    set_weak_object_to_code_table(*isolate()->factory()->NewWeakHashTable(16));
+    set_weak_object_to_code_table(*WeakHashTable::New(
+        isolate(), 16, USE_DEFAULT_MINIMUM_CAPACITY, TENURED));
   }
 }
 

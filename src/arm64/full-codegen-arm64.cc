@@ -1,29 +1,6 @@
 // Copyright 2013 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "v8.h"
 
@@ -241,7 +218,7 @@ void FullCodeGenerator::Generate() {
       __ Push(x1, x10);
       __ CallRuntime(Runtime::kHiddenNewGlobalContext, 2);
     } else if (heap_slots <= FastNewContextStub::kMaximumSlots) {
-      FastNewContextStub stub(heap_slots);
+      FastNewContextStub stub(isolate(), heap_slots);
       __ CallStub(&stub);
     } else {
       __ Push(x1);
@@ -301,7 +278,7 @@ void FullCodeGenerator::Generate() {
     } else {
       type = ArgumentsAccessStub::NEW_SLOPPY_FAST;
     }
-    ArgumentsAccessStub stub(type);
+    ArgumentsAccessStub stub(isolate(), type);
     __ CallStub(&stub);
 
     SetVar(arguments, x0, x1, x2);
@@ -391,7 +368,12 @@ void FullCodeGenerator::EmitBackEdgeBookkeeping(IterationStatement* stmt,
   Label ok;
 
   ASSERT(back_edge_target->is_bound());
-  int distance = masm_->SizeOfCodeGeneratedSince(back_edge_target);
+  // We want to do a round rather than a floor of distance/kCodeSizeMultiplier
+  // to reduce the absolute error due to the integer division. To do that,
+  // we add kCodeSizeMultiplier/2 to the distance (equivalent to adding 0.5 to
+  // the result).
+  int distance =
+    masm_->SizeOfCodeGeneratedSince(back_edge_target) + kCodeSizeMultiplier / 2;
   int weight = Min(kMaxBackEdgeWeight,
                    Max(1, distance / kCodeSizeMultiplier));
   EmitProfilingCounterDecrement(weight);
@@ -434,7 +416,7 @@ void FullCodeGenerator::EmitReturnSequence() {
     if (info_->ShouldSelfOptimize()) {
       weight = FLAG_interrupt_budget / FLAG_self_opt_count;
     } else {
-      int distance = masm_->pc_offset();
+      int distance = masm_->pc_offset() + kCodeSizeMultiplier / 2;
       weight = Min(kMaxBackEdgeWeight,
                    Max(1, distance / kCodeSizeMultiplier));
     }
@@ -1363,7 +1345,9 @@ void FullCodeGenerator::EmitNewClosure(Handle<SharedFunctionInfo> info,
       !pretenure &&
       scope()->is_function_scope() &&
       info->num_literals() == 0) {
-    FastNewClosureStub stub(info->strict_mode(), info->is_generator());
+    FastNewClosureStub stub(isolate(),
+                            info->strict_mode(),
+                            info->is_generator());
     __ Mov(x2, Operand(info));
     __ CallStub(&stub);
   } else {
@@ -1682,7 +1666,7 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
     __ Push(x3, x2, x1, x0);
     __ CallRuntime(Runtime::kHiddenCreateObjectLiteral, 4);
   } else {
-    FastCloneShallowObjectStub stub(properties_count);
+    FastCloneShallowObjectStub stub(isolate(), properties_count);
     __ CallStub(&stub);
   }
 
@@ -1820,6 +1804,7 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
   if (has_fast_elements && constant_elements_values->map() ==
       isolate()->heap()->fixed_cow_array_map()) {
     FastCloneShallowArrayStub stub(
+        isolate(),
         FastCloneShallowArrayStub::COPY_ON_WRITE_ELEMENTS,
         allocation_site_mode,
         length);
@@ -1841,7 +1826,10 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
       mode = FastCloneShallowArrayStub::CLONE_ELEMENTS;
     }
 
-    FastCloneShallowArrayStub stub(mode, allocation_site_mode, length);
+    FastCloneShallowArrayStub stub(isolate(),
+                                   mode,
+                                   allocation_site_mode,
+                                   length);
     __ CallStub(&stub);
   }
 
@@ -1873,7 +1861,7 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
                           EMIT_REMEMBERED_SET, INLINE_SMI_CHECK);
     } else {
       __ Mov(x3, Smi::FromInt(i));
-      StoreArrayLiteralElementStub stub;
+      StoreArrayLiteralElementStub stub(isolate());
       __ CallStub(&stub);
     }
 
@@ -2034,10 +2022,10 @@ void FullCodeGenerator::EmitInlineSmiBinaryOp(BinaryOperation* expr,
   patch_site.EmitJumpIfSmi(x10, &both_smis);
 
   __ Bind(&stub_call);
-  BinaryOpICStub stub(op, mode);
+  BinaryOpICStub stub(isolate(), op, mode);
   {
     Assembler::BlockPoolsScope scope(masm_);
-    CallIC(stub.GetCode(isolate()), expr->BinaryOperationFeedbackId());
+    CallIC(stub.GetCode(), expr->BinaryOperationFeedbackId());
     patch_site.EmitPatchInfo();
   }
   __ B(&done);
@@ -2119,11 +2107,11 @@ void FullCodeGenerator::EmitBinaryOp(BinaryOperation* expr,
                                      Token::Value op,
                                      OverwriteMode mode) {
   __ Pop(x1);
-  BinaryOpICStub stub(op, mode);
+  BinaryOpICStub stub(isolate(), op, mode);
   JumpPatchSite patch_site(masm_);    // Unbound, signals no inlined smi code.
   {
     Assembler::BlockPoolsScope scope(masm_);
-    CallIC(stub.GetCode(isolate()), expr->BinaryOperationFeedbackId());
+    CallIC(stub.GetCode(), expr->BinaryOperationFeedbackId());
     patch_site.EmitPatchInfo();
   }
   context()->Plug(x0);
@@ -2376,7 +2364,7 @@ void FullCodeGenerator::EmitCallWithIC(Call* expr) {
 
   // Record source position for debugger.
   SetSourcePosition(expr->position());
-  CallFunctionStub stub(arg_count, flags);
+  CallFunctionStub stub(isolate(), arg_count, flags);
   __ Peek(x1, (arg_count + 1) * kPointerSize);
   __ CallStub(&stub);
 
@@ -2417,7 +2405,7 @@ void FullCodeGenerator::EmitKeyedCallWithIC(Call* expr,
 
   // Record source position for debugger.
   SetSourcePosition(expr->position());
-  CallFunctionStub stub(arg_count, CALL_AS_METHOD);
+  CallFunctionStub stub(isolate(), arg_count, CALL_AS_METHOD);
   __ Peek(x1, (arg_count + 1) * kPointerSize);
   __ CallStub(&stub);
 
@@ -2448,7 +2436,7 @@ void FullCodeGenerator::EmitCallWithStub(Call* expr) {
   __ Mov(x3, Smi::FromInt(expr->CallFeedbackSlot()));
 
   // Record call targets in unoptimized code.
-  CallFunctionStub stub(arg_count, RECORD_CALL_TARGET);
+  CallFunctionStub stub(isolate(), arg_count, RECORD_CALL_TARGET);
   __ Peek(x1, (arg_count + 1) * kXRegSize);
   __ CallStub(&stub);
   RecordJSReturnSite(expr);
@@ -2533,7 +2521,7 @@ void FullCodeGenerator::VisitCall(Call* expr) {
     SetSourcePosition(expr->position());
 
     // Call the evaluated function.
-    CallFunctionStub stub(arg_count, NO_CALL_FUNCTION_FLAGS);
+    CallFunctionStub stub(isolate(), arg_count, NO_CALL_FUNCTION_FLAGS);
     __ Peek(x1, (arg_count + 1) * kXRegSize);
     __ CallStub(&stub);
     RecordJSReturnSite(expr);
@@ -2653,8 +2641,8 @@ void FullCodeGenerator::VisitCallNew(CallNew* expr) {
   __ LoadObject(x2, FeedbackVector());
   __ Mov(x3, Smi::FromInt(expr->CallNewFeedbackSlot()));
 
-  CallConstructStub stub(RECORD_CALL_TARGET);
-  __ Call(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL);
+  CallConstructStub stub(isolate(), RECORD_CALL_TARGET);
+  __ Call(stub.GetCode(), RelocInfo::CONSTRUCT_CALL);
   PrepareForBailoutForId(expr->ReturnId(), TOS_REG);
   context()->Plug(x0);
 }
@@ -3037,7 +3025,7 @@ void FullCodeGenerator::EmitArguments(CallRuntime* expr) {
   VisitForAccumulatorValue(args->at(0));
   __ Mov(x1, x0);
   __ Mov(x0, Smi::FromInt(info_->scope()->num_parameters()));
-  ArgumentsAccessStub stub(ArgumentsAccessStub::READ_ELEMENT);
+  ArgumentsAccessStub stub(isolate(), ArgumentsAccessStub::READ_ELEMENT);
   __ CallStub(&stub);
   context()->Plug(x0);
 }
@@ -3152,7 +3140,7 @@ void FullCodeGenerator::EmitLog(CallRuntime* expr) {
 
 void FullCodeGenerator::EmitSubString(CallRuntime* expr) {
   // Load the arguments on the stack and call the stub.
-  SubStringStub stub;
+  SubStringStub stub(isolate());
   ZoneList<Expression*>* args = expr->arguments();
   ASSERT(args->length() == 3);
   VisitForStackValue(args->at(0));
@@ -3165,7 +3153,7 @@ void FullCodeGenerator::EmitSubString(CallRuntime* expr) {
 
 void FullCodeGenerator::EmitRegExpExec(CallRuntime* expr) {
   // Load the arguments on the stack and call the stub.
-  RegExpExecStub stub;
+  RegExpExecStub stub(isolate());
   ZoneList<Expression*>* args = expr->arguments();
   ASSERT(args->length() == 4);
   VisitForStackValue(args->at(0));
@@ -3307,7 +3295,7 @@ void FullCodeGenerator::EmitMathPow(CallRuntime* expr) {
   ASSERT(args->length() == 2);
   VisitForStackValue(args->at(0));
   VisitForStackValue(args->at(1));
-  MathPowStub stub(MathPowStub::ON_STACK);
+  MathPowStub stub(isolate(), MathPowStub::ON_STACK);
   __ CallStub(&stub);
   context()->Plug(x0);
 }
@@ -3349,7 +3337,7 @@ void FullCodeGenerator::EmitNumberToString(CallRuntime* expr) {
   // Load the argument into x0 and call the stub.
   VisitForAccumulatorValue(args->at(0));
 
-  NumberToStringStub stub;
+  NumberToStringStub stub(isolate());
   __ CallStub(&stub);
   context()->Plug(x0);
 }
@@ -3477,7 +3465,7 @@ void FullCodeGenerator::EmitStringAdd(CallRuntime* expr) {
   VisitForAccumulatorValue(args->at(1));
 
   __ Pop(x1);
-  StringAddStub stub(STRING_ADD_CHECK_BOTH, NOT_TENURED);
+  StringAddStub stub(isolate(), STRING_ADD_CHECK_BOTH, NOT_TENURED);
   __ CallStub(&stub);
 
   context()->Plug(x0);
@@ -3490,7 +3478,7 @@ void FullCodeGenerator::EmitStringCompare(CallRuntime* expr) {
   VisitForStackValue(args->at(0));
   VisitForStackValue(args->at(1));
 
-  StringCompareStub stub;
+  StringCompareStub stub(isolate());
   __ CallStub(&stub);
   context()->Plug(x0);
 }
@@ -3529,7 +3517,7 @@ void FullCodeGenerator::EmitCallFunction(CallRuntime* expr) {
 
 
 void FullCodeGenerator::EmitRegExpConstructResult(CallRuntime* expr) {
-  RegExpConstructResultStub stub;
+  RegExpConstructResultStub stub(isolate());
   ZoneList<Expression*>* args = expr->arguments();
   ASSERT(args->length() == 3);
   VisitForStackValue(args->at(0));
@@ -3873,7 +3861,7 @@ void FullCodeGenerator::VisitCallRuntime(CallRuntime* expr) {
 
     // Record source position of the IC call.
     SetSourcePosition(expr->position());
-    CallFunctionStub stub(arg_count, NO_CALL_FUNCTION_FLAGS);
+    CallFunctionStub stub(isolate(), arg_count, NO_CALL_FUNCTION_FLAGS);
     __ Peek(x1, (arg_count + 1) * kPointerSize);
     __ CallStub(&stub);
 
@@ -4091,7 +4079,7 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
     __ B(&stub_call);
     __ Bind(&slow);
   }
-  ToNumberStub convert_stub;
+  ToNumberStub convert_stub(isolate());
   __ CallStub(&convert_stub);
 
   // Save result for postfix expressions.
@@ -4123,8 +4111,8 @@ void FullCodeGenerator::VisitCountOperation(CountOperation* expr) {
 
   {
     Assembler::BlockPoolsScope scope(masm_);
-    BinaryOpICStub stub(Token::ADD, NO_OVERWRITE);
-    CallIC(stub.GetCode(isolate()), expr->CountBinOpFeedbackId());
+    BinaryOpICStub stub(isolate(), Token::ADD, NO_OVERWRITE);
+    CallIC(stub.GetCode(), expr->CountBinOpFeedbackId());
     patch_site.EmitPatchInfo();
   }
   __ Bind(&done);
@@ -4345,7 +4333,7 @@ void FullCodeGenerator::VisitCompareOperation(CompareOperation* expr) {
 
     case Token::INSTANCEOF: {
       VisitForStackValue(expr->right());
-      InstanceofStub stub(InstanceofStub::kNoFlags);
+      InstanceofStub stub(isolate(), InstanceofStub::kNoFlags);
       __ CallStub(&stub);
       PrepareForBailoutBeforeSplit(expr, true, if_true, if_false);
       // The stub returns 0 for true.
@@ -4553,7 +4541,7 @@ void FullCodeGenerator::VisitYield(Yield* expr) {
       CallIC(ic, TypeFeedbackId::None());
       __ Mov(x1, x0);
       __ Poke(x1, 2 * kPointerSize);
-      CallFunctionStub stub(1, CALL_AS_METHOD);
+      CallFunctionStub stub(isolate(), 1, CALL_AS_METHOD);
       __ CallStub(&stub);
 
       __ Ldr(cp, MemOperand(fp, StandardFrameConstants::kContextOffset));

@@ -1,29 +1,6 @@
 // Copyright 2013 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "v8.h"
 
@@ -219,7 +196,7 @@ bool LCodeGen::GeneratePrologue() {
     Comment(";;; Allocate local context");
     // Argument to NewContext is the function, which is still in rdi.
     if (heap_slots <= FastNewContextStub::kMaximumSlots) {
-      FastNewContextStub stub(heap_slots);
+      FastNewContextStub stub(isolate(), heap_slots);
       __ CallStub(&stub);
     } else {
       __ Push(rdi);
@@ -813,7 +790,7 @@ void LCodeGen::PopulateDeoptimizationData(Handle<Code> code) {
   int length = deoptimizations_.length();
   if (length == 0) return;
   Handle<DeoptimizationInputData> data =
-      factory()->NewDeoptimizationInputData(length, TENURED);
+      DeoptimizationInputData::New(isolate(), length, TENURED);
 
   Handle<ByteArray> translations =
       translations_.CreateByteArray(isolate()->factory());
@@ -989,18 +966,18 @@ void LCodeGen::DoCallStub(LCallStub* instr) {
   ASSERT(ToRegister(instr->result()).is(rax));
   switch (instr->hydrogen()->major_key()) {
     case CodeStub::RegExpExec: {
-      RegExpExecStub stub;
-      CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+      RegExpExecStub stub(isolate());
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
       break;
     }
     case CodeStub::SubString: {
-      SubStringStub stub;
-      CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+      SubStringStub stub(isolate());
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
       break;
     }
     case CodeStub::StringCompare: {
-      StringCompareStub stub;
-      CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+      StringCompareStub stub(isolate());
+      CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
       break;
     }
     default:
@@ -2029,8 +2006,8 @@ void LCodeGen::DoArithmeticT(LArithmeticT* instr) {
   ASSERT(ToRegister(instr->right()).is(rax));
   ASSERT(ToRegister(instr->result()).is(rax));
 
-  BinaryOpICStub stub(instr->op(), NO_OVERWRITE);
-  CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+  BinaryOpICStub stub(isolate(), instr->op(), NO_OVERWRITE);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
 }
 
 
@@ -2623,10 +2600,10 @@ void LCodeGen::DoCmpMapAndBranch(LCmpMapAndBranch* instr) {
 
 void LCodeGen::DoInstanceOf(LInstanceOf* instr) {
   ASSERT(ToRegister(instr->context()).is(rsi));
-  InstanceofStub stub(InstanceofStub::kNoFlags);
+  InstanceofStub stub(isolate(), InstanceofStub::kNoFlags);
   __ Push(ToRegister(instr->left()));
   __ Push(ToRegister(instr->right()));
-  CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
   Label true_value, done;
   __ testp(rax, rax);
   __ j(zero, &true_value, Label::kNear);
@@ -2709,7 +2686,7 @@ void LCodeGen::DoDeferredInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
     PushSafepointRegistersScope scope(this);
     InstanceofStub::Flags flags = static_cast<InstanceofStub::Flags>(
         InstanceofStub::kNoFlags | InstanceofStub::kCallSiteInlineCheck);
-    InstanceofStub stub(flags);
+    InstanceofStub stub(isolate(), flags);
 
     __ Push(ToRegister(instr->value()));
     __ Push(instr->function());
@@ -2724,7 +2701,7 @@ void LCodeGen::DoDeferredInstanceOfKnownGlobal(LInstanceOfKnownGlobal* instr,
     // safepoint with two arguments because stub is going to
     // remove the third argument from the stack before jumping
     // to instanceof builtin on the slow path.
-    CallCodeGeneric(stub.GetCode(isolate()),
+    CallCodeGeneric(stub.GetCode(),
                     RelocInfo::CODE_TARGET,
                     instr,
                     RECORD_SAFEPOINT_WITH_REGISTERS,
@@ -3802,7 +3779,7 @@ void LCodeGen::DoPower(LPower* instr) {
   ASSERT(ToDoubleRegister(instr->result()).is(xmm3));
 
   if (exponent_type.IsSmi()) {
-    MathPowStub stub(MathPowStub::TAGGED);
+    MathPowStub stub(isolate(), MathPowStub::TAGGED);
     __ CallStub(&stub);
   } else if (exponent_type.IsTagged()) {
     Label no_deopt;
@@ -3810,14 +3787,14 @@ void LCodeGen::DoPower(LPower* instr) {
     __ CmpObjectType(exponent, HEAP_NUMBER_TYPE, rcx);
     DeoptimizeIf(not_equal, instr->environment());
     __ bind(&no_deopt);
-    MathPowStub stub(MathPowStub::TAGGED);
+    MathPowStub stub(isolate(), MathPowStub::TAGGED);
     __ CallStub(&stub);
   } else if (exponent_type.IsInteger32()) {
-    MathPowStub stub(MathPowStub::INTEGER);
+    MathPowStub stub(isolate(), MathPowStub::INTEGER);
     __ CallStub(&stub);
   } else {
     ASSERT(exponent_type.IsDouble());
-    MathPowStub stub(MathPowStub::DOUBLE);
+    MathPowStub stub(isolate(), MathPowStub::DOUBLE);
     __ CallStub(&stub);
   }
 }
@@ -3908,8 +3885,8 @@ void LCodeGen::DoCallFunction(LCallFunction* instr) {
   ASSERT(ToRegister(instr->result()).is(rax));
 
   int arity = instr->arity();
-  CallFunctionStub stub(arity, instr->hydrogen()->function_flags());
-  CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+  CallFunctionStub stub(isolate(), arity, instr->hydrogen()->function_flags());
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
 }
 
 
@@ -3921,8 +3898,8 @@ void LCodeGen::DoCallNew(LCallNew* instr) {
   __ Set(rax, instr->arity());
   // No cell in ebx for construct type feedback in optimized code
   __ LoadRoot(rbx, Heap::kUndefinedValueRootIndex);
-  CallConstructStub stub(NO_CALL_FUNCTION_FLAGS);
-  CallCode(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL, instr);
+  CallConstructStub stub(isolate(), NO_CALL_FUNCTION_FLAGS);
+  CallCode(stub.GetCode(), RelocInfo::CONSTRUCT_CALL, instr);
 }
 
 
@@ -3940,8 +3917,8 @@ void LCodeGen::DoCallNewArray(LCallNewArray* instr) {
           : DONT_OVERRIDE;
 
   if (instr->arity() == 0) {
-    ArrayNoArgumentConstructorStub stub(kind, override_mode);
-    CallCode(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL, instr);
+    ArrayNoArgumentConstructorStub stub(isolate(), kind, override_mode);
+    CallCode(stub.GetCode(), RelocInfo::CONSTRUCT_CALL, instr);
   } else if (instr->arity() == 1) {
     Label done;
     if (IsFastPackedElementsKind(kind)) {
@@ -3953,18 +3930,20 @@ void LCodeGen::DoCallNewArray(LCallNewArray* instr) {
       __ j(zero, &packed_case, Label::kNear);
 
       ElementsKind holey_kind = GetHoleyElementsKind(kind);
-      ArraySingleArgumentConstructorStub stub(holey_kind, override_mode);
-      CallCode(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL, instr);
+      ArraySingleArgumentConstructorStub stub(isolate(),
+                                              holey_kind,
+                                              override_mode);
+      CallCode(stub.GetCode(), RelocInfo::CONSTRUCT_CALL, instr);
       __ jmp(&done, Label::kNear);
       __ bind(&packed_case);
     }
 
-    ArraySingleArgumentConstructorStub stub(kind, override_mode);
-    CallCode(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL, instr);
+    ArraySingleArgumentConstructorStub stub(isolate(), kind, override_mode);
+    CallCode(stub.GetCode(), RelocInfo::CONSTRUCT_CALL, instr);
     __ bind(&done);
   } else {
-    ArrayNArgumentsConstructorStub stub(kind, override_mode);
-    CallCode(stub.GetCode(isolate()), RelocInfo::CONSTRUCT_CALL, instr);
+    ArrayNArgumentsConstructorStub stub(isolate(), kind, override_mode);
+    CallCode(stub.GetCode(), RelocInfo::CONSTRUCT_CALL, instr);
   }
 }
 
@@ -4411,7 +4390,7 @@ void LCodeGen::DoTransitionElementsKind(LTransitionElementsKind* instr) {
     PushSafepointRegistersScope scope(this);
     __ Move(rbx, to_map);
     bool is_js_array = from_map->instance_type() == JS_ARRAY_TYPE;
-    TransitionElementsKindStub stub(from_kind, to_kind, is_js_array);
+    TransitionElementsKindStub stub(isolate(), from_kind, to_kind, is_js_array);
     __ CallStub(&stub);
     RecordSafepointWithLazyDeopt(instr, RECORD_SAFEPOINT_WITH_REGISTERS, 0);
   }
@@ -4433,9 +4412,10 @@ void LCodeGen::DoStringAdd(LStringAdd* instr) {
   ASSERT(ToRegister(instr->context()).is(rsi));
   ASSERT(ToRegister(instr->left()).is(rdx));
   ASSERT(ToRegister(instr->right()).is(rax));
-  StringAddStub stub(instr->hydrogen()->flags(),
+  StringAddStub stub(isolate(),
+                     instr->hydrogen()->flags(),
                      instr->hydrogen()->pretenure_flag());
-  CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
 }
 
 
@@ -5314,10 +5294,11 @@ void LCodeGen::DoFunctionLiteral(LFunctionLiteral* instr) {
   // space for nested functions that don't need literals cloning.
   bool pretenure = instr->hydrogen()->pretenure();
   if (!pretenure && instr->hydrogen()->has_no_literals()) {
-    FastNewClosureStub stub(instr->hydrogen()->strict_mode(),
+    FastNewClosureStub stub(isolate(),
+                            instr->hydrogen()->strict_mode(),
                             instr->hydrogen()->is_generator());
     __ Move(rbx, instr->hydrogen()->shared_info());
-    CallCode(stub.GetCode(isolate()), RelocInfo::CODE_TARGET, instr);
+    CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
   } else {
     __ Push(rsi);
     __ Push(instr->hydrogen()->shared_info());

@@ -1,29 +1,6 @@
 // Copyright 2012 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
 #include "v8.h"
 
@@ -259,7 +236,7 @@ void MacroAssembler::RememberedSetHelper(Register object,  // For debug tests.
     j(equal, &done, Label::kNear);
   }
   StoreBufferOverflowStub store_buffer_overflow =
-      StoreBufferOverflowStub(save_fp);
+      StoreBufferOverflowStub(isolate(), save_fp);
   CallStub(&store_buffer_overflow);
   if (and_then == kReturnAtEnd) {
     ret(0);
@@ -437,7 +414,8 @@ void MacroAssembler::RecordWrite(Register object,
                 &done,
                 Label::kNear);
 
-  RecordWriteStub stub(object, value, address, remembered_set_action, fp_mode);
+  RecordWriteStub stub(isolate(), object, value, address, remembered_set_action,
+                       fp_mode);
   CallStub(&stub);
 
   bind(&done);
@@ -544,12 +522,12 @@ void MacroAssembler::Abort(BailoutReason reason) {
 
 void MacroAssembler::CallStub(CodeStub* stub, TypeFeedbackId ast_id) {
   ASSERT(AllowThisStubCall(stub));  // Calls are not allowed in some stubs
-  Call(stub->GetCode(isolate()), RelocInfo::CODE_TARGET, ast_id);
+  Call(stub->GetCode(), RelocInfo::CODE_TARGET, ast_id);
 }
 
 
 void MacroAssembler::TailCallStub(CodeStub* stub) {
-  Jump(stub->GetCode(isolate()), RelocInfo::CODE_TARGET);
+  Jump(stub->GetCode(), RelocInfo::CODE_TARGET);
 }
 
 
@@ -608,7 +586,7 @@ void MacroAssembler::CallRuntime(const Runtime::Function* f,
   // smarter.
   Set(rax, num_arguments);
   LoadAddress(rbx, ExternalReference(f, isolate()));
-  CEntryStub ces(f->result_size, save_doubles);
+  CEntryStub ces(isolate(), f->result_size, save_doubles);
   CallStub(&ces);
 }
 
@@ -618,7 +596,7 @@ void MacroAssembler::CallExternalReference(const ExternalReference& ext,
   Set(rax, num_arguments);
   LoadAddress(rbx, ext);
 
-  CEntryStub stub(1);
+  CEntryStub stub(isolate(), 1);
   CallStub(&stub);
 }
 
@@ -666,7 +644,7 @@ void MacroAssembler::PrepareCallApiFunction(int arg_stack_space) {
 
 void MacroAssembler::CallApiFunctionAndReturn(
     Register function_address,
-    Address thunk_address,
+    ExternalReference thunk_ref,
     Register thunk_last_arg,
     int stack_space,
     Operand return_value_operand,
@@ -713,16 +691,13 @@ void MacroAssembler::CallApiFunctionAndReturn(
 
   Label profiler_disabled;
   Label end_profiler_check;
-  bool* is_profiling_flag =
-      isolate()->cpu_profiler()->is_profiling_address();
-  STATIC_ASSERT(sizeof(*is_profiling_flag) == 1);
-  Move(rax, is_profiling_flag, RelocInfo::EXTERNAL_REFERENCE);
+  Move(rax, ExternalReference::is_profiling_address(isolate()));
   cmpb(Operand(rax, 0), Immediate(0));
   j(zero, &profiler_disabled);
 
   // Third parameter is the address of the actual getter function.
   Move(thunk_last_arg, function_address);
-  Move(rax, thunk_address, RelocInfo::EXTERNAL_REFERENCE);
+  Move(rax, thunk_ref);
   jmp(&end_profiler_check);
 
   bind(&profiler_disabled);
@@ -827,8 +802,8 @@ void MacroAssembler::JumpToExternalReference(const ExternalReference& ext,
                                              int result_size) {
   // Set the entry point and jump to the C entry runtime stub.
   LoadAddress(rbx, ext);
-  CEntryStub ces(result_size);
-  jmp(ces.GetCode(isolate()), RelocInfo::CODE_TARGET);
+  CEntryStub ces(isolate(), result_size);
+  jmp(ces.GetCode(), RelocInfo::CODE_TARGET);
 }
 
 
@@ -3302,8 +3277,8 @@ void MacroAssembler::LoadUint32(XMMRegister dst,
 void MacroAssembler::SlowTruncateToI(Register result_reg,
                                      Register input_reg,
                                      int offset) {
-  DoubleToIStub stub(input_reg, result_reg, offset, true);
-  call(stub.GetCode(isolate()), RelocInfo::CODE_TARGET);
+  DoubleToIStub stub(isolate(), input_reg, result_reg, offset, true);
+  call(stub.GetCode(), RelocInfo::CODE_TARGET);
 }
 
 
@@ -3691,15 +3666,13 @@ void MacroAssembler::DecrementCounter(StatsCounter* counter, int value) {
 }
 
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
 void MacroAssembler::DebugBreak() {
   Set(rax, 0);  // No arguments.
   LoadAddress(rbx, ExternalReference(Runtime::kDebugBreak, isolate()));
-  CEntryStub ces(1);
+  CEntryStub ces(isolate(), 1);
   ASSERT(AllowThisStubCall(&ces));
-  Call(ces.GetCode(isolate()), RelocInfo::DEBUG_BREAK);
+  Call(ces.GetCode(), RelocInfo::DEBUG_BREAK);
 }
-#endif  // ENABLE_DEBUGGER_SUPPORT
 
 
 void MacroAssembler::InvokeCode(Register code,
