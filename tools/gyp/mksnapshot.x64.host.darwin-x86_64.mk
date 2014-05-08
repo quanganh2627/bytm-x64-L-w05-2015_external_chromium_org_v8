@@ -75,8 +75,6 @@ MY_DEFS_Debug := \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
-	'-DDATA_REDUCTION_FALLBACK_HOST="http://compress.googlezip.net:80/"' \
-	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
 	'-DV8_TARGET_ARCH_X64' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
@@ -146,8 +144,6 @@ MY_DEFS_Release := \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
-	'-DDATA_REDUCTION_FALLBACK_HOST="http://compress.googlezip.net:80/"' \
-	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
 	'-DV8_TARGET_ARCH_X64' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
