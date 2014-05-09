@@ -16,6 +16,7 @@ GYP_TARGET_DEPENDENCIES :=
 
 ### Rules for action "js2c":
 $(gyp_shared_intermediate_dir)/libraries.cc: gyp_local_path := $(LOCAL_PATH)
+$(gyp_shared_intermediate_dir)/libraries.cc: gyp_var_prefix := $(GYP_VAR_PREFIX)
 $(gyp_shared_intermediate_dir)/libraries.cc: gyp_intermediate_dir := $(abspath $(gyp_intermediate_dir))
 $(gyp_shared_intermediate_dir)/libraries.cc: gyp_shared_intermediate_dir := $(abspath $(gyp_shared_intermediate_dir))
 $(gyp_shared_intermediate_dir)/libraries.cc: export PATH := $(subst $(ANDROID_BUILD_PATHS),,$(PATH))
@@ -26,6 +27,7 @@ $(gyp_shared_intermediate_dir)/libraries.cc: $(LOCAL_PATH)/v8/tools/js2c.py $(LO
 
 ### Rules for action "js2c_experimental":
 $(gyp_shared_intermediate_dir)/experimental-libraries.cc: gyp_local_path := $(LOCAL_PATH)
+$(gyp_shared_intermediate_dir)/experimental-libraries.cc: gyp_var_prefix := $(GYP_VAR_PREFIX)
 $(gyp_shared_intermediate_dir)/experimental-libraries.cc: gyp_intermediate_dir := $(abspath $(gyp_intermediate_dir))
 $(gyp_shared_intermediate_dir)/experimental-libraries.cc: gyp_shared_intermediate_dir := $(abspath $(gyp_shared_intermediate_dir))
 $(gyp_shared_intermediate_dir)/experimental-libraries.cc: export PATH := $(subst $(ANDROID_BUILD_PATHS),,$(PATH))
