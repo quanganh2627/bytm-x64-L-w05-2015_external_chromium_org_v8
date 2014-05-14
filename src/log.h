@@ -121,6 +121,7 @@ struct TickSample;
   V(KEYED_STORE_POLYMORPHIC_IC_TAG, "KeyedStorePolymorphicIC")          \
   V(KEYED_EXTERNAL_ARRAY_STORE_IC_TAG, "KeyedExternalArrayStoreIC")     \
   V(LAZY_COMPILE_TAG,               "LazyCompile")                      \
+  V(CALL_IC_TAG,                    "CallIC")                           \
   V(LOAD_IC_TAG,                    "LoadIC")                           \
   V(LOAD_POLYMORPHIC_IC_TAG,        "LoadPolymorphicIC")                \
   V(REG_EXP_TAG,                    "RegExp")                           \
@@ -324,9 +325,6 @@ class Logger {
   // Regexp compilation and execution events.
 
   void RegExpCompileEvent(Handle<JSRegExp> regexp, bool in_cache);
-
-  // Log an event reported from generated code
-  void LogRuntime(Vector<const char> format, Handle<JSArray> args);
 
   bool is_logging() {
     return is_logging_;

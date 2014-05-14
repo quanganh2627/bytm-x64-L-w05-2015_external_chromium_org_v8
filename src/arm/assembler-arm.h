@@ -70,15 +70,11 @@ class CpuFeatures : public AllStatic {
     return Check(f, supported_);
   }
 
-  static bool IsFoundByRuntimeProbingOnly(CpuFeature f) {
-    ASSERT(initialized_);
-    return Check(f, found_by_runtime_probing_only_);
-  }
-
-  static bool IsSafeForSnapshot(CpuFeature f) {
+  static bool IsSafeForSnapshot(Isolate* isolate, CpuFeature f) {
     return Check(f, cross_compile_) ||
            (IsSupported(f) &&
-            (!Serializer::enabled() || !IsFoundByRuntimeProbingOnly(f)));
+            !(Serializer::enabled(isolate) &&
+              Check(f, found_by_runtime_probing_only_)));
   }
 
   static unsigned cache_line_size() { return cache_line_size_; }
@@ -592,8 +588,11 @@ class Operand BASE_EMBEDDED {
   // the instruction this operand is used for is a MOV or MVN instruction the
   // actual instruction to use is required for this calculation. For other
   // instructions instr is ignored.
-  bool is_single_instruction(const Assembler* assembler, Instr instr = 0) const;
-  bool must_output_reloc_info(const Assembler* assembler) const;
+  bool is_single_instruction(Isolate* isolate,
+                             const Assembler* assembler,
+                             Instr instr = 0) const;
+  bool must_output_reloc_info(Isolate* isolate,
+                              const Assembler* assembler) const;
 
   inline int32_t immediate() const {
     ASSERT(!rm_.is_valid());

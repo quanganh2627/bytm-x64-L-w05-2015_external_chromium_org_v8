@@ -915,7 +915,8 @@ void LChunkBuilder::VisitInstruction(HInstruction* current) {
     // the it was just a plain use), so it is free to move the split child into
     // the same register that is used for the use-at-start.
     // See https://code.google.com/p/chromium/issues/detail?id=201590
-    if (!(instr->ClobbersRegisters() && instr->ClobbersDoubleRegisters())) {
+    if (!(instr->ClobbersRegisters() &&
+          instr->ClobbersDoubleRegisters(isolate()))) {
       int fixed = 0;
       int used_at_start = 0;
       for (UseIterator it(instr); !it.Done(); it.Advance()) {
@@ -939,13 +940,13 @@ void LChunkBuilder::VisitInstruction(HInstruction* current) {
     if (FLAG_stress_environments && !instr->HasEnvironment()) {
       instr = AssignEnvironment(instr);
     }
-    if (!CpuFeatures::IsSafeForSnapshot(SSE2) && instr->IsGoto() &&
+    if (!CpuFeatures::IsSafeForSnapshot(isolate(), SSE2) && instr->IsGoto() &&
         LGoto::cast(instr)->jumps_to_join()) {
       // TODO(olivf) Since phis of spilled values are joined as registers
       // (not in the stack slot), we need to allow the goto gaps to keep one
       // x87 register alive. To ensure all other values are still spilled, we
       // insert a fpu register barrier right before.
-      LClobberDoubles* clobber = new(zone()) LClobberDoubles();
+      LClobberDoubles* clobber = new(zone()) LClobberDoubles(isolate());
       clobber->set_hydrogen_value(current);
       chunk_->AddInstruction(clobber, current_block_);
     }
@@ -1918,7 +1919,7 @@ LInstruction* LChunkBuilder::DoChange(HChange* instr) {
         LOperand* value = UseRegister(val);
         bool truncating = instr->CanTruncateToInt32();
         LOperand* xmm_temp =
-            (CpuFeatures::IsSafeForSnapshot(SSE2) && !truncating)
+            (CpuFeatures::IsSafeForSnapshot(isolate(), SSE2) && !truncating)
                 ? FixedTemp(xmm1) : NULL;
         LInstruction* result =
             DefineSameAsFirst(new(zone()) LTaggedToI(value, xmm_temp));
@@ -1941,7 +1942,8 @@ LInstruction* LChunkBuilder::DoChange(HChange* instr) {
     } else {
       ASSERT(to.IsInteger32());
       bool truncating = instr->CanTruncateToInt32();
-      bool needs_temp = CpuFeatures::IsSafeForSnapshot(SSE2) && !truncating;
+      bool needs_temp =
+          CpuFeatures::IsSafeForSnapshot(isolate(), SSE2) && !truncating;
       LOperand* value = needs_temp ? UseTempRegister(val) : UseRegister(val);
       LOperand* temp = needs_temp ? TempRegister() : NULL;
       LInstruction* result =
@@ -2025,15 +2027,12 @@ LInstruction* LChunkBuilder::DoCheckValue(HCheckValue* instr) {
 
 
 LInstruction* LChunkBuilder::DoCheckMaps(HCheckMaps* instr) {
-  LOperand* value = NULL;
-  if (!instr->CanOmitMapChecks()) {
-    value = UseRegisterAtStart(instr->value());
-    if (instr->has_migration_target()) info()->MarkAsDeferredCalling();
-  }
-  LInstruction* result = new(zone()) LCheckMaps(value);
-  if (!instr->CanOmitMapChecks()) {
-    result = AssignEnvironment(result);
-    if (instr->has_migration_target()) result = AssignPointerMap(result);
+  if (instr->IsStabilityCheck()) return new(zone()) LCheckMaps;
+  LOperand* value = UseRegisterAtStart(instr->value());
+  LInstruction* result = AssignEnvironment(new(zone()) LCheckMaps(value));
+  if (instr->HasMigrationTarget()) {
+    info()->MarkAsDeferredCalling();
+    result = AssignPointerMap(result);
   }
   return result;
 }
@@ -2259,7 +2258,7 @@ LOperand* LChunkBuilder::GetStoreKeyedValueOperand(HStoreKeyed* instr) {
     return UseFixed(instr->value(), eax);
   }
 
-  if (!CpuFeatures::IsSafeForSnapshot(SSE2) &&
+  if (!CpuFeatures::IsSafeForSnapshot(isolate(), SSE2) &&
       IsDoubleOrFloatElementsKind(elements_kind)) {
     return UseRegisterAtStart(instr->value());
   }

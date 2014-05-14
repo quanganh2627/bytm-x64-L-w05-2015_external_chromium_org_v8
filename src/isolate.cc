@@ -1031,8 +1031,7 @@ void Isolate::DoThrow(Object* exception, MessageLocation* location) {
 
   // Notify debugger of exception.
   if (catchable_by_javascript) {
-    debugger_->OnException(
-        exception_handle, report_exception, factory()->undefined_value());
+    debugger_->OnException(exception_handle, report_exception);
   }
 
   // Generate the message if required.
@@ -1423,7 +1422,6 @@ Isolate::Isolate()
       compilation_cache_(NULL),
       counters_(NULL),
       code_range_(NULL),
-      debugger_initialized_(false),
       logger_(NULL),
       stats_table_(NULL),
       stub_cache_(NULL),
@@ -1484,9 +1482,6 @@ Isolate::Isolate()
   memset(&js_spill_information_, 0, sizeof(js_spill_information_));
 #endif
 
-  debug_ = NULL;
-  debugger_ = NULL;
-
   handle_scope_data_.Initialize();
 
 #define ISOLATE_INIT_EXECUTE(type, name, initial_value)                        \
@@ -1498,6 +1493,10 @@ Isolate::Isolate()
   memset(name##_, 0, sizeof(type) * length);
   ISOLATE_INIT_ARRAY_LIST(ISOLATE_INIT_ARRAY_EXECUTE)
 #undef ISOLATE_INIT_ARRAY_EXECUTE
+
+  InitializeLoggingAndCounters();
+  debug_ = new Debug(this);
+  debugger_ = new Debugger(this);
 }
 
 
@@ -1765,16 +1764,6 @@ void Isolate::InitializeLoggingAndCounters() {
 }
 
 
-void Isolate::InitializeDebugger() {
-  LockGuard<RecursiveMutex> lock_guard(debugger_access());
-  if (NoBarrier_Load(&debugger_initialized_)) return;
-  InitializeLoggingAndCounters();
-  debug_ = new Debug(this);
-  debugger_ = new Debugger(this);
-  Release_Store(&debugger_initialized_, true);
-}
-
-
 bool Isolate::Init(Deserializer* des) {
   ASSERT(state_ != INITIALIZED);
   TRACE_ISOLATE(init);
@@ -1784,7 +1773,7 @@ bool Isolate::Init(Deserializer* des) {
   has_fatal_error_ = false;
 
   use_crankshaft_ = FLAG_crankshaft
-      && !Serializer::enabled()
+      && !Serializer::enabled(this)
       && CpuFeatures::SupportsCrankshaft();
 
   if (function_entry_hook() != NULL) {
@@ -1797,10 +1786,6 @@ bool Isolate::Init(Deserializer* des) {
 
   // The initialization process does not handle memory exhaustion.
   DisallowAllocationFailure disallow_allocation_failure(this);
-
-  InitializeLoggingAndCounters();
-
-  InitializeDebugger();
 
   memory_allocator_ = new MemoryAllocator(this);
   code_range_ = new CodeRange(this);
@@ -1916,8 +1901,6 @@ bool Isolate::Init(Deserializer* des) {
     }
   }
 
-  debug_->SetUp(create_heap_objects);
-
   // If we are deserializing, read the state into the now-empty heap.
   if (!create_heap_objects) {
     des->Deserialize(this);
@@ -1976,7 +1959,7 @@ bool Isolate::Init(Deserializer* des) {
         kDeoptTableSerializeEntryCount - 1);
   }
 
-  if (!Serializer::enabled()) {
+  if (!Serializer::enabled(this)) {
     // Ensure that all stubs which need to be generated ahead of time, but
     // cannot be serialized into the snapshot have been generated.
     HandleScope scope(this);
@@ -2249,6 +2232,19 @@ void Isolate::FireCallCompletedCallback() {
   for (int i = 0; i < call_completed_callbacks_.length(); i++) {
     call_completed_callbacks_.at(i)();
   }
+  handle_scope_implementer()->DecrementCallDepth();
+}
+
+
+void Isolate::RunMicrotasks() {
+  if (!microtask_pending())
+    return;
+
+  ASSERT(handle_scope_implementer()->CallDepthIsZero());
+
+  // Increase call depth to prevent recursive callbacks.
+  handle_scope_implementer()->IncrementCallDepth();
+  Execution::RunMicrotasks(this);
   handle_scope_implementer()->DecrementCallDepth();
 }
 

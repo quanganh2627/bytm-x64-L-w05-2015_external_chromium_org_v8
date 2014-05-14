@@ -678,11 +678,13 @@ HConstant* HGraph::GetConstantMinus1() {
 }
 
 
-#define DEFINE_GET_CONSTANT(Name, name, htype, boolean_value)                  \
+#define DEFINE_GET_CONSTANT(Name, name, type, htype, boolean_value)            \
 HConstant* HGraph::GetConstant##Name() {                                       \
   if (!constant_##name##_.is_set()) {                                          \
     HConstant* constant = new(zone()) HConstant(                               \
         Unique<Object>::CreateImmovable(isolate()->factory()->name##_value()), \
+        Unique<Map>::CreateImmovable(isolate()->factory()->type##_map()),      \
+        false,                                                                 \
         Representation::Tagged(),                                              \
         htype,                                                                 \
         true,                                                                  \
@@ -696,11 +698,11 @@ HConstant* HGraph::GetConstant##Name() {                                       \
 }
 
 
-DEFINE_GET_CONSTANT(Undefined, undefined, HType::Tagged(), false)
-DEFINE_GET_CONSTANT(True, true, HType::Boolean(), true)
-DEFINE_GET_CONSTANT(False, false, HType::Boolean(), false)
-DEFINE_GET_CONSTANT(Hole, the_hole, HType::Tagged(), false)
-DEFINE_GET_CONSTANT(Null, null, HType::Tagged(), false)
+DEFINE_GET_CONSTANT(Undefined, undefined, undefined, HType::Tagged(), false)
+DEFINE_GET_CONSTANT(True, true, boolean, HType::Boolean(), true)
+DEFINE_GET_CONSTANT(False, false, boolean, HType::Boolean(), false)
+DEFINE_GET_CONSTANT(Hole, the_hole, the_hole, HType::Tagged(), false)
+DEFINE_GET_CONSTANT(Null, null, null, HType::Tagged(), false)
 
 
 #undef DEFINE_GET_CONSTANT
@@ -1234,11 +1236,6 @@ HValue* HGraphBuilder::BuildCheckHeapObject(HValue* obj) {
 void HGraphBuilder::FinishExitWithHardDeoptimization(const char* reason) {
   Add<HDeoptimize>(reason, Deoptimizer::EAGER);
   FinishExitCurrentBlock(New<HAbnormalExit>());
-}
-
-
-HValue* HGraphBuilder::BuildCheckMap(HValue* obj, Handle<Map> map) {
-  return Add<HCheckMaps>(obj, map, top_info());
 }
 
 
@@ -2142,7 +2139,7 @@ HInstruction* HGraphBuilder::BuildUncheckedMonomorphicElementAccess(
   if (access_type == STORE && (fast_elements || fast_smi_only_elements) &&
       store_mode != STORE_NO_TRANSITION_HANDLE_COW) {
     HCheckMaps* check_cow_map = Add<HCheckMaps>(
-        elements, isolate()->factory()->fixed_array_map(), top_info());
+        elements, isolate()->factory()->fixed_array_map());
     check_cow_map->ClearDependsOnFlag(kElementsKind);
   }
   HInstruction* length = NULL;
@@ -2216,7 +2213,7 @@ HInstruction* HGraphBuilder::BuildUncheckedMonomorphicElementAccess(
                                             elements_kind, length);
       } else {
         HCheckMaps* check_cow_map = Add<HCheckMaps>(
-            elements, isolate()->factory()->fixed_array_map(), top_info());
+            elements, isolate()->factory()->fixed_array_map());
         check_cow_map->ClearDependsOnFlag(kElementsKind);
       }
     }
@@ -2684,7 +2681,7 @@ void HGraphBuilder::BuildCompareNil(
       // the monomorphic map when the code is used as a template to generate a
       // new IC. For optimized functions, there is no sentinel map, the map
       // emitted below is the actual monomorphic map.
-      BuildCheckMap(value, type->Classes().Current());
+      Add<HCheckMaps>(value, type->Classes().Current());
     } else {
       if_nil.Deopt("Too many undetectable types");
     }
@@ -5136,7 +5133,7 @@ void HOptimizedGraphBuilder::VisitObjectLiteral(ObjectLiteral* expr) {
             } else {
               PropertyAccessInfo info(this, STORE, ToType(map), name);
               if (info.CanAccessMonomorphic()) {
-                HValue* checked_literal = BuildCheckMap(literal, map);
+                HValue* checked_literal = Add<HCheckMaps>(literal, map);
                 ASSERT(!info.lookup()->IsPropertyCallbacks());
                 store = BuildMonomorphicAccess(
                     &info, literal, checked_literal, value,
@@ -5263,7 +5260,7 @@ void HOptimizedGraphBuilder::VisitArrayLiteral(ArrayLiteral* expr) {
 
     // De-opt if elements kind changed from boilerplate_elements_kind.
     Handle<Map> map = Handle<Map>(boilerplate_object->map(), isolate());
-    literal = Add<HCheckMaps>(literal, map, top_info());
+    literal = Add<HCheckMaps>(literal, map);
   }
 
   // The array is expected in the bailout environment during computation
@@ -5316,7 +5313,7 @@ void HOptimizedGraphBuilder::VisitArrayLiteral(ArrayLiteral* expr) {
 HCheckMaps* HOptimizedGraphBuilder::AddCheckMap(HValue* object,
                                                 Handle<Map> map) {
   BuildCheckHeapObject(object);
-  return Add<HCheckMaps>(object, map, top_info());
+  return Add<HCheckMaps>(object, map);
 }
 
 
@@ -5399,12 +5396,7 @@ HInstruction* HOptimizedGraphBuilder::BuildStoreNamedField(
     if (!info->field_maps()->is_empty()) {
       ASSERT(field_access.representation().IsHeapObject());
       BuildCheckHeapObject(value);
-      if (info->field_maps()->length() == 1) {
-        // TODO(bmeurer): Also apply stable maps optimization to the else case!
-        value = BuildCheckMap(value, info->field_maps()->first());
-      } else {
-        value = Add<HCheckMaps>(value, info->field_maps());
-      }
+      value = Add<HCheckMaps>(value, info->field_maps());
 
       // TODO(bmeurer): This is a dirty hack to avoid repeating the smi check
       // that was already performed by the HCheckHeapObject above in the
@@ -5420,9 +5412,9 @@ HInstruction* HOptimizedGraphBuilder::BuildStoreNamedField(
   }
 
   if (transition_to_field) {
-    HConstant* transition_constant = Add<HConstant>(info->transition());
-    instr->SetTransition(transition_constant, top_info());
-    instr->SetChangesFlag(kMaps);
+    Handle<Map> transition(info->transition());
+    ASSERT(!transition->is_deprecated());
+    instr->SetTransition(Add<HConstant>(transition));
   }
   return instr;
 }
@@ -6358,8 +6350,7 @@ HInstruction* HOptimizedGraphBuilder::BuildMonomorphicElementAccess(
     Handle<Map> map,
     PropertyAccessType access_type,
     KeyedAccessStoreMode store_mode) {
-  HCheckMaps* checked_object = Add<HCheckMaps>(object, map, top_info(),
-                                               dependency);
+  HCheckMaps* checked_object = Add<HCheckMaps>(object, map, dependency);
   if (dependency) {
     checked_object->ClearDependsOnFlag(kElementsKind);
   }
@@ -6838,19 +6829,9 @@ void HOptimizedGraphBuilder::VisitProperty(Property* expr) {
 }
 
 
-HInstruction* HGraphBuilder::BuildConstantMapCheck(Handle<JSObject> constant,
-                                                   CompilationInfo* info) {
-  HConstant* constant_value = New<HConstant>(constant);
-  Handle<Map> map(constant->map(), info->isolate());
-
-  if (constant->map()->CanOmitMapChecks()) {
-    Map::AddDependentCompilationInfo(
-        map, DependentCode::kPrototypeCheckGroup, info);
-    return constant_value;
-  }
-
-  AddInstruction(constant_value);
-  HCheckMaps* check = Add<HCheckMaps>(constant_value, map, info);
+HInstruction* HGraphBuilder::BuildConstantMapCheck(Handle<JSObject> constant) {
+  HCheckMaps* check = Add<HCheckMaps>(
+      Add<HConstant>(constant), handle(constant->map()));
   check->ClearDependsOnFlag(kElementsKind);
   return check;
 }
@@ -6859,16 +6840,13 @@ HInstruction* HGraphBuilder::BuildConstantMapCheck(Handle<JSObject> constant,
 HInstruction* HGraphBuilder::BuildCheckPrototypeMaps(Handle<JSObject> prototype,
                                                      Handle<JSObject> holder) {
   while (holder.is_null() || !prototype.is_identical_to(holder)) {
-    BuildConstantMapCheck(prototype, top_info());
+    BuildConstantMapCheck(prototype);
     Object* next_prototype = prototype->GetPrototype();
     if (next_prototype->IsNull()) return NULL;
     CHECK(next_prototype->IsJSObject());
     prototype = handle(JSObject::cast(next_prototype));
   }
-
-  HInstruction* checked_object = BuildConstantMapCheck(prototype, top_info());
-  if (!checked_object->IsLinked()) AddInstruction(checked_object);
-  return checked_object;
+  return BuildConstantMapCheck(prototype);
 }
 
 
@@ -7327,6 +7305,7 @@ bool HOptimizedGraphBuilder::TryInline(Handle<JSFunction> target,
       target_shared->set_scope_info(*target_scope_info);
     }
     target_shared->EnableDeoptimizationSupport(*target_info.code());
+    target_shared->set_feedback_vector(*target_info.feedback_vector());
     Compiler::RecordFunctionCompilation(Logger::FUNCTION_TAG,
                                         &target_info,
                                         target_shared);
@@ -7899,7 +7878,7 @@ bool HOptimizedGraphBuilder::TryInlineApiCall(Handle<JSFunction> function,
   if (call_type == kCallApiFunction) {
     // Cannot embed a direct reference to the global proxy map
     // as it maybe dropped on deserialization.
-    CHECK(!Serializer::enabled());
+    CHECK(!Serializer::enabled(isolate()));
     ASSERT_EQ(0, receiver_maps->length());
     receiver_maps->Add(handle(
         function->context()->global_object()->global_receiver()->map()),
@@ -8086,7 +8065,7 @@ HValue* HOptimizedGraphBuilder::ImplicitReceiverFor(HValue* function,
   if (shared->strict_mode() == SLOPPY && !shared->native()) {
     // Cannot embed a direct reference to the global proxy
     // as is it dropped on deserialization.
-    CHECK(!Serializer::enabled());
+    CHECK(!Serializer::enabled(isolate()));
     Handle<JSObject> global_receiver(
         target->context()->global_object()->global_receiver());
     return Add<HConstant>(global_receiver);
@@ -10814,12 +10793,6 @@ void HOptimizedGraphBuilder::GenerateObjectEquals(CallRuntime* call) {
   HCompareObjectEqAndBranch* result =
       New<HCompareObjectEqAndBranch>(left, right);
   return ast_context()->ReturnControl(result, call->id());
-}
-
-
-void HOptimizedGraphBuilder::GenerateLog(CallRuntime* call) {
-  // %_Log is ignored in optimized code.
-  return ast_context()->ReturnValue(graph()->GetConstantUndefined());
 }
 
 

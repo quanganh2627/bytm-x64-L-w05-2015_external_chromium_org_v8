@@ -233,7 +233,9 @@ LChunk::LChunk(CompilationInfo* info, HGraph* graph)
       graph_(graph),
       instructions_(32, graph->zone()),
       pointer_maps_(8, graph->zone()),
-      inlined_closures_(1, graph->zone()) {
+      inlined_closures_(1, graph->zone()),
+      deprecation_dependencies_(MapLess(), MapAllocator(graph->zone())),
+      stability_dependencies_(MapLess(), MapAllocator(graph->zone())) {
 }
 
 
@@ -372,6 +374,27 @@ Representation LChunk::LookupLiteralRepresentation(
 }
 
 
+void LChunk::CommitDependencies(Handle<Code> code) const {
+  for (MapSet::const_iterator it = deprecation_dependencies_.begin(),
+       iend = deprecation_dependencies_.end(); it != iend; ++it) {
+    Handle<Map> map = *it;
+    ASSERT(!map->is_deprecated());
+    ASSERT(map->CanBeDeprecated());
+    Map::AddDependentCode(map, DependentCode::kTransitionGroup, code);
+  }
+
+  for (MapSet::const_iterator it = stability_dependencies_.begin(),
+       iend = stability_dependencies_.end(); it != iend; ++it) {
+    Handle<Map> map = *it;
+    ASSERT(map->is_stable());
+    ASSERT(map->CanTransition());
+    Map::AddDependentCode(map, DependentCode::kPrototypeCheckGroup, code);
+  }
+
+  info_->CommitDependencies(code);
+}
+
+
 LChunk* LChunk::NewChunk(HGraph* graph) {
   DisallowHandleAllocation no_handles;
   DisallowHeapAllocation no_gc;
@@ -415,6 +438,7 @@ Handle<Code> LChunk::Codegen() {
     Handle<Code> code =
         CodeGenerator::MakeCodeEpilogue(&assembler, flags, info());
     generator.FinishCode(code);
+    CommitDependencies(code);
     code->set_is_crankshafted(true);
     void* jit_handler_data =
         assembler.positions_recorder()->DetachJITHandlerData();

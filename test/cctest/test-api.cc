@@ -2748,6 +2748,25 @@ THREADED_TEST(IdentityHash) {
 }
 
 
+THREADED_TEST(GlobalProxyIdentityHash) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  Handle<Object> global_proxy = env->Global();
+  int hash1 = global_proxy->GetIdentityHash();
+  // Hash should be retained after being detached.
+  env->DetachGlobal();
+  int hash2 = global_proxy->GetIdentityHash();
+  CHECK_EQ(hash1, hash2);
+  {
+    // Re-attach global proxy to a new context, hash should stay the same.
+    LocalContext env2(NULL, Handle<ObjectTemplate>(), global_proxy);
+    int hash3 = global_proxy->GetIdentityHash();
+    CHECK_EQ(hash1, hash3);
+  }
+}
+
+
 THREADED_TEST(SymbolProperties) {
   i::FLAG_harmony_symbols = true;
 
@@ -19517,7 +19536,7 @@ class InitDefaultIsolateThread : public v8::internal::Thread {
       case SetResourceConstraints: {
         static const int K = 1024;
         v8::ResourceConstraints constraints;
-        constraints.set_max_new_space_size(256 * K);
+        constraints.set_max_new_space_size(2 * K * K);
         constraints.set_max_old_space_size(4 * K * K);
         v8::SetResourceConstraints(CcTest::isolate(), &constraints);
         break;
@@ -20717,22 +20736,22 @@ TEST(EnqueueMicrotask) {
   CHECK_EQ(0, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value());
 
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskOne));
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskOne));
   CompileRun("1+1;");
   CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value());
 
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskOne));
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskTwo));
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskOne));
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskTwo));
   CompileRun("1+1;");
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value());
 
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskTwo));
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskTwo));
   CompileRun("1+1;");
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(2, CompileRun("ext2Calls")->Int32Value());
@@ -20753,41 +20772,54 @@ TEST(SetAutorunMicrotasks) {
   CHECK_EQ(0, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value());
 
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskOne));
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskOne));
   CompileRun("1+1;");
   CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value());
 
-  V8::SetAutorunMicrotasks(env->GetIsolate(), false);
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskOne));
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskTwo));
+  env->GetIsolate()->SetAutorunMicrotasks(false);
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskOne));
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskTwo));
   CompileRun("1+1;");
   CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(0, CompileRun("ext2Calls")->Int32Value());
 
-  V8::RunMicrotasks(env->GetIsolate());
+  env->GetIsolate()->RunMicrotasks();
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value());
 
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskTwo));
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskTwo));
   CompileRun("1+1;");
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(1, CompileRun("ext2Calls")->Int32Value());
 
-  V8::RunMicrotasks(env->GetIsolate());
+  env->GetIsolate()->RunMicrotasks();
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(2, CompileRun("ext2Calls")->Int32Value());
 
-  V8::SetAutorunMicrotasks(env->GetIsolate(), true);
-  v8::V8::EnqueueMicrotask(env->GetIsolate(),
-                           Function::New(env->GetIsolate(), MicrotaskTwo));
+  env->GetIsolate()->SetAutorunMicrotasks(true);
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskTwo));
   CompileRun("1+1;");
   CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
   CHECK_EQ(3, CompileRun("ext2Calls")->Int32Value());
+
+  env->GetIsolate()->EnqueueMicrotask(
+      Function::New(env->GetIsolate(), MicrotaskTwo));
+  {
+    v8::Isolate::SuppressMicrotaskExecutionScope scope(env->GetIsolate());
+    CompileRun("1+1;");
+    CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
+    CHECK_EQ(3, CompileRun("ext2Calls")->Int32Value());
+  }
+
+  CompileRun("1+1;");
+  CHECK_EQ(2, CompileRun("ext1Calls")->Int32Value());
+  CHECK_EQ(4, CompileRun("ext2Calls")->Int32Value());
 }
 
 
@@ -22342,20 +22374,20 @@ TEST(Promises) {
 
   p->Chain(f1);
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(1, global->Get(v8_str("x1"))->Int32Value());
 
   p->Catch(f2);
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
 
   r->Catch(f2);
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(2, global->Get(v8_str("x2"))->Int32Value());
 
   r->Chain(f1);
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(1, global->Get(v8_str("x1"))->Int32Value());
 
   // Chaining pending promises.
@@ -22365,7 +22397,7 @@ TEST(Promises) {
 
   pr->GetPromise()->Chain(f1);
   rr->GetPromise()->Catch(f2);
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
 
@@ -22374,7 +22406,7 @@ TEST(Promises) {
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
 
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(1, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(2, global->Get(v8_str("x2"))->Int32Value());
 
@@ -22385,7 +22417,7 @@ TEST(Promises) {
   pr->Resolve(v8::Integer::New(isolate, 3));
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(3, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(4, global->Get(v8_str("x2"))->Int32Value());
 
@@ -22395,7 +22427,7 @@ TEST(Promises) {
   rr->Reject(v8::Integer::New(isolate, 3));
   CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
-  V8::RunMicrotasks(isolate);
+  isolate->RunMicrotasks();
   CHECK_EQ(3, global->Get(v8_str("x1"))->Int32Value());
   CHECK_EQ(4, global->Get(v8_str("x2"))->Int32Value());
 }

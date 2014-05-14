@@ -15,16 +15,6 @@ namespace internal {
 
 #ifdef VERIFY_HEAP
 
-void MaybeObject::Verify() {
-  Object* this_as_object;
-  if (ToObject(&this_as_object)) {
-    this_as_object->ObjectVerify();
-  } else {
-    Failure::cast(this)->FailureVerify();
-  }
-}
-
-
 void Object::ObjectVerify() {
   if (IsSmi()) {
     Smi::cast(this)->SmiVerify();
@@ -45,11 +35,6 @@ void Object::VerifyPointer(Object* p) {
 
 void Smi::SmiVerify() {
   CHECK(IsSmi());
-}
-
-
-void Failure::FailureVerify() {
-  CHECK(IsFailure());
 }
 
 
@@ -362,7 +347,6 @@ void PolymorphicCodeCache::PolymorphicCodeCacheVerify() {
 void TypeFeedbackInfo::TypeFeedbackInfoVerify() {
   VerifyObjectField(kStorage1Offset);
   VerifyObjectField(kStorage2Offset);
-  VerifyHeapPointer(feedback_vector());
 }
 
 
@@ -543,6 +527,7 @@ void SharedFunctionInfo::SharedFunctionInfoVerify() {
   VerifyObjectField(kNameOffset);
   VerifyObjectField(kCodeOffset);
   VerifyObjectField(kOptimizedCodeMapOffset);
+  VerifyObjectField(kFeedbackVectorOffset);
   VerifyObjectField(kScopeInfoOffset);
   VerifyObjectField(kInstanceClassNameOffset);
   VerifyObjectField(kFunctionDataOffset);
@@ -1030,7 +1015,7 @@ void NormalizedMapCache::NormalizedMapCacheVerify() {
   FixedArray::cast(this)->FixedArrayVerify();
   if (FLAG_enable_slow_asserts) {
     for (int i = 0; i < length(); i++) {
-      Object* e = get(i);
+      Object* e = FixedArray::get(i);
       if (e->IsMap()) {
         Map::cast(e)->SharedMapVerify();
       } else {

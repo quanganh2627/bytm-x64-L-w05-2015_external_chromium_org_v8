@@ -428,7 +428,7 @@ LPlatformChunk* LChunkBuilder::Build() {
 }
 
 
-void LCodeGen::Abort(BailoutReason reason) {
+void LChunkBuilder::Abort(BailoutReason reason) {
   info()->set_bailout_reason(reason);
   status_ = ABORTED;
 }
@@ -858,7 +858,8 @@ void LChunkBuilder::VisitInstruction(HInstruction* current) {
     // the it was just a plain use), so it is free to move the split child into
     // the same register that is used for the use-at-start.
     // See https://code.google.com/p/chromium/issues/detail?id=201590
-    if (!(instr->ClobbersRegisters() && instr->ClobbersDoubleRegisters())) {
+    if (!(instr->ClobbersRegisters() &&
+          instr->ClobbersDoubleRegisters(isolate()))) {
       int fixed = 0;
       int used_at_start = 0;
       for (UseIterator it(instr); !it.Done(); it.Advance()) {
@@ -1925,15 +1926,12 @@ LInstruction* LChunkBuilder::DoCheckValue(HCheckValue* instr) {
 
 
 LInstruction* LChunkBuilder::DoCheckMaps(HCheckMaps* instr) {
-  LOperand* value = NULL;
-  if (!instr->CanOmitMapChecks()) {
-    value = UseRegisterAtStart(instr->value());
-    if (instr->has_migration_target()) info()->MarkAsDeferredCalling();
-  }
-  LInstruction* result = new(zone()) LCheckMaps(value);
-  if (!instr->CanOmitMapChecks()) {
-    result = AssignEnvironment(result);
-    if (instr->has_migration_target()) result = AssignPointerMap(result);
+  if (instr->IsStabilityCheck()) return new(zone()) LCheckMaps;
+  LOperand* value = UseRegisterAtStart(instr->value());
+  LInstruction* result = AssignEnvironment(new(zone()) LCheckMaps(value));
+  if (instr->HasMigrationTarget()) {
+    info()->MarkAsDeferredCalling();
+    result = AssignPointerMap(result);
   }
   return result;
 }

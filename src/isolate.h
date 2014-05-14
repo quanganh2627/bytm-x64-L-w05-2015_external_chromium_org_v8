@@ -663,8 +663,8 @@ class Isolate {
   class ExceptionScope {
    public:
     explicit ExceptionScope(Isolate* isolate) :
-      // Scope currently can only be used for regular exceptions, not
-      // failures like OOM or termination exception.
+      // Scope currently can only be used for regular exceptions,
+      // not termination exception.
       isolate_(isolate),
       pending_exception_(isolate_->pending_exception(), isolate_),
       catcher_(isolate_->catcher())
@@ -928,14 +928,8 @@ class Isolate {
 
   inline bool IsCodePreAgingActive();
 
-  Debugger* debugger() {
-    if (!NoBarrier_Load(&debugger_initialized_)) InitializeDebugger();
-    return debugger_;
-  }
-  Debug* debug() {
-    if (!NoBarrier_Load(&debugger_initialized_)) InitializeDebugger();
-    return debug_;
-  }
+  Debugger* debugger() {  return debugger_; }
+  Debug* debug() { return debug_; }
 
   inline bool IsDebuggerActive();
   inline bool DebuggerHasBreakPoints();
@@ -1077,6 +1071,8 @@ class Isolate {
   void RemoveCallCompletedCallback(CallCompletedCallback callback);
   void FireCallCompletedCallback();
 
+  void RunMicrotasks();
+
  private:
   Isolate();
 
@@ -1179,8 +1175,6 @@ class Isolate {
   void FillCache();
 
   void PropagatePendingExceptionToExternalTryCatch();
-
-  void InitializeDebugger();
 
   // Traverse prototype chain to find out whether the object is derived from
   // the Error object.

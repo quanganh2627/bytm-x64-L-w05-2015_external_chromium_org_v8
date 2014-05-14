@@ -86,13 +86,6 @@ void LCodeGen::FinishCode(Handle<Code> code) {
   code->set_safepoint_table_offset(safepoints_.GetCodeOffset());
   if (code->is_optimized_code()) RegisterWeakObjectsInOptimizedCode(code);
   PopulateDeoptimizationData(code);
-  info()->CommitDependencies(code);
-}
-
-
-void LChunkBuilder::Abort(BailoutReason reason) {
-  info()->set_bailout_reason(reason);
-  status_ = ABORTED;
 }
 
 
@@ -1735,9 +1728,15 @@ void LCodeGen::DoConstantE(LConstantE* instr) {
 
 
 void LCodeGen::DoConstantT(LConstantT* instr) {
-  Handle<Object> value = instr->value(isolate());
+  Handle<Object> object = instr->value(isolate());
   AllowDeferredHandleDereference smi_check;
-  __ li(ToRegister(instr->result()), value);
+  if (instr->hydrogen()->HasObjectMap()) {
+    Handle<Map> object_map = instr->hydrogen()->ObjectMap().handle();
+    CHECK(object->IsHeapObject());
+    CHECK(!object_map->is_stable() ||
+          *object_map == Handle<HeapObject>::cast(object)->map());
+  }
+  __ li(ToRegister(instr->result()), object);
 }
 
 
@@ -3981,7 +3980,7 @@ void LCodeGen::DoCallNew(LCallNew* instr) {
   __ li(a0, Operand(instr->arity()));
   // No cell in a2 for construct type feedback in optimized code
   __ LoadRoot(a2, Heap::kUndefinedValueRootIndex);
-  CallConstructStub stub(isolate(), NO_CALL_FUNCTION_FLAGS);
+  CallConstructStub stub(isolate(), NO_CALL_CONSTRUCTOR_FLAGS);
   CallCode(stub.GetCode(), RelocInfo::CONSTRUCT_CALL, instr);
 }
 
@@ -4073,7 +4072,6 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
     return;
   }
 
-  Handle<Map> transition = instr->transition();
   SmiCheck check_needed =
       instr->hydrogen()->value()->IsHeapObject()
           ? OMIT_SMI_CHECK : INLINE_SMI_CHECK;
@@ -4091,15 +4089,17 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
       check_needed = OMIT_SMI_CHECK;
     }
   } else if (representation.IsDouble()) {
-    ASSERT(transition.is_null());
     ASSERT(access.IsInobject());
+    ASSERT(!instr->hydrogen()->has_transition());
     ASSERT(!instr->hydrogen()->NeedsWriteBarrier());
     DoubleRegister value = ToDoubleRegister(instr->value());
     __ sdc1(value, FieldMemOperand(object, offset));
     return;
   }
 
-  if (!transition.is_null()) {
+  if (instr->hydrogen()->has_transition()) {
+    Handle<Map> transition = instr->hydrogen()->transition_map();
+    AddDeprecationDependency(transition);
     __ li(scratch, Operand(transition));
     __ sw(scratch, FieldMemOperand(object, HeapObject::kMapOffset));
     if (instr->hydrogen()->NeedsWriteBarrierForMap()) {
@@ -5170,7 +5170,14 @@ void LCodeGen::DoCheckMaps(LCheckMaps* instr) {
     Register object_;
   };
 
-  if (instr->hydrogen()->CanOmitMapChecks()) return;
+  if (instr->hydrogen()->IsStabilityCheck()) {
+    const UniqueSet<Map>* maps = instr->hydrogen()->maps();
+    for (int i = 0; i < maps->size(); ++i) {
+      AddStabilityDependency(maps->at(i).handle());
+    }
+    return;
+  }
+
   Register map_reg = scratch0();
   LOperand* input = instr->value();
   ASSERT(input->IsRegister());
@@ -5178,20 +5185,20 @@ void LCodeGen::DoCheckMaps(LCheckMaps* instr) {
   __ lw(map_reg, FieldMemOperand(reg, HeapObject::kMapOffset));
 
   DeferredCheckMaps* deferred = NULL;
-  if (instr->hydrogen()->has_migration_target()) {
+  if (instr->hydrogen()->HasMigrationTarget()) {
     deferred = new(zone()) DeferredCheckMaps(this, instr, reg);
     __ bind(deferred->check_maps());
   }
 
-  const UniqueSet<Map>* map_set = instr->hydrogen()->map_set();
+  const UniqueSet<Map>* maps = instr->hydrogen()->maps();
   Label success;
-  for (int i = 0; i < map_set->size() - 1; i++) {
-    Handle<Map> map = map_set->at(i).handle();
+  for (int i = 0; i < maps->size() - 1; i++) {
+    Handle<Map> map = maps->at(i).handle();
     __ CompareMapAndBranch(map_reg, map, &success, eq, &success);
   }
-  Handle<Map> map = map_set->at(map_set->size() - 1).handle();
+  Handle<Map> map = maps->at(maps->size() - 1).handle();
   // Do the CompareMap() directly within the Branch() and DeoptimizeIf().
-  if (instr->hydrogen()->has_migration_target()) {
+  if (instr->hydrogen()->HasMigrationTarget()) {
     __ Branch(deferred->entry(), ne, map_reg, Operand(map));
   } else {
     DeoptimizeIf(ne, instr->environment(), map_reg, Operand(map));

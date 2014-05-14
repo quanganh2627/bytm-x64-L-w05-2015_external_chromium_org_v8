@@ -988,8 +988,6 @@ void Object::ShortPrint(FILE* out) {
 void Object::ShortPrint(StringStream* accumulator) {
   if (IsSmi()) {
     Smi::cast(this)->SmiPrint(accumulator);
-  } else if (IsFailure()) {
-    Failure::cast(this)->FailurePrint(accumulator);
   } else {
     HeapObject::cast(this)->HeapObjectShortPrint(accumulator);
   }
@@ -1003,16 +1001,6 @@ void Smi::SmiPrint(FILE* out) {
 
 void Smi::SmiPrint(StringStream* accumulator) {
   accumulator->Add("%d", value());
-}
-
-
-void Failure::FailurePrint(StringStream* accumulator) {
-  accumulator->Add("Failure(%p)", reinterpret_cast<void*>(value()));
-}
-
-
-void Failure::FailurePrint(FILE* out) {
-  PrintF(out, "Failure(%p)", reinterpret_cast<void*>(value()));
 }
 
 
@@ -1969,16 +1957,30 @@ MaybeHandle<Object> JSObject::AddProperty(
 }
 
 
+Context* JSObject::GetCreationContext() {
+  Object* constructor = this->map()->constructor();
+  JSFunction* function;
+  if (!constructor->IsJSFunction()) {
+    // Functions have null as a constructor,
+    // but any JSFunction knows its context immediately.
+    function = JSFunction::cast(this);
+  } else {
+    function = JSFunction::cast(constructor);
+  }
+
+  return function->context()->native_context();
+}
+
+
 void JSObject::EnqueueChangeRecord(Handle<JSObject> object,
                                    const char* type_str,
                                    Handle<Name> name,
                                    Handle<Object> old_value) {
+  ASSERT(!object->IsJSGlobalProxy());
+  ASSERT(!object->IsJSGlobalObject());
   Isolate* isolate = object->GetIsolate();
   HandleScope scope(isolate);
   Handle<String> type = isolate->factory()->InternalizeUtf8String(type_str);
-  if (object->IsJSGlobalObject()) {
-    object = handle(JSGlobalObject::cast(*object)->global_receiver(), isolate);
-  }
   Handle<Object> args[] = { type, object, name, old_value };
   int argc = name.is_null() ? 2 : old_value->IsTheHole() ? 3 : 4;
 
@@ -3145,9 +3147,12 @@ MaybeHandle<Object> JSObject::SetPropertyViaPrototypes(
       }
       case CALLBACKS: {
         *done = true;
-        Handle<Object> callback_object(result.GetCallbackObject(), isolate);
-        return SetPropertyWithCallback(object, callback_object, name, value,
-                                       handle(result.holder()), strict_mode);
+        if (!result.IsReadOnly()) {
+          Handle<Object> callback_object(result.GetCallbackObject(), isolate);
+          return SetPropertyWithCallback(object, callback_object, name, value,
+                                         handle(result.holder()), strict_mode);
+        }
+        break;
       }
       case HANDLER: {
         Handle<JSProxy> proxy(result.proxy());
@@ -3427,19 +3432,18 @@ static Handle<Map> AddMissingElementsTransitions(Handle<Map> map,
 }
 
 
-Handle<Map> JSObject::GetElementsTransitionMap(Handle<JSObject> object,
-                                               ElementsKind to_kind) {
-  Isolate* isolate = object->GetIsolate();
-  Handle<Map> current_map(object->map());
-  ElementsKind from_kind = current_map->elements_kind();
-  if (from_kind == to_kind) return current_map;
+Handle<Map> Map::TransitionElementsTo(Handle<Map> map,
+                                      ElementsKind to_kind) {
+  ElementsKind from_kind = map->elements_kind();
+  if (from_kind == to_kind) return map;
 
+  Isolate* isolate = map->GetIsolate();
   Context* native_context = isolate->context()->native_context();
   Object* maybe_array_maps = native_context->js_array_maps();
   if (maybe_array_maps->IsFixedArray()) {
     DisallowHeapAllocation no_gc;
     FixedArray* array_maps = FixedArray::cast(maybe_array_maps);
-    if (array_maps->get(from_kind) == *current_map) {
+    if (array_maps->get(from_kind) == *map) {
       Object* maybe_transitioned_map = array_maps->get(to_kind);
       if (maybe_transitioned_map->IsMap()) {
         return handle(Map::cast(maybe_transitioned_map));
@@ -3447,23 +3451,22 @@ Handle<Map> JSObject::GetElementsTransitionMap(Handle<JSObject> object,
     }
   }
 
-  return GetElementsTransitionMapSlow(object, to_kind);
+  return TransitionElementsToSlow(map, to_kind);
 }
 
 
-Handle<Map> JSObject::GetElementsTransitionMapSlow(Handle<JSObject> object,
-                                                   ElementsKind to_kind) {
-  Handle<Map> start_map(object->map());
-  ElementsKind from_kind = start_map->elements_kind();
+Handle<Map> Map::TransitionElementsToSlow(Handle<Map> map,
+                                          ElementsKind to_kind) {
+  ElementsKind from_kind = map->elements_kind();
 
   if (from_kind == to_kind) {
-    return start_map;
+    return map;
   }
 
   bool allow_store_transition =
       // Only remember the map transition if there is not an already existing
       // non-matching element transition.
-      !start_map->IsUndefined() && !start_map->is_shared() &&
+      !map->IsUndefined() && !map->is_shared() &&
       IsTransitionElementsKind(from_kind);
 
   // Only store fast element maps in ascending generality.
@@ -3474,10 +3477,10 @@ Handle<Map> JSObject::GetElementsTransitionMapSlow(Handle<JSObject> object,
   }
 
   if (!allow_store_transition) {
-    return Map::CopyAsElementsKind(start_map, to_kind, OMIT_TRANSITION);
+    return Map::CopyAsElementsKind(map, to_kind, OMIT_TRANSITION);
   }
 
-  return Map::AsElementsKind(start_map, to_kind);
+  return Map::AsElementsKind(map, to_kind);
 }
 
 
@@ -3490,6 +3493,13 @@ Handle<Map> Map::AsElementsKind(Handle<Map> map, ElementsKind kind) {
   }
 
   return AddMissingElementsTransitions(closest_map, kind);
+}
+
+
+Handle<Map> JSObject::GetElementsTransitionMap(Handle<JSObject> object,
+                                               ElementsKind to_kind) {
+  Handle<Map> map(object->map());
+  return Map::TransitionElementsTo(map, to_kind);
 }
 
 
@@ -4318,7 +4328,8 @@ MaybeHandle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
     PropertyAttributes attributes,
     ValueType value_type,
     StoreMode mode,
-    ExtensibilityCheck extensibility_check) {
+    ExtensibilityCheck extensibility_check,
+    StoreFromKeyed store_from_keyed) {
   Isolate* isolate = object->GetIsolate();
 
   // Make sure that the top context does not change when doing callbacks or
@@ -4359,7 +4370,7 @@ MaybeHandle<Object> JSObject::SetLocalPropertyIgnoreAttributes(
         ? OMIT_TRANSITION : INSERT_TRANSITION;
     // Neither properties nor transitions found.
     return AddProperty(object, name, value, attributes, SLOPPY,
-        MAY_BE_STORE_FROM_KEYED, extensibility_check, value_type, mode, flag);
+        store_from_keyed, extensibility_check, value_type, mode, flag);
   }
 
   Handle<Object> old_value = isolate->factory()->the_hole_value();
@@ -4670,48 +4681,30 @@ PropertyAttributes JSObject::GetElementAttributeWithoutInterceptor(
 }
 
 
-Handle<Map> NormalizedMapCache::Get(Handle<NormalizedMapCache> cache,
-                                    Handle<Map> fast_map,
-                                    PropertyNormalizationMode mode) {
-  int index = fast_map->Hash() % kEntries;
-  Handle<Object> result = handle(cache->get(index), cache->GetIsolate());
-  if (result->IsMap() &&
-      Handle<Map>::cast(result)->EquivalentToForNormalization(
-          *fast_map, mode)) {
-#ifdef VERIFY_HEAP
-    if (FLAG_verify_heap) {
-      Handle<Map>::cast(result)->SharedMapVerify();
-    }
-#endif
-#ifdef ENABLE_SLOW_ASSERTS
-    if (FLAG_enable_slow_asserts) {
-      // The cached map should match newly created normalized map bit-by-bit,
-      // except for the code cache, which can contain some ics which can be
-      // applied to the shared map.
-      Handle<Map> fresh = Map::CopyNormalized(
-          fast_map, mode, SHARED_NORMALIZED_MAP);
+Handle<NormalizedMapCache> NormalizedMapCache::New(Isolate* isolate) {
+  Handle<FixedArray> array(
+      isolate->factory()->NewFixedArray(kEntries, TENURED));
+  return Handle<NormalizedMapCache>::cast(array);
+}
 
-      ASSERT(memcmp(fresh->address(),
-                    Handle<Map>::cast(result)->address(),
-                    Map::kCodeCacheOffset) == 0);
-      STATIC_ASSERT(Map::kDependentCodeOffset ==
-                    Map::kCodeCacheOffset + kPointerSize);
-      int offset = Map::kDependentCodeOffset + kPointerSize;
-      ASSERT(memcmp(fresh->address() + offset,
-                    Handle<Map>::cast(result)->address() + offset,
-                    Map::kSize - offset) == 0);
-    }
-#endif
-    return Handle<Map>::cast(result);
+
+MaybeHandle<Map> NormalizedMapCache::Get(Handle<Map> fast_map,
+                                         PropertyNormalizationMode mode) {
+  DisallowHeapAllocation no_gc;
+  Object* value = FixedArray::get(GetIndex(fast_map));
+  if (!value->IsMap() ||
+      !Map::cast(value)->EquivalentToForNormalization(*fast_map, mode)) {
+    return MaybeHandle<Map>();
   }
+  return handle(Map::cast(value));
+}
 
-  Isolate* isolate = cache->GetIsolate();
-  Handle<Map> map = Map::CopyNormalized(fast_map, mode, SHARED_NORMALIZED_MAP);
-  ASSERT(map->is_dictionary_map());
-  cache->set(index, *map);
-  isolate->counters()->normalized_maps()->Increment();
 
-  return map;
+void NormalizedMapCache::Set(Handle<Map> fast_map,
+                             Handle<Map> normalized_map) {
+  DisallowHeapAllocation no_gc;
+  ASSERT(normalized_map->is_dictionary_map());
+  FixedArray::set(GetIndex(fast_map), *normalized_map);
 }
 
 
@@ -4744,6 +4737,7 @@ void JSObject::NormalizeProperties(Handle<JSObject> object,
   Isolate* isolate = object->GetIsolate();
   HandleScope scope(isolate);
   Handle<Map> map(object->map());
+  Handle<Map> new_map = Map::Normalize(map, mode);
 
   // Allocate new content.
   int real_size = map->NumberOfOwnDescriptors();
@@ -4798,12 +4792,6 @@ void JSObject::NormalizeProperties(Handle<JSObject> object,
   // Copy the next enumeration index from instance descriptor.
   dictionary->SetNextEnumerationIndex(real_size + 1);
 
-  Handle<NormalizedMapCache> cache(
-      isolate->context()->native_context()->normalized_map_cache());
-  Handle<Map> new_map = NormalizedMapCache::Get(
-      cache, handle(object->map()), mode);
-  ASSERT(new_map->is_dictionary_map());
-
   // From here on we cannot fail and we shouldn't GC anymore.
   DisallowHeapAllocation no_allocation;
 
@@ -4821,8 +4809,6 @@ void JSObject::NormalizeProperties(Handle<JSObject> object,
   // We are storing the new map using release store after creating a filler for
   // the left-over space to avoid races with the sweeper thread.
   object->synchronized_set_map(*new_map);
-
-  map->NotifyLeafMapLayoutChange();
 
   object->set_properties(*dictionary);
 
@@ -5089,9 +5075,7 @@ Handle<SeededNumberDictionary> JSObject::NormalizeElements(
 }
 
 
-Smi* JSReceiver::GenerateIdentityHash() {
-  Isolate* isolate = GetIsolate();
-
+static Smi* GenerateIdentityHash(Isolate* isolate) {
   int hash_value;
   int attempts = 0;
   do {
@@ -5107,14 +5091,31 @@ Smi* JSReceiver::GenerateIdentityHash() {
 
 
 void JSObject::SetIdentityHash(Handle<JSObject> object, Handle<Smi> hash) {
+  ASSERT(!object->IsJSGlobalProxy());
   Isolate* isolate = object->GetIsolate();
   SetHiddenProperty(object, isolate->factory()->identity_hash_string(), hash);
+}
+
+
+template<typename ProxyType>
+static Handle<Object> GetOrCreateIdentityHashHelper(Handle<ProxyType> proxy) {
+  Isolate* isolate = proxy->GetIsolate();
+
+  Handle<Object> hash(proxy->hash(), isolate);
+  if (hash->IsSmi()) return hash;
+
+  hash = handle(GenerateIdentityHash(isolate), isolate);
+  proxy->set_hash(*hash);
+  return hash;
 }
 
 
 Object* JSObject::GetIdentityHash() {
   DisallowHeapAllocation no_gc;
   Isolate* isolate = GetIsolate();
+  if (IsJSGlobalProxy()) {
+    return JSGlobalProxy::cast(this)->hash();
+  }
   Object* stored_value =
       GetHiddenProperty(isolate->factory()->identity_hash_string());
   return stored_value->IsSmi()
@@ -5124,21 +5125,17 @@ Object* JSObject::GetIdentityHash() {
 
 
 Handle<Object> JSObject::GetOrCreateIdentityHash(Handle<JSObject> object) {
-  Handle<Object> hash(object->GetIdentityHash(), object->GetIsolate());
-  if (hash->IsSmi())
-    return hash;
+  if (object->IsJSGlobalProxy()) {
+    return GetOrCreateIdentityHashHelper(Handle<JSGlobalProxy>::cast(object));
+  }
 
   Isolate* isolate = object->GetIsolate();
 
-  hash = handle(object->GenerateIdentityHash(), isolate);
-  Handle<Object> result = SetHiddenProperty(object,
-      isolate->factory()->identity_hash_string(), hash);
+  Handle<Object> hash(object->GetIdentityHash(), isolate);
+  if (hash->IsSmi()) return hash;
 
-  if (result->IsUndefined()) {
-    // Trying to get hash of detached proxy.
-    return handle(Smi::FromInt(0), isolate);
-  }
-
+  hash = handle(GenerateIdentityHash(isolate), isolate);
+  SetHiddenProperty(object, isolate->factory()->identity_hash_string(), hash);
   return hash;
 }
 
@@ -5149,15 +5146,7 @@ Object* JSProxy::GetIdentityHash() {
 
 
 Handle<Object> JSProxy::GetOrCreateIdentityHash(Handle<JSProxy> proxy) {
-  Isolate* isolate = proxy->GetIsolate();
-
-  Handle<Object> hash(proxy->GetIdentityHash(), isolate);
-  if (hash->IsSmi())
-    return hash;
-
-  hash = handle(proxy->GenerateIdentityHash(), isolate);
-  proxy->set_hash(*hash);
-  return hash;
+  return GetOrCreateIdentityHashHelper(proxy);
 }
 
 
@@ -5165,6 +5154,8 @@ Object* JSObject::GetHiddenProperty(Handle<Name> key) {
   DisallowHeapAllocation no_gc;
   ASSERT(key->IsUniqueName());
   if (IsJSGlobalProxy()) {
+    // JSGlobalProxies store their hash internally.
+    ASSERT(*key != GetHeap()->identity_hash_string());
     // For a proxy, use the prototype as target object.
     Object* proxy_parent = GetPrototype();
     // If the proxy is detached, return undefined.
@@ -5199,6 +5190,8 @@ Handle<Object> JSObject::SetHiddenProperty(Handle<JSObject> object,
 
   ASSERT(key->IsUniqueName());
   if (object->IsJSGlobalProxy()) {
+    // JSGlobalProxies store their hash internally.
+    ASSERT(*key != *isolate->factory()->identity_hash_string());
     // For a proxy, use the prototype as target object.
     Handle<Object> proxy_parent(object->GetPrototype(), isolate);
     // If the proxy is detached, return undefined.
@@ -5936,6 +5929,8 @@ MaybeHandle<Object> JSObject::Freeze(Handle<JSObject> object) {
 
 
 void JSObject::SetObserved(Handle<JSObject> object) {
+  ASSERT(!object->IsJSGlobalProxy());
+  ASSERT(!object->IsJSGlobalObject());
   Isolate* isolate = object->GetIsolate();
   Handle<Map> new_map;
   Handle<Map> old_map(object->map(), isolate);
@@ -7247,6 +7242,50 @@ Handle<Map> Map::RawCopy(Handle<Map> map, int instance_size) {
   }
   result->set_bit_field3(new_bit_field3);
   return result;
+}
+
+
+Handle<Map> Map::Normalize(Handle<Map> fast_map,
+                           PropertyNormalizationMode mode) {
+  ASSERT(!fast_map->is_dictionary_map());
+
+  Isolate* isolate = fast_map->GetIsolate();
+  Handle<NormalizedMapCache> cache(
+      isolate->context()->native_context()->normalized_map_cache());
+
+  Handle<Map> new_map;
+  if (cache->Get(fast_map, mode).ToHandle(&new_map)) {
+#ifdef VERIFY_HEAP
+    if (FLAG_verify_heap) {
+      new_map->SharedMapVerify();
+    }
+#endif
+#ifdef ENABLE_SLOW_ASSERTS
+    if (FLAG_enable_slow_asserts) {
+      // The cached map should match newly created normalized map bit-by-bit,
+      // except for the code cache, which can contain some ics which can be
+      // applied to the shared map.
+      Handle<Map> fresh = Map::CopyNormalized(
+          fast_map, mode, SHARED_NORMALIZED_MAP);
+
+      ASSERT(memcmp(fresh->address(),
+                    new_map->address(),
+                    Map::kCodeCacheOffset) == 0);
+      STATIC_ASSERT(Map::kDependentCodeOffset ==
+                    Map::kCodeCacheOffset + kPointerSize);
+      int offset = Map::kDependentCodeOffset + kPointerSize;
+      ASSERT(memcmp(fresh->address() + offset,
+                    new_map->address() + offset,
+                    Map::kSize - offset) == 0);
+    }
+#endif
+  } else {
+    new_map = Map::CopyNormalized(fast_map, mode, SHARED_NORMALIZED_MAP);
+    cache->Set(fast_map, new_map);
+    isolate->counters()->normalized_maps()->Increment();
+  }
+  fast_map->NotifyLeafMapLayoutChange();
+  return new_map;
 }
 
 
@@ -10225,20 +10264,25 @@ void JSFunction::SetPrototype(Handle<JSFunction> function,
 }
 
 
-void JSFunction::RemovePrototype() {
+bool JSFunction::RemovePrototype() {
   Context* native_context = context()->native_context();
   Map* no_prototype_map = shared()->strict_mode() == SLOPPY
       ? native_context->sloppy_function_without_prototype_map()
       : native_context->strict_function_without_prototype_map();
 
-  if (map() == no_prototype_map) return;
+  if (map() == no_prototype_map) return true;
 
-  ASSERT(map() == (shared()->strict_mode() == SLOPPY
+#ifdef DEBUG
+  if (map() != (shared()->strict_mode() == SLOPPY
                    ? native_context->sloppy_function_map()
-                   : native_context->strict_function_map()));
+                   : native_context->strict_function_map())) {
+    return false;
+  }
+#endif
 
   set_map(no_prototype_map);
   set_prototype_or_initial_map(no_prototype_map->GetHeap()->the_hole_value());
+  return true;
 }
 
 
@@ -10677,7 +10721,8 @@ void SharedFunctionInfo::StartInobjectSlackTracking(Map* map) {
   set_live_objects_may_exist(true);
 
   // No tracking during the snapshot construction phase.
-  if (Serializer::enabled()) return;
+  Isolate* isolate = GetIsolate();
+  if (Serializer::enabled(isolate)) return;
 
   if (map->unused_property_fields() == 0) return;
 
@@ -10687,7 +10732,7 @@ void SharedFunctionInfo::StartInobjectSlackTracking(Map* map) {
     set_construction_count(kGenerousAllocationCount);
   }
   set_initial_map(map);
-  Builtins* builtins = map->GetHeap()->isolate()->builtins();
+  Builtins* builtins = isolate->builtins();
   ASSERT_EQ(builtins->builtin(Builtins::kJSConstructStubGeneric),
             construct_stub());
   set_construct_stub(builtins->builtin(Builtins::kJSConstructStubCountdown));
@@ -10736,6 +10781,9 @@ void SharedFunctionInfo::AttachInitialMap(Map* map) {
 
 void SharedFunctionInfo::ResetForNewContext(int new_ic_age) {
   code()->ClearInlineCaches();
+  // If we clear ICs, we need to clear the type feedback vector too, since
+  // CallICs are synced with a feedback vector slot.
+  ClearTypeFeedbackInfo();
   set_ic_age(new_ic_age);
   if (code()->kind() == Code::FUNCTION) {
     code()->set_profiler_ticks(0);
@@ -11177,19 +11225,16 @@ void Code::ClearInlineCaches(Code::Kind* kind) {
 }
 
 
-void Code::ClearTypeFeedbackInfo(Heap* heap) {
-  if (kind() != FUNCTION) return;
-  Object* raw_info = type_feedback_info();
-  if (raw_info->IsTypeFeedbackInfo()) {
-    FixedArray* feedback_vector =
-        TypeFeedbackInfo::cast(raw_info)->feedback_vector();
-    for (int i = 0; i < feedback_vector->length(); i++) {
-      Object* obj = feedback_vector->get(i);
-      if (!obj->IsAllocationSite()) {
-        // TODO(mvstanton): Can't I avoid a write barrier for this sentinel?
-        feedback_vector->set(i,
-                             TypeFeedbackInfo::RawUninitializedSentinel(heap));
-      }
+void SharedFunctionInfo::ClearTypeFeedbackInfo() {
+  FixedArray* vector = feedback_vector();
+  Heap* heap = GetHeap();
+  for (int i = 0; i < vector->length(); i++) {
+    Object* obj = vector->get(i);
+    if (!obj->IsAllocationSite()) {
+      vector->set(
+          i,
+          TypeFeedbackInfo::RawUninitializedSentinel(heap),
+          SKIP_WRITE_BARRIER);
     }
   }
 }
@@ -15422,35 +15467,45 @@ class TwoCharHashTableKey : public HashTableKey {
 };
 
 
-bool StringTable::LookupStringIfExists(String* string, String** result) {
-  SLOW_ASSERT(this == HeapObject::cast(this)->GetHeap()->string_table());
-  DisallowHeapAllocation no_alloc;
-  // TODO(ishell): Handlify all the callers and remove this scope.
-  HandleScope scope(GetIsolate());
-  InternalizedStringKey key(handle(string));
-  int entry = FindEntry(&key);
+MaybeHandle<String> StringTable::InternalizeStringIfExists(
+    Isolate* isolate,
+    Handle<String> string) {
+  if (string->IsInternalizedString()) {
+    return string;
+  }
+  return LookupStringIfExists(isolate, string);
+}
+
+
+MaybeHandle<String> StringTable::LookupStringIfExists(
+    Isolate* isolate,
+    Handle<String> string) {
+  Handle<StringTable> string_table = isolate->factory()->string_table();
+  InternalizedStringKey key(string);
+  int entry = string_table->FindEntry(&key);
   if (entry == kNotFound) {
-    return false;
+    return MaybeHandle<String>();
   } else {
-    *result = String::cast(KeyAt(entry));
+    Handle<String> result(String::cast(string_table->KeyAt(entry)), isolate);
     ASSERT(StringShape(*result).IsInternalized());
-    return true;
+    return result;
   }
 }
 
 
-bool StringTable::LookupTwoCharsStringIfExists(uint16_t c1,
-                                               uint16_t c2,
-                                               String** result) {
-  SLOW_ASSERT(this == HeapObject::cast(this)->GetHeap()->string_table());
-  TwoCharHashTableKey key(c1, c2, GetHeap()->HashSeed());
-  int entry = FindEntry(&key);
+MaybeHandle<String> StringTable::LookupTwoCharsStringIfExists(
+    Isolate* isolate,
+    uint16_t c1,
+    uint16_t c2) {
+  Handle<StringTable> string_table = isolate->factory()->string_table();
+  TwoCharHashTableKey key(c1, c2, isolate->heap()->HashSeed());
+  int entry = string_table->FindEntry(&key);
   if (entry == kNotFound) {
-    return false;
+    return MaybeHandle<String>();
   } else {
-    *result = String::cast(KeyAt(entry));
+    Handle<String> result(String::cast(string_table->KeyAt(entry)), isolate);
     ASSERT(StringShape(*result).IsInternalized());
-    return true;
+    return result;
   }
 }
 
@@ -15762,10 +15817,9 @@ Handle<Derived> Dictionary<Derived, Shape, Key>::AtPut(
 
   // Check whether the dictionary should be extended.
   dictionary = EnsureCapacity(dictionary, 1, key);
-
-  Handle<Object> k = Shape::AsHandle(dictionary->GetIsolate(), key);
-  // TODO(ishell): Figure out if it is necessary to call AsHandle() here.
-  USE(k);
+#ifdef DEBUG
+  USE(Shape::AsHandle(dictionary->GetIsolate(), key));
+#endif
   PropertyDetails details = PropertyDetails(NONE, NORMAL, 0);
 
   AddEntry(dictionary, key, value, details, dictionary->Hash(key));
@@ -17121,6 +17175,10 @@ Handle<JSArrayBuffer> JSTypedArray::MaterializeArrayBuffer(
 
   ASSERT(IsFixedTypedArrayElementsKind(map->elements_kind()));
 
+  Handle<Map> new_map = Map::TransitionElementsTo(
+          map,
+          FixedToExternalElementsKind(map->elements_kind()));
+
   Handle<JSArrayBuffer> buffer = isolate->factory()->NewJSArrayBuffer();
   Handle<FixedTypedArrayBase> fixed_typed_array(
       FixedTypedArrayBase::cast(typed_array->elements()));
@@ -17133,9 +17191,6 @@ Handle<JSArrayBuffer> JSTypedArray::MaterializeArrayBuffer(
       isolate->factory()->NewExternalArray(
           fixed_typed_array->length(), typed_array->type(),
           static_cast<uint8_t*>(buffer->backing_store()));
-  Handle<Map> new_map = JSObject::GetElementsTransitionMap(
-          typed_array,
-          FixedToExternalElementsKind(map->elements_kind()));
 
   buffer->set_weak_first_view(*typed_array);
   ASSERT(typed_array->weak_next() == isolate->heap()->undefined_value());

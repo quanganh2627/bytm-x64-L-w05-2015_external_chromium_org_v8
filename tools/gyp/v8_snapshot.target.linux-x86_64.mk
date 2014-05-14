@@ -18,6 +18,7 @@ GYP_TARGET_DEPENDENCIES := \
 
 ### Rules for action "run_mksnapshot":
 $(gyp_intermediate_dir)/snapshot.cc: gyp_local_path := $(LOCAL_PATH)
+$(gyp_intermediate_dir)/snapshot.cc: gyp_var_prefix := $(GYP_VAR_PREFIX)
 $(gyp_intermediate_dir)/snapshot.cc: gyp_intermediate_dir := $(abspath $(gyp_intermediate_dir))
 $(gyp_intermediate_dir)/snapshot.cc: gyp_shared_intermediate_dir := $(abspath $(gyp_shared_intermediate_dir))
 $(gyp_intermediate_dir)/snapshot.cc: export PATH := $(subst $(ANDROID_BUILD_PATHS),,$(PATH))
@@ -67,7 +68,6 @@ MY_CFLAGS_Debug := \
 	-Wno-format \
 	-m64 \
 	-march=x86-64 \
-	-fuse-ld=gold \
 	-ffunction-sections \
 	-funwind-tables \
 	-g \
@@ -164,7 +164,6 @@ MY_CFLAGS_Release := \
 	-Wno-format \
 	-m64 \
 	-march=x86-64 \
-	-fuse-ld=gold \
 	-ffunction-sections \
 	-funwind-tables \
 	-g \

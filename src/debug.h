@@ -212,13 +212,11 @@ class DebugInfoListNode {
 // DebugInfo.
 class Debug {
  public:
-  void SetUp(bool create_heap_objects);
   bool Load();
   void Unload();
   bool IsLoaded() { return !debug_context_.is_null(); }
   bool InDebugger() { return thread_local_.debugger_entry_ != NULL; }
   void PreemptionWhileInDebugger();
-  void Iterate(ObjectVisitor* v);
 
   Object* Break(Arguments args);
   void SetBreakPoint(Handle<JSFunction> function,
@@ -235,6 +233,12 @@ class Debug {
   void FloodHandlerWithOneShot();
   void ChangeBreakOnException(ExceptionBreakType type, bool enable);
   bool IsBreakOnException(ExceptionBreakType type);
+
+  void PromiseHandlePrologue(Handle<JSFunction> promise_getter);
+  void PromiseHandleEpilogue();
+  // Returns a promise if it does not have a reject handler.
+  Handle<Object> GetPromiseForUncaughtException();
+
   void PrepareStep(StepAction step_action,
                    int step_count,
                    StackFrame::Id frame_id);
@@ -341,8 +345,6 @@ class Debug {
 
   enum AddressId {
     k_after_break_target_address,
-    k_debug_break_return_address,
-    k_debug_break_slot_address,
     k_restarter_frame_function_pointer
   };
 
@@ -358,18 +360,6 @@ class Debug {
   // Support for saving/restoring registers when handling debug break calls.
   Object** register_address(int r) {
     return &registers_[r];
-  }
-
-  // Access to the debug break on return code.
-  Code* debug_break_return() { return debug_break_return_; }
-  Code** debug_break_return_address() {
-    return &debug_break_return_;
-  }
-
-  // Access to the debug break in debug break slot code.
-  Code* debug_break_slot() { return debug_break_slot_; }
-  Code** debug_break_slot_address() {
-    return &debug_break_slot_;
   }
 
   static const int kEstimatedNofDebugInfoEntries = 16;
@@ -406,6 +396,7 @@ class Debug {
 
   // Code generator routines.
   static void GenerateSlot(MacroAssembler* masm);
+  static void GenerateCallICStubDebugBreak(MacroAssembler* masm);
   static void GenerateLoadICDebugBreak(MacroAssembler* masm);
   static void GenerateStoreICDebugBreak(MacroAssembler* masm);
   static void GenerateKeyedLoadICDebugBreak(MacroAssembler* masm);
@@ -413,7 +404,6 @@ class Debug {
   static void GenerateCompareNilICDebugBreak(MacroAssembler* masm);
   static void GenerateReturnDebugBreak(MacroAssembler* masm);
   static void GenerateCallFunctionStubDebugBreak(MacroAssembler* masm);
-  static void GenerateCallFunctionStubRecordDebugBreak(MacroAssembler* masm);
   static void GenerateCallConstructStubDebugBreak(MacroAssembler* masm);
   static void GenerateCallConstructStubRecordDebugBreak(MacroAssembler* masm);
   static void GenerateSlotDebugBreak(MacroAssembler* masm);
@@ -424,9 +414,6 @@ class Debug {
   // There is no calling conventions here, because it never actually gets
   // called, it only gets returned to.
   static void GenerateFrameDropperLiveEdit(MacroAssembler* masm);
-
-  // Called from stub-cache.cc.
-  static void GenerateCallICDebugBreak(MacroAssembler* masm);
 
   // Describes how exactly a frame has been dropped from stack.
   enum FrameDropMode {
@@ -524,6 +511,10 @@ class Debug {
   Handle<Object> CheckBreakPoints(Handle<Object> break_point);
   bool CheckBreakPoint(Handle<Object> break_point_object);
 
+  void MaybeRecompileFunctionForDebugging(Handle<JSFunction> function);
+  void RecompileAndRelocateSuspendedGenerators(
+      const List<Handle<JSGeneratorObject> > &suspended_generators);
+
   // Global handle to debug context where all the debugger JavaScript code is
   // loaded.
   Handle<Context> debug_context_;
@@ -540,6 +531,14 @@ class Debug {
   bool disable_break_;
   bool break_on_exception_;
   bool break_on_uncaught_exception_;
+
+  // When a promise is being resolved, we may want to trigger a debug event for
+  // the case we catch a throw.  For this purpose we remember the try-catch
+  // handler address that would catch the exception.  We also hold onto a
+  // closure that returns a promise if the exception is considered uncaught.
+  // Due to the possibility of reentry we use a list to form a stack.
+  List<StackHandler*> promise_catch_handlers_;
+  List<Handle<JSFunction> > promise_getters_;
 
   // Per-thread data.
   class ThreadLocal {
@@ -598,12 +597,6 @@ class Debug {
   JSCallerSavedBuffer registers_;
   ThreadLocal thread_local_;
   void ThreadInit();
-
-  // Code to call for handling debug break on return.
-  Code* debug_break_return_;
-
-  // Code to call for handling debug break in debug break slots.
-  Code* debug_break_slot_;
 
   Isolate* isolate_;
 
@@ -777,9 +770,7 @@ class Debugger {
   MUST_USE_RESULT MaybeHandle<Object> MakeScriptCollectedEvent(int id);
 
   void OnDebugBreak(Handle<Object> break_points_hit, bool auto_continue);
-  void OnException(Handle<Object> exception,
-                   bool uncaught,
-                   Handle<Object> promise = Handle<Object>::null());
+  void OnException(Handle<Object> exception, bool uncaught);
   void OnBeforeCompile(Handle<Script> script);
 
   enum AfterCompileFlags {
@@ -987,10 +978,6 @@ class Debug_Address {
     return Debug_Address(Debug::k_after_break_target_address);
   }
 
-  static Debug_Address DebugBreakReturn() {
-    return Debug_Address(Debug::k_debug_break_return_address);
-  }
-
   static Debug_Address RestarterFrameFunctionPointer() {
     return Debug_Address(Debug::k_restarter_frame_function_pointer);
   }
@@ -1000,10 +987,6 @@ class Debug_Address {
     switch (id_) {
       case Debug::k_after_break_target_address:
         return reinterpret_cast<Address>(debug->after_break_target_address());
-      case Debug::k_debug_break_return_address:
-        return reinterpret_cast<Address>(debug->debug_break_return_address());
-      case Debug::k_debug_break_slot_address:
-        return reinterpret_cast<Address>(debug->debug_break_slot_address());
       case Debug::k_restarter_frame_function_pointer:
         return reinterpret_cast<Address>(
             debug->restarter_frame_function_pointer_address());

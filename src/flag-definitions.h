@@ -469,8 +469,10 @@ DEFINE_bool(always_inline_smi_code, false,
             "always inline smi code in non-opt code")
 
 // heap.cc
-DEFINE_int(max_new_space_size, 0, "max size of the new generation (in kBytes)")
-DEFINE_int(max_old_space_size, 0, "max size of the old generation (in Mbytes)")
+DEFINE_int(max_new_space_size, 0,
+    "max size of the new space consisting of two semi-spaces which are half"
+    "the size (in MBytes)")
+DEFINE_int(max_old_space_size, 0, "max size of the old space (in Mbytes)")
 DEFINE_int(max_executable_size, 0, "max size of executable memory (in Mbytes)")
 DEFINE_bool(gc_global, false, "always perform global GCs")
 DEFINE_int(gc_interval, -1, "garbage collect after <n> allocations")
@@ -515,8 +517,8 @@ DEFINE_bool(trace_incremental_marking, false,
             "trace progress of the incremental marking")
 DEFINE_bool(track_gc_object_stats, false,
             "track object counts and memory usage")
-DEFINE_bool(parallel_sweeping, true, "enable parallel sweeping")
-DEFINE_bool(concurrent_sweeping, false, "enable concurrent sweeping")
+DEFINE_bool(parallel_sweeping, false, "enable parallel sweeping")
+DEFINE_bool(concurrent_sweeping, true, "enable concurrent sweeping")
 DEFINE_int(sweeper_threads, 0,
            "number of parallel and concurrent sweeping threads")
 DEFINE_bool(job_based_sweeping, false, "enable job based sweeping")
@@ -774,7 +776,6 @@ DEFINE_bool(trace_regexp_assembler, false,
 DEFINE_bool(log, false,
             "Minimal logging (no API, code, GC, suspect, or handles samples).")
 DEFINE_bool(log_all, false, "Log all events to the log file.")
-DEFINE_bool(log_runtime, false, "Activate runtime system %Log call.")
 DEFINE_bool(log_api, false, "Log API events to the log file.")
 DEFINE_bool(log_code, false,
             "Log code events to the log file without profiling.")

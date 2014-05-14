@@ -391,7 +391,7 @@ void MacroAssembler::TaggedToI(Register result_reg,
       isolate()->factory()->heap_number_map());
   j(not_equal, lost_precision, Label::kNear);
 
-  if (CpuFeatures::IsSafeForSnapshot(SSE2)) {
+  if (CpuFeatures::IsSafeForSnapshot(isolate(), SSE2)) {
     ASSERT(!temp.is(no_xmm_reg));
     CpuFeatureScope scope(this, SSE2);
 
@@ -1401,7 +1401,7 @@ void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
 // Note: r0 will contain hash code
 void MacroAssembler::GetNumberHash(Register r0, Register scratch) {
   // Xor original key with a seed.
-  if (Serializer::enabled()) {
+  if (Serializer::enabled(isolate())) {
     ExternalReference roots_array_start =
         ExternalReference::roots_array_start(isolate());
     mov(scratch, Immediate(Heap::kHashSeedRootIndex));
@@ -2179,14 +2179,6 @@ bool MacroAssembler::AllowThisStubCall(CodeStub* stub) {
 }
 
 
-void MacroAssembler::IllegalOperation(int num_arguments) {
-  if (num_arguments > 0) {
-    add(esp, Immediate(num_arguments * kPointerSize));
-  }
-  mov(eax, Immediate(isolate()->factory()->undefined_value()));
-}
-
-
 void MacroAssembler::IndexFromHash(Register hash, Register index) {
   // The assert checks that the constants for the maximum number of digits
   // for an array index cached in the hash field and the number of bits
@@ -2212,10 +2204,7 @@ void MacroAssembler::CallRuntime(const Runtime::Function* f,
   // If the expected number of arguments of the runtime function is
   // constant, we check that the actual number of arguments match the
   // expectation.
-  if (f->nargs >= 0 && f->nargs != num_arguments) {
-    IllegalOperation(num_arguments);
-    return;
-  }
+  CHECK(f->nargs < 0 || f->nargs == num_arguments);
 
   // TODO(1236192): Most runtime routines don't need the number of
   // arguments passed in because it is constant. At some point we

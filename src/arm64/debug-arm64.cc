@@ -42,7 +42,7 @@ void BreakLocationIterator::SetDebugBreakAtReturn() {
   STATIC_ASSERT(Assembler::kJSRetSequenceInstructions >= 5);
   PatchingAssembler patcher(reinterpret_cast<Instruction*>(rinfo()->pc()), 5);
   byte* entry =
-      debug_info_->GetIsolate()->debug()->debug_break_return()->entry();
+      debug_info_->GetIsolate()->builtins()->Return_DebugBreak()->entry();
 
   // The first instruction of a patched return sequence must be a load literal
   // loading the address of the debug break return code.
@@ -101,7 +101,7 @@ void BreakLocationIterator::SetDebugBreakAtSlot() {
   STATIC_ASSERT(Assembler::kDebugBreakSlotInstructions >= 4);
   PatchingAssembler patcher(reinterpret_cast<Instruction*>(rinfo()->pc()), 4);
   byte* entry =
-      debug_info_->GetIsolate()->debug()->debug_break_slot()->entry();
+      debug_info_->GetIsolate()->builtins()->Slot_DebugBreak()->entry();
 
   // The first instruction of a patched debug break slot must be a load literal
   // loading the address of the debug break slot code.
@@ -215,6 +215,16 @@ static void Generate_DebugBreakCallHelper(MacroAssembler* masm,
 }
 
 
+void Debug::GenerateCallICStubDebugBreak(MacroAssembler* masm) {
+  // Register state for CallICStub
+  // ----------- S t a t e -------------
+  //  -- x1 : function
+  //  -- x3 : slot in feedback array
+  // -----------------------------------
+  Generate_DebugBreakCallHelper(masm, x1.Bit() | x3.Bit(), 0, x10);
+}
+
+
 void Debug::GenerateLoadICDebugBreak(MacroAssembler* masm) {
   // Calling convention for IC load (from ic-arm.cc).
   // ----------- S t a t e -------------
@@ -271,15 +281,6 @@ void Debug::GenerateCompareNilICDebugBreak(MacroAssembler* masm) {
 }
 
 
-void Debug::GenerateCallICDebugBreak(MacroAssembler* masm) {
-  // Calling convention for IC call (from ic-arm.cc)
-  // ----------- S t a t e -------------
-  //  -- x2     : name
-  // -----------------------------------
-  Generate_DebugBreakCallHelper(masm, x2.Bit(), 0, x10);
-}
-
-
 void Debug::GenerateReturnDebugBreak(MacroAssembler* masm) {
   // In places other than IC call sites it is expected that r0 is TOS which
   // is an object - this is not generally the case so this should be used with
@@ -294,17 +295,6 @@ void Debug::GenerateCallFunctionStubDebugBreak(MacroAssembler* masm) {
   //  -- x1 : function
   // -----------------------------------
   Generate_DebugBreakCallHelper(masm, x1.Bit(), 0, x10);
-}
-
-
-void Debug::GenerateCallFunctionStubRecordDebugBreak(MacroAssembler* masm) {
-  // Register state for CallFunctionStub (from code-stubs-arm64.cc).
-  // ----------- S t a t e -------------
-  //  -- x1 : function
-  //  -- x2 : feedback array
-  //  -- x3 : slot in feedback array
-  // -----------------------------------
-  Generate_DebugBreakCallHelper(masm, x1.Bit() | x2.Bit() | x3.Bit(), 0, x10);
 }
 
 

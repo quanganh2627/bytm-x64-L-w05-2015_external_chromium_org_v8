@@ -68,9 +68,11 @@ void IC::TraceIC(const char* type,
     }
     JavaScriptFrame::PrintTop(isolate(), stdout, false, true);
     ExtraICState extra_state = new_target->extra_ic_state();
-    const char* modifier =
-        GetTransitionMarkModifier(
-            KeyedStoreIC::GetKeyedAccessStoreMode(extra_state));
+    const char* modifier = "";
+    if (new_target->kind() == Code::KEYED_STORE_IC) {
+      modifier = GetTransitionMarkModifier(
+          KeyedStoreIC::GetKeyedAccessStoreMode(extra_state));
+    }
     PrintF(" (%c->%c%s)",
            TransitionMarkFromState(state()),
            TransitionMarkFromState(new_state),
@@ -390,6 +392,10 @@ void IC::PostPatching(Address address, Code* target, Code* old_target) {
       target->is_inline_cache_stub()) {
     int delta = ComputeTypeInfoCountDelta(old_target->ic_state(),
                                           target->ic_state());
+    // Call ICs don't have interesting state changes from this point
+    // of view.
+    ASSERT(target->kind() != Code::CALL_IC || delta == 0);
+
     // Not all Code objects have TypeFeedbackInfo.
     if (host->type_feedback_info()->IsTypeFeedbackInfo() && delta != 0) {
       TypeFeedbackInfo* info =
@@ -462,6 +468,8 @@ void IC::Clear(Isolate* isolate, Address address,
       return StoreIC::Clear(isolate, address, target, constant_pool);
     case Code::KEYED_STORE_IC:
       return KeyedStoreIC::Clear(isolate, address, target, constant_pool);
+    case Code::CALL_IC:
+      return CallIC::Clear(isolate, address, target, constant_pool);
     case Code::COMPARE_IC:
       return CompareIC::Clear(isolate, address, target, constant_pool);
     case Code::COMPARE_NIL_IC:
@@ -485,6 +493,15 @@ void KeyedLoadIC::Clear(Isolate* isolate,
   // do not clear these maps, cached code can keep objects alive
   // through the embedded maps.
   SetTargetAtAddress(address, *pre_monomorphic_stub(isolate), constant_pool);
+}
+
+
+void CallIC::Clear(Isolate* isolate,
+                   Address address,
+                   Code* target,
+                   ConstantPoolArray* constant_pool) {
+  // Currently, CallIC doesn't have state changes.
+  ASSERT(target->ic_state() == v8::internal::GENERIC);
 }
 
 
@@ -1316,6 +1333,23 @@ MaybeHandle<Object> StoreIC::Store(Handle<Object> object,
 }
 
 
+void CallIC::State::Print(StringStream* stream) const {
+  stream->Add("(args(%d), ",
+              argc_);
+  stream->Add("%s, ",
+              call_type_ == CallIC::METHOD ? "METHOD" : "FUNCTION");
+}
+
+
+Handle<Code> CallIC::initialize_stub(Isolate* isolate,
+                                     int argc,
+                                     CallType call_type) {
+  CallICStub stub(isolate, State::DefaultCallState(argc, call_type));
+  Handle<Code> code = stub.GetCode();
+  return code;
+}
+
+
 Handle<Code> StoreIC::initialize_stub(Isolate* isolate,
                                       StrictMode strict_mode) {
   ExtraICState extra_state = ComputeExtraICState(strict_mode);
@@ -1464,7 +1498,8 @@ Handle<Code> KeyedStoreIC::StoreElementStub(Handle<JSObject> receiver,
   MapHandleList target_receiver_maps;
   TargetMaps(&target_receiver_maps);
   if (target_receiver_maps.length() == 0) {
-    Handle<Map> monomorphic_map = ComputeTransitionedMap(receiver, store_mode);
+    Handle<Map> monomorphic_map =
+        ComputeTransitionedMap(receiver_map, store_mode);
     store_mode = GetNonTransitioningStoreMode(store_mode);
     return isolate()->stub_cache()->ComputeKeyedStoreElement(
         monomorphic_map, strict_mode(), store_mode);
@@ -1480,7 +1515,8 @@ Handle<Code> KeyedStoreIC::StoreElementStub(Handle<JSObject> receiver,
   if (state() == MONOMORPHIC) {
     Handle<Map> transitioned_receiver_map = receiver_map;
     if (IsTransitionStoreMode(store_mode)) {
-      transitioned_receiver_map = ComputeTransitionedMap(receiver, store_mode);
+      transitioned_receiver_map =
+          ComputeTransitionedMap(receiver_map, store_mode);
     }
     if ((receiver_map.is_identical_to(previous_receiver_map) &&
          IsTransitionStoreMode(store_mode)) ||
@@ -1512,7 +1548,7 @@ Handle<Code> KeyedStoreIC::StoreElementStub(Handle<JSObject> receiver,
 
   if (IsTransitionStoreMode(store_mode)) {
     Handle<Map> transitioned_receiver_map =
-        ComputeTransitionedMap(receiver, store_mode);
+        ComputeTransitionedMap(receiver_map, store_mode);
     map_added |= AddOneReceiverMapIfMissing(&target_receiver_maps,
                                             transitioned_receiver_map);
   }
@@ -1568,36 +1604,35 @@ Handle<Code> KeyedStoreIC::StoreElementStub(Handle<JSObject> receiver,
 
 
 Handle<Map> KeyedStoreIC::ComputeTransitionedMap(
-    Handle<JSObject> receiver,
+    Handle<Map> map,
     KeyedAccessStoreMode store_mode) {
   switch (store_mode) {
     case STORE_TRANSITION_SMI_TO_OBJECT:
     case STORE_TRANSITION_DOUBLE_TO_OBJECT:
     case STORE_AND_GROW_TRANSITION_SMI_TO_OBJECT:
     case STORE_AND_GROW_TRANSITION_DOUBLE_TO_OBJECT:
-      return JSObject::GetElementsTransitionMap(receiver, FAST_ELEMENTS);
+      return Map::TransitionElementsTo(map, FAST_ELEMENTS);
     case STORE_TRANSITION_SMI_TO_DOUBLE:
     case STORE_AND_GROW_TRANSITION_SMI_TO_DOUBLE:
-      return JSObject::GetElementsTransitionMap(receiver, FAST_DOUBLE_ELEMENTS);
+      return Map::TransitionElementsTo(map, FAST_DOUBLE_ELEMENTS);
     case STORE_TRANSITION_HOLEY_SMI_TO_OBJECT:
     case STORE_TRANSITION_HOLEY_DOUBLE_TO_OBJECT:
     case STORE_AND_GROW_TRANSITION_HOLEY_SMI_TO_OBJECT:
     case STORE_AND_GROW_TRANSITION_HOLEY_DOUBLE_TO_OBJECT:
-      return JSObject::GetElementsTransitionMap(receiver,
-                                                FAST_HOLEY_ELEMENTS);
+      return Map::TransitionElementsTo(map, FAST_HOLEY_ELEMENTS);
     case STORE_TRANSITION_HOLEY_SMI_TO_DOUBLE:
     case STORE_AND_GROW_TRANSITION_HOLEY_SMI_TO_DOUBLE:
-      return JSObject::GetElementsTransitionMap(receiver,
-                                                FAST_HOLEY_DOUBLE_ELEMENTS);
+      return Map::TransitionElementsTo(map, FAST_HOLEY_DOUBLE_ELEMENTS);
     case STORE_NO_TRANSITION_IGNORE_OUT_OF_BOUNDS:
-      ASSERT(receiver->map()->has_external_array_elements());
+      ASSERT(map->has_external_array_elements());
       // Fall through
     case STORE_NO_TRANSITION_HANDLE_COW:
     case STANDARD_STORE:
     case STORE_AND_GROW_NO_TRANSITION:
-      return Handle<Map>(receiver->map(), isolate());
+      return map;
   }
-  return Handle<Map>::null();
+  UNREACHABLE();
+  return MaybeHandle<Map>().ToHandleChecked();
 }
 
 
@@ -1780,6 +1815,47 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
 }
 
 
+CallIC::State::State(ExtraICState extra_ic_state)
+    : argc_(ArgcBits::decode(extra_ic_state)),
+      call_type_(CallTypeBits::decode(extra_ic_state)) {
+}
+
+
+ExtraICState CallIC::State::GetExtraICState() const {
+  ExtraICState extra_ic_state =
+      ArgcBits::encode(argc_) |
+      CallTypeBits::encode(call_type_);
+  return extra_ic_state;
+}
+
+
+void CallIC::HandleMiss(Handle<Object> receiver,
+                        Handle<Object> function,
+                        Handle<FixedArray> vector,
+                        Handle<Smi> slot) {
+  State state(target()->extra_ic_state());
+  Object* feedback = vector->get(slot->value());
+
+  if (feedback->IsJSFunction() || !function->IsJSFunction()) {
+    // We are going generic.
+    ASSERT(!function->IsJSFunction() || *function != feedback);
+
+    vector->set(slot->value(),
+                *TypeFeedbackInfo::MegamorphicSentinel(isolate()),
+                SKIP_WRITE_BARRIER);
+    TRACE_GENERIC_IC(isolate(), "CallIC", "megamorphic");
+  } else {
+    // If we came here feedback must be the uninitialized sentinel,
+    // and we are going monomorphic.
+    ASSERT(feedback == *TypeFeedbackInfo::UninitializedSentinel(isolate()));
+    Handle<JSFunction> js_function = Handle<JSFunction>::cast(function);
+    Handle<Object> name(js_function->shared()->name(), isolate());
+    TRACE_IC("CallIC", name);
+    vector->set(slot->value(), *function);
+  }
+}
+
+
 #undef TRACE_IC
 
 
@@ -1788,6 +1864,19 @@ MaybeHandle<Object> KeyedStoreIC::Store(Handle<Object> object,
 //
 
 // Used from ic-<arch>.cc.
+RUNTIME_FUNCTION(CallIC_Miss) {
+  HandleScope scope(isolate);
+  ASSERT(args.length() == 4);
+  CallIC ic(isolate);
+  Handle<Object> receiver = args.at<Object>(0);
+  Handle<Object> function = args.at<Object>(1);
+  Handle<FixedArray> vector = args.at<FixedArray>(2);
+  Handle<Smi> slot = args.at<Smi>(3);
+  ic.HandleMiss(receiver, function, vector, slot);
+  return *function;
+}
+
+
 // Used from ic-<arch>.cc.
 RUNTIME_FUNCTION(LoadIC_Miss) {
   HandleScope scope(isolate);
@@ -2041,7 +2130,7 @@ BinaryOpIC::State::State(Isolate* isolate, ExtraICState extra_ic_state)
 
 ExtraICState BinaryOpIC::State::GetExtraICState() const {
   bool sse2 = (Max(result_kind_, Max(left_kind_, right_kind_)) > SMI &&
-               CpuFeatures::IsSafeForSnapshot(SSE2));
+               CpuFeatures::IsSafeForSnapshot(isolate(), SSE2));
   ExtraICState extra_ic_state =
       SSE2Field::encode(sse2) |
       OpField::encode(op_ - FIRST_TOKEN) |
