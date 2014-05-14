@@ -75,6 +75,7 @@ MY_DEFS_Debug := \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
+	'-DVIDEO_HOLE=1' \
 	'-DV8_TARGET_ARCH_MIPS' \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
@@ -147,6 +148,7 @@ MY_DEFS_Release := \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
+	'-DVIDEO_HOLE=1' \
 	'-DV8_TARGET_ARCH_MIPS' \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
 	'-D__mips_hard_float=1' \
