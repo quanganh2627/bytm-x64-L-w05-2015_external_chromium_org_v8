@@ -2483,7 +2483,7 @@ void MarkCompactCollector::AfterMarking() {
 
 
 void MarkCompactCollector::ProcessMapCaches() {
-  Object* raw_context = heap()->native_contexts_list_;
+  Object* raw_context = heap()->native_contexts_list();
   while (raw_context != heap()->undefined_value()) {
     Context* context = reinterpret_cast<Context*>(raw_context);
     if (IsMarked(context)) {
@@ -2634,6 +2634,7 @@ void MarkCompactCollector::ClearNonLiveReferences() {
         ClearDependentCode(DependentCode::cast(value));
         table->set(key_index, heap_->the_hole_value());
         table->set(value_index, heap_->the_hole_value());
+        table->ElementRemoved();
       }
     }
   }
@@ -2757,7 +2758,7 @@ int MarkCompactCollector::ClearNonLiveDependentCodeInGroup(
       ASSERT(start + 1 == end);
       Object* old_head = entries->object_at(start);
       MarkCompactWeakObjectRetainer retainer;
-      Object* head = VisitWeakList<Code>(heap(), old_head, &retainer, true);
+      Object* head = VisitWeakList<Code>(heap(), old_head, &retainer);
       entries->set_object_at(new_start, head);
       Object** slot = entries->slot_at(new_start);
       RecordSlot(slot, slot, head);
@@ -3641,9 +3642,6 @@ void MarkCompactCollector::EvacuateNewSpaceAndCandidates() {
       PropertyCell::BodyDescriptor::IterateBody(cell, &updating_visitor);
     }
   }
-
-  // Update the head of the native contexts list in the heap.
-  updating_visitor.VisitPointer(heap_->native_contexts_list_address());
 
   heap_->string_table()->Iterate(&updating_visitor);
   updating_visitor.VisitPointer(heap_->weak_object_to_code_table_address());

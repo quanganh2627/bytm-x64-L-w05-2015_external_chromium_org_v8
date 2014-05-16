@@ -17,7 +17,6 @@
 #include <time.h>
 
 #include <sys/mman.h>
-#include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -43,7 +42,6 @@
 
 #include "v8.h"
 
-#include "codegen.h"
 #include "isolate-inl.h"
 #include "platform.h"
 
@@ -55,14 +53,7 @@ static const pthread_t kNoThread = (pthread_t) 0;
 
 
 uint64_t OS::CpuFeaturesImpliedByPlatform() {
-#if V8_OS_MACOSX
-  // Mac OS X requires all these to install so we can assume they are present.
-  // These constants are defined by the CPUid instructions.
-  const uint64_t one = 1;
-  return (one << SSE2) | (one << CMOV);
-#else
-  return 0;  // Nothing special about the other systems.
-#endif
+  return 0;  // Nothing special.
 }
 
 
@@ -284,33 +275,6 @@ void OS::DebugBreak() {
 
 // ----------------------------------------------------------------------------
 // Math functions
-
-double modulo(double x, double y) {
-  return std::fmod(x, y);
-}
-
-
-#define UNARY_MATH_FUNCTION(name, generator)             \
-static UnaryMathFunction fast_##name##_function = NULL;  \
-void init_fast_##name##_function() {                     \
-  fast_##name##_function = generator;                    \
-}                                                        \
-double fast_##name(double x) {                           \
-  return (*fast_##name##_function)(x);                   \
-}
-
-UNARY_MATH_FUNCTION(exp, CreateExpFunction())
-UNARY_MATH_FUNCTION(sqrt, CreateSqrtFunction())
-
-#undef UNARY_MATH_FUNCTION
-
-
-void lazily_initialize_fast_exp() {
-  if (fast_exp_function == NULL) {
-    init_fast_exp_function();
-  }
-}
-
 
 double OS::nan_value() {
   // NAN from math.h is defined in C99 and not in POSIX.
@@ -541,8 +505,6 @@ void OS::PostSetUp() {
   OS::memcopy_uint8_function =
       CreateMemCopyUint8Function(&OS::MemCopyUint8Wrapper);
 #endif
-  // fast_exp is initialized lazily.
-  init_fast_sqrt_function();
 }
 
 

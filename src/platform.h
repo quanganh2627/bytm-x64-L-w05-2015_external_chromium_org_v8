@@ -73,16 +73,6 @@ inline int lrint(double flt) {
 namespace v8 {
 namespace internal {
 
-double modulo(double x, double y);
-
-// Custom implementation of math functions.
-double fast_exp(double input);
-double fast_sqrt(double input);
-// The custom exp implementation needs 16KB of lookup data; initialize it
-// on demand.
-void lazily_initialize_fast_exp();
-
-
 // ----------------------------------------------------------------------------
 // Fast TLS support
 
@@ -278,8 +268,7 @@ class OS {
   static void SignalCodeMovingGC();
 
   // The return value indicates the CPU features we are sure of because of the
-  // OS.  For example MacOSX doesn't run on any x86 CPUs that don't have SSE2
-  // instructions.
+  // OS.
   // This is a little messy because the interpretation is subject to the cross
   // of the CPU and the OS.  The bits in the answer correspond to the bit
   // positions indicated by the members of the CpuFeature enum from globals.h

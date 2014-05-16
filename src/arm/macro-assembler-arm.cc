@@ -902,18 +902,18 @@ void MacroAssembler::LoadConstantPoolPointerRegister() {
 }
 
 
-void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
-  if (frame_mode == BUILD_STUB_FRAME) {
+void MacroAssembler::Prologue(CompilationInfo* info) {
+  if (info->IsStub()) {
     PushFixedFrame();
     Push(Smi::FromInt(StackFrame::STUB));
     // Adjust FP to point to saved FP.
     add(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
   } else {
     PredictableCodeSizeScope predictible_code_size_scope(
-        this, kNoCodeAgeSequenceLength * Assembler::kInstrSize);
+        this, kNoCodeAgeSequenceLength);
     // The following three instructions must remain together and unmodified
     // for code aging to work properly.
-    if (isolate()->IsCodePreAgingActive()) {
+    if (info->IsCodePreAgingActive()) {
       // Pre-age the code.
       Code* stub = Code::GetPreAgedCodeAgeStub(isolate());
       add(r0, pc, Operand(-8));
@@ -3596,7 +3596,7 @@ void MacroAssembler::CheckMapDeprecated(Handle<Map> map,
   if (map->CanBeDeprecated()) {
     mov(scratch, Operand(map));
     ldr(scratch, FieldMemOperand(scratch, Map::kBitField3Offset));
-    tst(scratch, Operand(Smi::FromInt(Map::Deprecated::kMask)));
+    tst(scratch, Operand(Map::Deprecated::kMask));
     b(ne, if_deprecated);
   }
 }
@@ -3854,7 +3854,8 @@ void MacroAssembler::NumberOfOwnDescriptors(Register dst, Register map) {
 void MacroAssembler::EnumLength(Register dst, Register map) {
   STATIC_ASSERT(Map::EnumLengthBits::kShift == 0);
   ldr(dst, FieldMemOperand(map, Map::kBitField3Offset));
-  and_(dst, dst, Operand(Smi::FromInt(Map::EnumLengthBits::kMask)));
+  and_(dst, dst, Operand(Map::EnumLengthBits::kMask));
+  SmiTag(dst);
 }
 
 

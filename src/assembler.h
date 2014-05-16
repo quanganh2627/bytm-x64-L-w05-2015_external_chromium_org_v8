@@ -116,7 +116,7 @@ class DontEmitDebugCodeScope BASE_EMBEDDED {
   }
   ~DontEmitDebugCodeScope() {
     assembler_->set_emit_debug_code(old_value_);
-  };
+  }
  private:
   AssemblerBase* assembler_;
   bool old_value_;
@@ -520,7 +520,7 @@ class RelocInfo {
   void Print(Isolate* isolate, FILE* out);
 #endif  // ENABLE_DISASSEMBLER
 #ifdef VERIFY_HEAP
-  void Verify();
+  void Verify(Isolate* isolate);
 #endif
 
   static const int kCodeTargetMask = (1 << (LAST_CODE_ENUM + 1)) - 1;

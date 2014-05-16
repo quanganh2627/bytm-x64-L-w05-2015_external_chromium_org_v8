@@ -30,9 +30,6 @@
   # All tests prefixed with 'Bug' are expected to fail.
   'test-api/Bug*': [FAIL],
 
-  # BUG(3303). Crashes on mac builds, known race condition.
-  'test-lockers/MultithreadedParallelIsolates': [SKIP],
-
   ##############################################################################
   # BUG(382): Weird test. Can't guarantee that it never times out.
   'test-api/ApplyInterruption': [PASS, TIMEOUT],
@@ -76,8 +73,6 @@
   'test-cpu-profiler/CollectCpuProfile': [PASS, FLAKY],
   # BUG(3287).
   'test-cpu-profiler/SampleWhenFrameIsNotSetup': [PASS, FLAKY],
-  # BUG(3308).
-  'test-cpu-profiler/JsNativeJsRuntimeJsSample': [PASS, FLAKY],
 
   ############################################################################
   # Slow tests.
@@ -97,7 +92,7 @@
   'test-cpu-profiler/CollectCpuProfile': [PASS, FAIL],
 
   # BUG(v8:3154).
-  'test-heap/ReleaseOverReservedPages': [PASS, ['mode == debug', FAIL]],
+  'test-heap/ReleaseOverReservedPages': [PASS, FAIL],
 
   # BUG(v8:3155).
   'test-strings/AsciiArrayJoin': [PASS, ['mode == debug', FAIL]],
@@ -161,6 +156,10 @@
 
   # BUG(3215). Crashes on windows.
   'test-lockers/MultithreadedParallelIsolates': [SKIP],
+
+  # BUG(3331). Fails on windows.
+  'test-heap/NoWeakHashTableLeakWithIncrementalMarking': [SKIP],
+
 }],  # 'system == windows'
 
 ##############################################################################

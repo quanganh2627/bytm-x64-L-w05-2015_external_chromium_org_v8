@@ -40,7 +40,6 @@
 
 using namespace v8::internal;
 
-
 // Go through all incremental marking steps in one swoop.
 static void SimulateIncrementalMarking() {
   MarkCompactCollector* collector = CcTest::heap()->mark_compact_collector();
@@ -261,11 +260,7 @@ TEST(GarbageCollection) {
   {
     HandleScope inner_scope(isolate);
     // Allocate a function and keep it in global object's property.
-    Handle<JSFunction> function = factory->NewFunctionWithPrototype(
-        name, factory->undefined_value());
-    Handle<Map> initial_map =
-        factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
-    function->set_initial_map(*initial_map);
+    Handle<JSFunction> function = factory->NewFunction(name);
     JSReceiver::SetProperty(global, name, function, NONE, SLOPPY).Check();
     // Allocate an object.  Unrooted after leaving the scope.
     Handle<JSObject> obj = factory->NewJSObject(function);
@@ -624,11 +619,7 @@ TEST(FunctionAllocation) {
 
   v8::HandleScope sc(CcTest::isolate());
   Handle<String> name = factory->InternalizeUtf8String("theFunction");
-  Handle<JSFunction> function = factory->NewFunctionWithPrototype(
-      name, factory->undefined_value());
-  Handle<Map> initial_map =
-      factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
-  function->set_initial_map(*initial_map);
+  Handle<JSFunction> function = factory->NewFunction(name);
 
   Handle<Smi> twenty_three(Smi::FromInt(23), isolate);
   Handle<Smi> twenty_four(Smi::FromInt(24), isolate);
@@ -723,14 +714,11 @@ TEST(JSObjectMaps) {
 
   v8::HandleScope sc(CcTest::isolate());
   Handle<String> name = factory->InternalizeUtf8String("theFunction");
-  Handle<JSFunction> function = factory->NewFunctionWithPrototype(
-      name, factory->undefined_value());
-  Handle<Map> initial_map =
-      factory->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
-  function->set_initial_map(*initial_map);
+  Handle<JSFunction> function = factory->NewFunction(name);
 
   Handle<String> prop_name = factory->InternalizeUtf8String("theSlot");
   Handle<JSObject> obj = factory->NewJSObject(function);
+  Handle<Map> initial_map(function->initial_map());
 
   // Set a propery
   Handle<Smi> twenty_three(Smi::FromInt(23), isolate);
@@ -2208,7 +2196,7 @@ TEST(OptimizedAllocationAlwaysInNewSpace) {
 
 TEST(OptimizedPretenuringAllocationFolding) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   i::FLAG_allocation_site_pretenuring = false;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
@@ -2251,7 +2239,7 @@ TEST(OptimizedPretenuringAllocationFolding) {
 
 TEST(OptimizedPretenuringAllocationFoldingBlocks) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   i::FLAG_allocation_site_pretenuring = false;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
@@ -2294,7 +2282,7 @@ TEST(OptimizedPretenuringAllocationFoldingBlocks) {
 
 TEST(OptimizedPretenuringObjectArrayLiterals) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -2323,7 +2311,7 @@ TEST(OptimizedPretenuringObjectArrayLiterals) {
 
 TEST(OptimizedPretenuringMixedInObjectProperties) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -2358,7 +2346,7 @@ TEST(OptimizedPretenuringMixedInObjectProperties) {
 
 TEST(OptimizedPretenuringDoubleArrayProperties) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -2387,7 +2375,7 @@ TEST(OptimizedPretenuringDoubleArrayProperties) {
 
 TEST(OptimizedPretenuringdoubleArrayLiterals) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -2416,7 +2404,7 @@ TEST(OptimizedPretenuringdoubleArrayLiterals) {
 
 TEST(OptimizedPretenuringNestedMixedArrayLiterals) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -2454,7 +2442,7 @@ TEST(OptimizedPretenuringNestedMixedArrayLiterals) {
 
 TEST(OptimizedPretenuringNestedObjectLiterals) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -2492,7 +2480,7 @@ TEST(OptimizedPretenuringNestedObjectLiterals) {
 
 TEST(OptimizedPretenuringNestedDoubleLiterals) {
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -2538,7 +2526,7 @@ TEST(OptimizedPretenuringConstructorCalls) {
     return;
   }
   i::FLAG_allow_natives_syntax = true;
-  i::FLAG_max_new_space_size = 2;
+  i::FLAG_max_semi_space_size = 1;
   CcTest::InitializeVM();
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
@@ -3899,6 +3887,46 @@ TEST(ObjectsInOptimizedCodeAreWeak) {
 }
 
 
+TEST(NoWeakHashTableLeakWithIncrementalMarking) {
+  if (i::FLAG_always_opt || !i::FLAG_crankshaft) return;
+  if (!i::FLAG_incremental_marking) return;
+  i::FLAG_weak_embedded_objects_in_optimized_code = true;
+  i::FLAG_allow_natives_syntax = true;
+  i::FLAG_compilation_cache = false;
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  v8::internal::Heap* heap = CcTest::heap();
+
+  if (!isolate->use_crankshaft()) return;
+  HandleScope outer_scope(heap->isolate());
+  for (int i = 0; i < 3; i++) {
+    SimulateIncrementalMarking();
+    {
+      LocalContext context;
+      HandleScope scope(heap->isolate());
+      EmbeddedVector<char, 256> source;
+      OS::SNPrintF(source,
+                   "function bar%d() {"
+                   "  return foo%d(1);"
+                   "};"
+                   "function foo%d(x) { with (x) { return 1 + x; } };"
+                   "bar%d();"
+                   "bar%d();"
+                   "bar%d();"
+                   "%OptimizeFunctionOnNextCall(bar%d);"
+                   "bar%d();", i, i, i, i, i, i, i, i);
+      CompileRun(source.start());
+    }
+    heap->CollectAllGarbage(i::Heap::kNoGCFlags);
+  }
+  int elements = 0;
+  if (heap->weak_object_to_code_table()->IsHashTable()) {
+    WeakHashTable* t = WeakHashTable::cast(heap->weak_object_to_code_table());
+    elements = t->NumberOfElements();
+  }
+  CHECK_EQ(0, elements);
+}
+
 
 static Handle<JSFunction> OptimizeDummyFunction(const char* name) {
   EmbeddedVector<char, 256> source;
@@ -3958,7 +3986,8 @@ static Handle<Code> DummyOptimizedCode(Isolate* isolate) {
   i::byte buffer[i::Assembler::kMinimalBufferSize];
   MacroAssembler masm(isolate, buffer, sizeof(buffer));
   CodeDesc desc;
-  masm.Prologue(BUILD_FUNCTION_FRAME);
+  masm.Push(isolate->factory()->undefined_value());
+  masm.Drop(1);
   masm.GetCode(&desc);
   Handle<Object> undefined(isolate->heap()->undefined_value(), isolate);
   Handle<Code> code = isolate->factory()->NewCode(

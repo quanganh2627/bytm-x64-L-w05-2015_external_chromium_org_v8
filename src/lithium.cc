@@ -5,6 +5,7 @@
 #include "v8.h"
 #include "lithium.h"
 #include "scopes.h"
+#include "serialize.h"
 
 #if V8_TARGET_ARCH_IA32
 #include "ia32/lithium-ia32.h"
@@ -61,6 +62,9 @@ void LOperand::PrintTo(StringStream* stream) {
         }
         case LUnallocated::MUST_HAVE_REGISTER:
           stream->Add("(R)");
+          break;
+        case LUnallocated::MUST_HAVE_DOUBLE_REGISTER:
+          stream->Add("(D)");
           break;
         case LUnallocated::WRITABLE_REGISTER:
           stream->Add("(WR)");
@@ -446,6 +450,9 @@ Handle<Code> LChunk::Codegen() {
                    CodeEndLinePosInfoRecordEvent(*code, jit_handler_data));
 
     CodeGenerator::PrintCode(code, info());
+    ASSERT(!(Serializer::enabled(info()->isolate()) &&
+             info()->GetMustNotHaveEagerFrame() &&
+             generator.NeedsEagerFrame()));
     return code;
   }
   assembler.AbortedCodeGeneration();

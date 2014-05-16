@@ -66,6 +66,7 @@ struct CPURegister {
   bool IsValidFPRegister() const;
   bool IsNone() const;
   bool Is(const CPURegister& other) const;
+  bool Aliases(const CPURegister& other) const;
 
   bool IsZero() const;
   bool IsSP() const;
@@ -561,6 +562,11 @@ class CPURegList {
     return size_in_bits / kBitsPerByte;
   }
 
+  unsigned TotalSizeInBytes() const {
+    ASSERT(IsValid());
+    return RegisterSizeInBytes() * Count();
+  }
+
  private:
   RegList list_;
   unsigned size_;
@@ -669,6 +675,7 @@ class Operand {
 // MemOperand represents a memory operand in a load or store instruction.
 class MemOperand {
  public:
+  inline explicit MemOperand();
   inline explicit MemOperand(Register base,
                              ptrdiff_t offset = 0,
                              AddrMode addrmode = Offset);
@@ -1748,6 +1755,13 @@ class Assembler : public AssemblerBase {
   inline static Instr ImmCondCmp(unsigned imm);
   inline static Instr Nzcv(StatusFlags nzcv);
 
+  static bool IsImmAddSub(int64_t immediate);
+  static bool IsImmLogical(uint64_t value,
+                           unsigned width,
+                           unsigned* n,
+                           unsigned* imm_s,
+                           unsigned* imm_r);
+
   // MemOperand offset encoding.
   inline static Instr ImmLSUnsigned(int imm12);
   inline static Instr ImmLS(int imm9);
@@ -1861,11 +1875,6 @@ class Assembler : public AssemblerBase {
                         unsigned imm_s,
                         unsigned imm_r,
                         LogicalOp op);
-  static bool IsImmLogical(uint64_t value,
-                           unsigned width,
-                           unsigned* n,
-                           unsigned* imm_s,
-                           unsigned* imm_r);
 
   void ConditionalCompare(const Register& rn,
                           const Operand& operand,
@@ -1896,7 +1905,6 @@ class Assembler : public AssemblerBase {
               const Operand& operand,
               FlagsUpdate S,
               AddSubOp op);
-  static bool IsImmAddSub(int64_t immediate);
 
   static bool IsImmFP32(float imm);
   static bool IsImmFP64(double imm);

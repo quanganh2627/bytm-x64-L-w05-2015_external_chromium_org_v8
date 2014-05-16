@@ -1194,7 +1194,7 @@ void MacroAssembler::BranchF(Label* target,
         break;
       default:
         CHECK(0);
-    };
+    }
   }
 
   if (bd == PROTECT) {
@@ -4452,18 +4452,18 @@ void MacroAssembler::LoadGlobalFunctionInitialMap(Register function,
 }
 
 
-void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
-  if (frame_mode == BUILD_STUB_FRAME) {
+void MacroAssembler::Prologue(CompilationInfo* info) {
+  if (info->IsStub()) {
     Push(ra, fp, cp);
     Push(Smi::FromInt(StackFrame::STUB));
     // Adjust FP to point to saved FP.
     Addu(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
   } else {
     PredictableCodeSizeScope predictible_code_size_scope(
-      this, kNoCodeAgeSequenceLength * Assembler::kInstrSize);
+      this, kNoCodeAgeSequenceLength);
     // The following three instructions must remain together and unmodified
     // for code aging to work properly.
-    if (isolate()->IsCodePreAgingActive()) {
+    if (info->IsCodePreAgingActive()) {
       // Pre-age the code.
       Code* stub = Code::GetPreAgedCodeAgeStub(isolate());
       nop(Assembler::CODE_AGE_MARKER_NOP);
@@ -5236,7 +5236,7 @@ void MacroAssembler::CheckMapDeprecated(Handle<Map> map,
   if (map->CanBeDeprecated()) {
     li(scratch, Operand(map));
     lw(scratch, FieldMemOperand(scratch, Map::kBitField3Offset));
-    And(scratch, scratch, Operand(Smi::FromInt(Map::Deprecated::kMask)));
+    And(scratch, scratch, Operand(Map::Deprecated::kMask));
     Branch(if_deprecated, ne, scratch, Operand(zero_reg));
   }
 }
@@ -5493,7 +5493,8 @@ void MacroAssembler::NumberOfOwnDescriptors(Register dst, Register map) {
 void MacroAssembler::EnumLength(Register dst, Register map) {
   STATIC_ASSERT(Map::EnumLengthBits::kShift == 0);
   lw(dst, FieldMemOperand(map, Map::kBitField3Offset));
-  And(dst, dst, Operand(Smi::FromInt(Map::EnumLengthBits::kMask)));
+  And(dst, dst, Operand(Map::EnumLengthBits::kMask));
+  SmiTag(dst);
 }
 
 
@@ -5664,10 +5665,13 @@ bool AreAliased(Register r1, Register r2, Register r3, Register r4) {
 }
 
 
-CodePatcher::CodePatcher(byte* address, int instructions)
+CodePatcher::CodePatcher(byte* address,
+                         int instructions,
+                         FlushICache flush_cache)
     : address_(address),
       size_(instructions * Assembler::kInstrSize),
-      masm_(NULL, address, size_ + Assembler::kGap) {
+      masm_(NULL, address, size_ + Assembler::kGap),
+      flush_cache_(flush_cache) {
   // Create a new macro assembler pointing to the address of the code to patch.
   // The size is adjusted with kGap on order for the assembler to generate size
   // bytes of instructions without failing with buffer size constraints.
@@ -5677,7 +5681,9 @@ CodePatcher::CodePatcher(byte* address, int instructions)
 
 CodePatcher::~CodePatcher() {
   // Indicate that code has changed.
-  CPU::FlushICache(address_, size_);
+  if (flush_cache_ == FLUSH) {
+    CPU::FlushICache(address_, size_);
+  }
 
   // Check that the code was patched as expected.
   ASSERT(masm_.pc_ == address_ + size_);

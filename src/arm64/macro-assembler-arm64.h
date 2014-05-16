@@ -718,9 +718,11 @@ class MacroAssembler : public Assembler {
   // it can be evidence of a potential bug because the ABI forbids accesses
   // below csp.
   //
-  // If emit_debug_code() is false, this emits no code.
+  // If StackPointer() is the system stack pointer (csp) or ALWAYS_ALIGN_CSP is
+  // enabled, then csp will be dereferenced to  cause the processor
+  // (or simulator) to abort if it is not properly aligned.
   //
-  // If StackPointer() is the system stack pointer, this emits no code.
+  // If emit_debug_code() is false, this emits no code.
   void AssertStackConsistency();
 
   // Preserve the callee-saved registers (as defined by AAPCS64).
@@ -778,11 +780,21 @@ class MacroAssembler : public Assembler {
   //
   // This is necessary when pushing or otherwise adding things to the stack, to
   // satisfy the AAPCS64 constraint that the memory below the system stack
-  // pointer is not accessed.
+  // pointer is not accessed.  The amount pushed will be increased as necessary
+  // to ensure csp remains aligned to 16 bytes.
   //
   // This method asserts that StackPointer() is not csp, since the call does
   // not make sense in that context.
   inline void BumpSystemStackPointer(const Operand& space);
+
+  // Re-synchronizes the system stack pointer (csp) with the current stack
+  // pointer (according to StackPointer()).  This function will ensure the
+  // new value of the system stack pointer is remains aligned to 16 bytes, and
+  // is lower than or equal to the value of the current stack pointer.
+  //
+  // This method asserts that StackPointer() is not csp, since the call does
+  // not make sense in that context.
+  inline void SyncSystemStackPointer();
 
   // Helpers ------------------------------------------------------------------
   // Root register.
@@ -831,7 +843,7 @@ class MacroAssembler : public Assembler {
 
   template<typename Field>
   void DecodeField(Register reg) {
-    static const uint64_t shift = Field::kShift + kSmiShift;
+    static const uint64_t shift = Field::kShift;
     static const uint64_t setbits = CountSetBits(Field::kMask, 32);
     Ubfx(reg, reg, shift, setbits);
   }
@@ -906,6 +918,10 @@ class MacroAssembler : public Assembler {
 
   // Jump to label if the input double register contains -0.0.
   void JumpIfMinusZero(DoubleRegister input, Label* on_negative_zero);
+
+  // Jump to label if the input integer register contains the double precision
+  // floating point representation of -0.0.
+  void JumpIfMinusZero(Register input, Label* on_negative_zero);
 
   // Generate code to do a lookup in the number string cache. If the number in
   // the register object is found in the cache the generated code falls through
@@ -1636,7 +1652,7 @@ class MacroAssembler : public Assembler {
   void ExitFrameRestoreFPRegs();
 
   // Generates function and stub prologue code.
-  void Prologue(PrologueFrameMode frame_mode);
+  void Prologue(CompilationInfo* info);
 
   // Enter exit frame. Exit frames are used when calling C code from generated
   // (JavaScript) code.
@@ -1918,12 +1934,13 @@ class MacroAssembler : public Assembler {
   // (such as %e, %f or %g) are FPRegisters, and that arguments for integer
   // placeholders are Registers.
   //
-  // A maximum of four arguments may be given to any single Printf call. The
-  // arguments must be of the same type, but they do not need to have the same
-  // size.
+  // At the moment it is only possible to print the value of csp if it is the
+  // current stack pointer. Otherwise, the MacroAssembler will automatically
+  // update csp on every push (using BumpSystemStackPointer), so determining its
+  // value is difficult.
   //
-  // The following registers cannot be printed:
-  //    StackPointer(), csp.
+  // Format placeholders that refer to more than one argument, or to a specific
+  // argument, are not supported. This includes formats like "%1$d" or "%.*d".
   //
   // This function automatically preserves caller-saved registers so that
   // calling code can use Printf at any point without having to worry about
@@ -1931,15 +1948,11 @@ class MacroAssembler : public Assembler {
   // a problem, preserve the important registers manually and then call
   // PrintfNoPreserve. Callee-saved registers are not used by Printf, and are
   // implicitly preserved.
-  //
-  // This function assumes (and asserts) that the current stack pointer is
-  // callee-saved, not caller-saved. This is most likely the case anyway, as a
-  // caller-saved stack pointer doesn't make a lot of sense.
   void Printf(const char * format,
-              const CPURegister& arg0 = NoCPUReg,
-              const CPURegister& arg1 = NoCPUReg,
-              const CPURegister& arg2 = NoCPUReg,
-              const CPURegister& arg3 = NoCPUReg);
+              CPURegister arg0 = NoCPUReg,
+              CPURegister arg1 = NoCPUReg,
+              CPURegister arg2 = NoCPUReg,
+              CPURegister arg3 = NoCPUReg);
 
   // Like Printf, but don't preserve any caller-saved registers, not even 'lr'.
   //
@@ -1987,13 +2000,7 @@ class MacroAssembler : public Assembler {
   // Return true if the sequence is a young sequence geneated by
   // EmitFrameSetupForCodeAgePatching. Otherwise, this method asserts that the
   // sequence is a code age sequence (emitted by EmitCodeAgeSequence).
-  static bool IsYoungSequence(byte* sequence);
-
-#ifdef DEBUG
-  // Return true if the sequence is a code age sequence generated by
-  // EmitCodeAgeSequence.
-  static bool IsCodeAgeSequence(byte* sequence);
-#endif
+  static bool IsYoungSequence(Isolate* isolate, byte* sequence);
 
   // Jumps to found label if a prototype map has dictionary elements.
   void JumpIfDictionaryInPrototypeChain(Register object, Register scratch0,
@@ -2026,22 +2033,24 @@ class MacroAssembler : public Assembler {
                  const CPURegister& dst0, const CPURegister& dst1,
                  const CPURegister& dst2, const CPURegister& dst3);
 
-  // Perform necessary maintenance operations before a push or pop.
+  // Perform necessary maintenance operations before a push or after a pop.
   //
   // Note that size is specified in bytes.
-  void PrepareForPush(Operand total_size);
-  void PrepareForPop(Operand total_size);
+  void PushPreamble(Operand total_size);
+  void PopPostamble(Operand total_size);
 
-  void PrepareForPush(int count, int size) { PrepareForPush(count * size); }
-  void PrepareForPop(int count, int size) { PrepareForPop(count * size); }
+  void PushPreamble(int count, int size) { PushPreamble(count * size); }
+  void PopPostamble(int count, int size) { PopPostamble(count * size); }
 
   // Call Printf. On a native build, a simple call will be generated, but if the
   // simulator is being used then a suitable pseudo-instruction is used. The
   // arguments and stack (csp) must be prepared by the caller as for a normal
   // AAPCS64 call to 'printf'.
   //
-  // The 'type' argument specifies the type of the optional arguments.
-  void CallPrintf(CPURegister::RegisterType type = CPURegister::kNoRegister);
+  // The 'args' argument should point to an array of variable arguments in their
+  // proper PCS registers (and in calling order). The argument registers can
+  // have mixed types. The format string (x0) should not be included.
+  void CallPrintf(int arg_count = 0, const CPURegister * args = NULL);
 
   // Helper for throwing exceptions.  Compute a handler address and jump to
   // it.  See the implementation for register usage.

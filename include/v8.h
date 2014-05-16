@@ -1039,10 +1039,10 @@ class V8_EXPORT ScriptCompiler {
     int length;
     BufferPolicy buffer_policy;
 
-  private:
-     // Prevent copying. Not implemented.
-     CachedData(const CachedData&);
-     CachedData& operator=(const CachedData&);
+   private:
+    // Prevent copying. Not implemented.
+    CachedData(const CachedData&);
+    CachedData& operator=(const CachedData&);
   };
 
   /**
@@ -1065,7 +1065,7 @@ class V8_EXPORT ScriptCompiler {
 
    private:
     friend class ScriptCompiler;
-     // Prevent copying. Not implemented.
+    // Prevent copying. Not implemented.
     Source(const Source&);
     Source& operator=(const Source&);
 
@@ -2429,6 +2429,10 @@ class ReturnValue {
   // Convenience getter for Isolate
   V8_INLINE Isolate* GetIsolate();
 
+  // Pointer setter: Uncompilable to prevent inadvertent misuse.
+  template <typename S>
+  V8_INLINE void Set(S* whatever);
+
  private:
   template<class F> friend class ReturnValue;
   template<class F> friend class FunctionCallbackInfo;
@@ -2493,7 +2497,7 @@ class PropertyCallbackInfo {
  public:
   V8_INLINE Isolate* GetIsolate() const;
   V8_INLINE Local<Value> Data() const;
-  V8_INLINE Local<Value> This() const;
+  V8_INLINE Local<Object> This() const;
   V8_INLINE Local<Object> Holder() const;
   V8_INLINE ReturnValue<T> GetReturnValue() const;
   // This shouldn't be public, but the arm compiler needs it.
@@ -3865,8 +3869,8 @@ class V8_EXPORT ResourceConstraints {
                          uint64_t virtual_memory_limit,
                          uint32_t number_of_processors);
 
-  int max_new_space_size() const { return max_new_space_size_; }
-  void set_max_new_space_size(int value) { max_new_space_size_ = value; }
+  int max_semi_space_size() const { return max_semi_space_size_; }
+  void set_max_semi_space_size(int value) { max_semi_space_size_ = value; }
   int max_old_space_size() const { return max_old_space_size_; }
   void set_max_old_space_size(int value) { max_old_space_size_ = value; }
   int max_executable_size() const { return max_executable_size_; }
@@ -3885,7 +3889,7 @@ class V8_EXPORT ResourceConstraints {
   }
 
  private:
-  int max_new_space_size_;
+  int max_semi_space_size_;
   int max_old_space_size_;
   int max_executable_size_;
   uint32_t* stack_limit_;
@@ -4389,6 +4393,12 @@ class V8_EXPORT Isolate {
    */
   void SetAutorunMicrotasks(bool autorun);
 
+  /**
+   * Experimental: Returns whether the Microtask Work Queue is automatically
+   * run when the script call depth decrements to zero.
+   */
+  bool WillAutorunMicrotasks() const;
+
  private:
   template<class K, class V, class Traits> friend class PersistentValueMap;
 
@@ -4749,28 +4759,6 @@ class V8_EXPORT V8 {
    * Removes callback that was installed by AddMemoryAllocationCallback.
    */
   static void RemoveMemoryAllocationCallback(MemoryAllocationCallback callback);
-
-  /**
-   * Experimental: Runs the Microtask Work Queue until empty
-   *
-   * Deprecated: Use methods on Isolate instead.
-   */
-  static void RunMicrotasks(Isolate* isolate);
-
-  /**
-   * Experimental: Enqueues the callback to the Microtask Work Queue
-   *
-   * Deprecated: Use methods on Isolate instead.
-   */
-  static void EnqueueMicrotask(Isolate* isolate, Handle<Function> microtask);
-
-   /**
-   * Experimental: Controls whether the Microtask Work Queue is automatically
-   * run when the script call depth decrements to zero.
-   *
-   * Deprecated: Use methods on Isolate instead.
-   */
-  static void SetAutorunMicrotasks(Isolate *source, bool autorun);
 
   /**
    * Initializes from snapshot if possible. Otherwise, attempts to
@@ -5526,7 +5514,7 @@ class Internals {
   static const int kJSObjectHeaderSize = 3 * kApiPointerSize;
   static const int kFixedArrayHeaderSize = 2 * kApiPointerSize;
   static const int kContextHeaderSize = 2 * kApiPointerSize;
-  static const int kContextEmbedderDataIndex = 74;
+  static const int kContextEmbedderDataIndex = 75;
   static const int kFullStringRepresentationMask = 0x07;
   static const int kStringEncodingMask = 0x4;
   static const int kExternalTwoByteRepresentationTag = 0x02;
@@ -5971,6 +5959,13 @@ template<typename T>
 Isolate* ReturnValue<T>::GetIsolate() {
   // Isolate is always the pointer below the default value on the stack.
   return *reinterpret_cast<Isolate**>(&value_[-2]);
+}
+
+template<typename T>
+template<typename S>
+void ReturnValue<T>::Set(S* whatever) {
+  // Uncompilable to prevent inadvertent misuse.
+  TYPE_CHECK(S*, Primitive);
 }
 
 template<typename T>
@@ -6488,8 +6483,8 @@ Local<Value> PropertyCallbackInfo<T>::Data() const {
 
 
 template<typename T>
-Local<Value> PropertyCallbackInfo<T>::This() const {
-  return Local<Value>(reinterpret_cast<Value*>(&args_[kThisIndex]));
+Local<Object> PropertyCallbackInfo<T>::This() const {
+  return Local<Object>(reinterpret_cast<Object*>(&args_[kThisIndex]));
 }
 
 

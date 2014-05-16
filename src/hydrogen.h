@@ -1397,7 +1397,8 @@ class HGraphBuilder {
     store_map->SkipWriteBarrier();
     return store_map;
   }
-  HLoadNamedField* AddLoadElements(HValue* object);
+  HLoadNamedField* AddLoadElements(HValue* object,
+                                   HValue* dependency = NULL);
 
   bool MatchRotateRight(HValue* left,
                         HValue* right,
@@ -1413,7 +1414,12 @@ class HGraphBuilder {
                                Maybe<int> fixed_right_arg,
                                HAllocationMode allocation_mode);
 
-  HLoadNamedField* AddLoadFixedArrayLength(HValue *object);
+  HLoadNamedField* AddLoadFixedArrayLength(HValue *object,
+                                           HValue *dependency = NULL);
+
+  HLoadNamedField* AddLoadArrayLength(HValue *object,
+                                      ElementsKind kind,
+                                      HValue *dependency = NULL);
 
   HValue* AddLoadJSBuiltin(Builtins::JavaScript builtin);
 
@@ -1665,9 +1671,6 @@ class HGraphBuilder {
 
   HValue* BuildNewElementsCapacity(HValue* old_capacity);
 
-  void BuildNewSpaceArrayCheck(HValue* length,
-                               ElementsKind kind);
-
   class JSArrayBuilder V8_FINAL {
    public:
     JSArrayBuilder(HGraphBuilder* builder,
@@ -1756,18 +1759,33 @@ class HGraphBuilder {
                                  HValue* from,
                                  HValue* to);
 
-  void BuildCopyElements(HValue* from_elements,
+  void BuildCopyElements(HValue* array,
+                         HValue* from_elements,
                          ElementsKind from_elements_kind,
                          HValue* to_elements,
                          ElementsKind to_elements_kind,
                          HValue* length,
                          HValue* capacity);
 
-  HValue* BuildCloneShallowArray(HValue* boilerplate,
-                                 HValue* allocation_site,
-                                 AllocationSiteMode mode,
-                                 ElementsKind kind,
-                                 int length);
+  HValue* BuildCloneShallowArrayCommon(HValue* boilerplate,
+                                       HValue* allocation_site,
+                                       HValue* extra_size,
+                                       HValue** return_elements,
+                                       AllocationSiteMode mode);
+
+  HValue* BuildCloneShallowArrayCow(HValue* boilerplate,
+                                    HValue* allocation_site,
+                                    AllocationSiteMode mode,
+                                    ElementsKind kind);
+
+  HValue* BuildCloneShallowArrayEmpty(HValue* boilerplate,
+                                      HValue* allocation_site,
+                                      AllocationSiteMode mode);
+
+  HValue* BuildCloneShallowArrayNonEmpty(HValue* boilerplate,
+                                         HValue* allocation_site,
+                                         AllocationSiteMode mode,
+                                         ElementsKind kind);
 
   HValue* BuildElementIndexHash(HValue* index);
 
@@ -2326,6 +2344,7 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
           access_type_(access_type),
           type_(type),
           name_(name),
+          field_type_(HType::Tagged()),
           access_(HObjectAccess::ForMap()) { }
 
     // Checkes whether this PropertyAccessInfo can be handled as a monomorphic
@@ -2392,6 +2411,7 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
     Handle<Object> constant() { return constant_; }
     Handle<Map> transition() { return handle(lookup_.GetTransitionTarget()); }
     SmallMapList* field_maps() { return &field_maps_; }
+    HType field_type() const { return field_type_; }
     HObjectAccess access() { return access_; }
 
    private:
@@ -2422,6 +2442,7 @@ class HOptimizedGraphBuilder : public HGraphBuilder, public AstVisitor {
     Handle<JSObject> api_holder_;
     Handle<Object> constant_;
     SmallMapList field_maps_;
+    HType field_type_;
     HObjectAccess access_;
   };
 

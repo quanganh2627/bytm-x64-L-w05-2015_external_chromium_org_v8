@@ -222,9 +222,13 @@ class IncrementalMarkingMarkingVisitor
   static void VisitNativeContextIncremental(Map* map, HeapObject* object) {
     Context* context = Context::cast(object);
 
-    // We will mark cache black with a separate pass
-    // when we finish marking.
-    MarkObjectGreyDoNotEnqueue(context->normalized_map_cache());
+    // We will mark cache black with a separate pass when we finish marking.
+    // Note that GC can happen when the context is not fully initialized,
+    // so the cache can be undefined.
+    Object* cache = context->get(Context::NORMALIZED_MAP_CACHE_INDEX);
+    if (!cache->IsUndefined()) {
+      MarkObjectGreyDoNotEnqueue(cache);
+    }
     VisitNativeContext(map, context);
   }
 
@@ -797,7 +801,7 @@ void IncrementalMarking::Abort() {
       }
     }
   }
-  heap_->isolate()->stack_guard()->Continue(GC_REQUEST);
+  heap_->isolate()->stack_guard()->ClearGC();
   state_ = STOPPED;
   is_compacting_ = false;
 }
@@ -814,7 +818,7 @@ void IncrementalMarking::Finalize() {
                                           RecordWriteStub::STORE_BUFFER_ONLY);
   DeactivateIncrementalWriteBarrier();
   ASSERT(marking_deque_.IsEmpty());
-  heap_->isolate()->stack_guard()->Continue(GC_REQUEST);
+  heap_->isolate()->stack_guard()->ClearGC();
 }
 
 

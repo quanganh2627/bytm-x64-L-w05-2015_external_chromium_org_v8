@@ -149,7 +149,7 @@ bool LCodeGen::GeneratePrologue() {
   if (NeedsEagerFrame()) {
     ASSERT(!frame_is_built_);
     frame_is_built_ = true;
-    __ Prologue(info()->IsStub() ? BUILD_STUB_FRAME : BUILD_FUNCTION_FRAME);
+    __ Prologue(info());
     info()->AddNoFrameRange(0, masm_->pc_offset());
   }
 
@@ -1695,9 +1695,10 @@ void LCodeGen::DoConstantT(LConstantT* instr) {
   AllowDeferredHandleDereference smi_check;
   if (instr->hydrogen()->HasObjectMap()) {
     Handle<Map> object_map = instr->hydrogen()->ObjectMap().handle();
-    CHECK(object->IsHeapObject());
-    CHECK(!object_map->is_stable() ||
-          *object_map == Handle<HeapObject>::cast(object)->map());
+    ASSERT(object->IsHeapObject());
+    ASSERT(!object_map->is_stable() ||
+           *object_map == Handle<HeapObject>::cast(object)->map());
+    USE(object_map);
   }
   __ Move(ToRegister(instr->result()), object);
 }
@@ -3639,7 +3640,7 @@ void LCodeGen::DoMathFloor(LMathFloor* instr) {
       __ testq(output_reg, Immediate(1));
       DeoptimizeIf(not_zero, instr->environment());
       __ Set(output_reg, 0);
-      __ jmp(&done, Label::kNear);
+      __ jmp(&done);
       __ bind(&positive_sign);
     }
 
@@ -4396,6 +4397,15 @@ void LCodeGen::DoTransitionElementsKind(LTransitionElementsKind* instr) {
     RecordSafepointWithLazyDeopt(instr, RECORD_SAFEPOINT_WITH_REGISTERS, 0);
   }
   __ bind(&not_applicable);
+}
+
+
+void LCodeGen::DoArrayShift(LArrayShift* instr) {
+  ASSERT(ToRegister(instr->context()).is(rsi));
+  ASSERT(ToRegister(instr->object()).is(rax));
+  ASSERT(ToRegister(instr->result()).is(rax));
+  ArrayShiftStub stub(isolate(), instr->hydrogen()->kind());
+  CallCode(stub.GetCode(), RelocInfo::CODE_TARGET, instr);
 }
 
 

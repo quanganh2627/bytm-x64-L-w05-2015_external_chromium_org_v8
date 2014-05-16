@@ -734,7 +734,7 @@ class MacroAssembler: public Assembler {
                       FPURegister cmp1,
                       FPURegister cmp2) {
     BranchF(target, nan, cc, cmp1, cmp2, bd);
-  };
+  }
 
   // Truncates a double using a specific rounding mode, and writes the value
   // to the result register.
@@ -1486,13 +1486,13 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
   template<typename Field>
   void DecodeField(Register reg) {
     static const int shift = Field::kShift;
-    static const int mask = (Field::kMask >> shift) << kSmiTagSize;
+    static const int mask = Field::kMask >> shift;
     srl(reg, reg, shift);
     And(reg, reg, Operand(mask));
   }
 
   // Generates function and stub prologue code.
-  void Prologue(PrologueFrameMode frame_mode);
+  void Prologue(CompilationInfo* info);
 
   // Activation support.
   void EnterFrame(StackFrame::Type type);
@@ -1614,7 +1614,14 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
 // an assertion to fail.
 class CodePatcher {
  public:
-  CodePatcher(byte* address, int instructions);
+  enum FlushICache {
+    FLUSH,
+    DONT_FLUSH
+  };
+
+  CodePatcher(byte* address,
+              int instructions,
+              FlushICache flush_cache = FLUSH);
   virtual ~CodePatcher();
 
   // Macro assembler to emit code.
@@ -1634,6 +1641,7 @@ class CodePatcher {
   byte* address_;  // The address of the code being patched.
   int size_;  // Number of bytes of the expected patch size.
   MacroAssembler masm_;  // Macro assembler used to generate the code.
+  FlushICache flush_cache_;  // Whether to flush the I cache after patching.
 };
 
 

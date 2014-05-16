@@ -103,7 +103,6 @@ v8::TryCatch* ThreadLocalTop::TryCatchHandler() {
 }
 
 
-Isolate* Isolate::default_isolate_ = NULL;
 Thread::LocalStorageKey Isolate::isolate_key_;
 Thread::LocalStorageKey Isolate::thread_id_key_;
 Thread::LocalStorageKey Isolate::per_isolate_thread_data_key_;
@@ -133,8 +132,8 @@ Isolate::PerIsolateThreadData*
       per_thread = new PerIsolateThreadData(this, thread_id);
       thread_data_table_->Insert(per_thread);
     }
+    ASSERT(thread_data_table_->Lookup(this, thread_id) == per_thread);
   }
-  ASSERT(thread_data_table_->Lookup(this, thread_id) == per_thread);
   return per_thread;
 }
 
@@ -166,7 +165,7 @@ void Isolate::SetCrashIfDefaultIsolateInitialized() {
 void Isolate::EnsureDefaultIsolate() {
   LockGuard<Mutex> lock_guard(&process_wide_mutex_);
   CHECK(default_isolate_status_ != kDefaultIsolateCrashIfInitialized);
-  if (default_isolate_ == NULL) {
+  if (thread_data_table_ == NULL) {
     isolate_key_ = Thread::CreateThreadLocalKey();
     thread_id_key_ = Thread::CreateThreadLocalKey();
     per_isolate_thread_data_key_ = Thread::CreateThreadLocalKey();
@@ -174,12 +173,6 @@ void Isolate::EnsureDefaultIsolate() {
     PerThreadAssertScopeBase::thread_local_key = Thread::CreateThreadLocalKey();
 #endif  // DEBUG
     thread_data_table_ = new Isolate::ThreadDataTable();
-    default_isolate_ = new Isolate();
-  }
-  // Can't use SetIsolateThreadLocals(default_isolate_, NULL) here
-  // because a non-null thread data may be already set.
-  if (Thread::GetThreadLocal(isolate_key_) == NULL) {
-    Thread::SetThreadLocal(isolate_key_, default_isolate_);
   }
 }
 
@@ -842,6 +835,20 @@ void Isolate::CancelTerminateExecution() {
 }
 
 
+void Isolate::InvokeApiInterruptCallback() {
+  InterruptCallback callback = api_interrupt_callback_;
+  void* data = api_interrupt_callback_data_;
+  api_interrupt_callback_ = NULL;
+  api_interrupt_callback_data_ = NULL;
+
+  if (callback != NULL) {
+    VMState<EXTERNAL> state(this);
+    HandleScope handle_scope(this);
+    callback(reinterpret_cast<v8::Isolate*>(this), data);
+  }
+}
+
+
 Object* Isolate::Throw(Object* exception, MessageLocation* location) {
   DoThrow(exception, location);
   return heap()->exception();
@@ -1425,6 +1432,7 @@ Isolate::Isolate()
       logger_(NULL),
       stats_table_(NULL),
       stub_cache_(NULL),
+      code_aging_helper_(NULL),
       deoptimizer_data_(NULL),
       materialized_object_store_(NULL),
       capture_stack_trace_for_uncaught_exceptions_(false),
@@ -1522,9 +1530,7 @@ void Isolate::TearDown() {
     serialize_partial_snapshot_cache_ = NULL;
   }
 
-  if (!IsDefaultIsolate()) {
-    delete this;
-  }
+  delete this;
 
   // Restore the previous current isolate.
   SetIsolateThreadLocals(saved_isolate, saved_data);
@@ -1660,6 +1666,8 @@ Isolate::~Isolate() {
 
   delete stub_cache_;
   stub_cache_ = NULL;
+  delete code_aging_helper_;
+  code_aging_helper_ = NULL;
   delete stats_table_;
   stats_table_ = NULL;
 
@@ -1833,6 +1841,8 @@ bool Isolate::Init(Deserializer* des) {
   Simulator::Initialize(this);
 #endif
 #endif
+
+  code_aging_helper_ = new CodeAgingHelper();
 
   { // NOLINT
     // Ensure that the thread has a valid stack guard.  The v8::Locker object

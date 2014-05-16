@@ -4033,12 +4033,12 @@ bool Map::has_non_instance_prototype() {
 
 
 void Map::set_function_with_prototype(bool value) {
-  set_bit_field3(FunctionWithPrototype::update(bit_field3(), value));
+  set_bit_field(FunctionWithPrototype::update(bit_field(), value));
 }
 
 
 bool Map::function_with_prototype() {
-  return FunctionWithPrototype::decode(bit_field3());
+  return FunctionWithPrototype::decode(bit_field());
 }
 
 
@@ -4753,16 +4753,15 @@ ACCESSORS(Map, instance_descriptors, DescriptorArray, kDescriptorsOffset)
 
 
 void Map::set_bit_field3(uint32_t bits) {
-  // Ensure the upper 2 bits have the same value by sign extending it. This is
-  // necessary to be able to use the 31st bit.
-  int value = bits << 1;
-  WRITE_FIELD(this, kBitField3Offset, Smi::FromInt(value >> 1));
+  if (kInt32Size != kPointerSize) {
+    WRITE_UINT32_FIELD(this, kBitField3Offset + kInt32Size, 0);
+  }
+  WRITE_UINT32_FIELD(this, kBitField3Offset, bits);
 }
 
 
 uint32_t Map::bit_field3() {
-  Object* value = READ_FIELD(this, kBitField3Offset);
-  return Smi::cast(value)->value();
+  return READ_UINT32_FIELD(this, kBitField3Offset);
 }
 
 
@@ -5126,7 +5125,7 @@ SMI_ACCESSORS(SharedFunctionInfo, profiler_ticks, kProfilerTicksOffset)
   void holder::set_##name(int value) {                            \
     ASSERT(kHeapObjectTag == 1);                                  \
     ASSERT((value & 0xC0000000) == 0xC0000000 ||                  \
-           (value & 0xC0000000) == 0x000000000);                  \
+           (value & 0xC0000000) == 0x0);                          \
     WRITE_INT_FIELD(this,                                         \
                     offset,                                       \
                     (value << 1) & ~kHeapObjectTag);              \
@@ -6320,7 +6319,7 @@ bool JSGlobalProxy::IsDetachedFrom(GlobalObject* global) {
 }
 
 
-Handle<Object> JSReceiver::GetOrCreateIdentityHash(Handle<JSReceiver> object) {
+Handle<Smi> JSReceiver::GetOrCreateIdentityHash(Handle<JSReceiver> object) {
   return object->IsJSProxy()
       ? JSProxy::GetOrCreateIdentityHash(Handle<JSProxy>::cast(object))
       : JSObject::GetOrCreateIdentityHash(Handle<JSObject>::cast(object));

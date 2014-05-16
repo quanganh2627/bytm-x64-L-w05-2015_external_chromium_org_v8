@@ -54,6 +54,7 @@ class InlineRuntimeFunctionsTable;
 class InnerPointerToCodeCache;
 class MaterializedObjectStore;
 class NoAllocationStringAllocator;
+class CodeAgingHelper;
 class RandomNumberGenerator;
 class RegExpStack;
 class SaveContext;
@@ -74,7 +75,6 @@ typedef void* ExternalReferenceRedirectorPointer();
 
 class Debug;
 class Debugger;
-class DebuggerAgent;
 
 #if !defined(__arm__) && V8_TARGET_ARCH_ARM || \
     !defined(__aarch64__) && V8_TARGET_ARCH_ARM64 || \
@@ -357,7 +357,8 @@ typedef List<HeapObject*> DebugObjectCache;
   V(bool, fp_stubs_generated, false)                                           \
   V(int, max_available_threads, 0)                                             \
   V(uint32_t, per_isolate_assert_data, 0xFFFFFFFFu)                            \
-  V(DebuggerAgent*, debugger_agent_instance, NULL)                             \
+  V(InterruptCallback, api_interrupt_callback, NULL)                           \
+  V(void*, api_interrupt_callback_data, NULL)                                  \
   ISOLATE_INIT_SIMULATOR_LIST(V)
 
 #define THREAD_LOCAL_TOP_ACCESSOR(type, name)                        \
@@ -477,8 +478,6 @@ class Isolate {
 
   static void GlobalTearDown();
 
-  bool IsDefaultIsolate() const { return this == default_isolate_; }
-
   static void SetCrashIfDefaultIsolateInitialized();
   // Ensures that process-wide resources and the default isolate have been
   // allocated. It is only necessary to call this method in rare cases, for
@@ -510,9 +509,6 @@ class Isolate {
 
   // Mutex for serializing access to break control structures.
   RecursiveMutex* break_access() { return &break_access_; }
-
-  // Mutex for serializing access to debugger.
-  RecursiveMutex* debugger_access() { return &debugger_access_; }
 
   Address get_address_from_id(AddressId id);
 
@@ -759,6 +755,8 @@ class Isolate {
   Object* TerminateExecution();
   void CancelTerminateExecution();
 
+  void InvokeApiInterruptCallback();
+
   // Administration
   void Iterate(ObjectVisitor* v);
   void Iterate(ObjectVisitor* v, ThreadLocalTop* t);
@@ -836,6 +834,7 @@ class Isolate {
   Heap* heap() { return &heap_; }
   StatsTable* stats_table();
   StubCache* stub_cache() { return stub_cache_; }
+  CodeAgingHelper* code_aging_helper() { return code_aging_helper_; }
   DeoptimizerData* deoptimizer_data() { return deoptimizer_data_; }
   ThreadLocalTop* thread_local_top() { return &thread_local_top_; }
   MaterializedObjectStore* materialized_object_store() {
@@ -926,12 +925,9 @@ class Isolate {
     return &interp_canonicalize_mapping_;
   }
 
-  inline bool IsCodePreAgingActive();
-
   Debugger* debugger() {  return debugger_; }
   Debug* debug() { return debug_; }
 
-  inline bool IsDebuggerActive();
   inline bool DebuggerHasBreakPoints();
 
   CpuProfiler* cpu_profiler() const { return cpu_profiler_; }
@@ -1132,14 +1128,12 @@ class Isolate {
     DISALLOW_COPY_AND_ASSIGN(EntryStackItem);
   };
 
-  // This mutex protects highest_thread_id_, thread_data_table_ and
-  // default_isolate_.
+  // This mutex protects highest_thread_id_ and thread_data_table_.
   static Mutex process_wide_mutex_;
 
   static Thread::LocalStorageKey per_isolate_thread_data_key_;
   static Thread::LocalStorageKey isolate_key_;
   static Thread::LocalStorageKey thread_id_key_;
-  static Isolate* default_isolate_;
   static ThreadDataTable* thread_data_table_;
 
   // A global counter for all generated Isolates, might overflow.
@@ -1192,11 +1186,11 @@ class Isolate {
   CodeRange* code_range_;
   RecursiveMutex break_access_;
   Atomic32 debugger_initialized_;
-  RecursiveMutex debugger_access_;
   Logger* logger_;
   StackGuard stack_guard_;
   StatsTable* stats_table_;
   StubCache* stub_cache_;
+  CodeAgingHelper* code_aging_helper_;
   DeoptimizerData* deoptimizer_data_;
   MaterializedObjectStore* materialized_object_store_;
   ThreadLocalTop thread_local_top_;
