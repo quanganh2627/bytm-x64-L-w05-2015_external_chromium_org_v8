@@ -54,7 +54,6 @@ LOCAL_SRC_FILES := \
 	v8/src/data-flow.cc \
 	v8/src/date.cc \
 	v8/src/dateparser.cc \
-	v8/src/debug-agent.cc \
 	v8/src/debug.cc \
 	v8/src/deoptimizer.cc \
 	v8/src/disassembler.cc \
@@ -135,7 +134,6 @@ LOCAL_SRC_FILES := \
 	v8/src/platform/condition-variable.cc \
 	v8/src/platform/mutex.cc \
 	v8/src/platform/semaphore.cc \
-	v8/src/platform/socket.cc \
 	v8/src/preparse-data.cc \
 	v8/src/preparser.cc \
 	v8/src/prettyprinter.cc \
@@ -171,7 +169,6 @@ LOCAL_SRC_FILES := \
 	v8/src/unicode.cc \
 	v8/src/utils.cc \
 	v8/src/utils/random-number-generator.cc \
-	v8/src/v8-counters.cc \
 	v8/src/v8.cc \
 	v8/src/v8threads.cc \
 	v8/src/variables.cc \
