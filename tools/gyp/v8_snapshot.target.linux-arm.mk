@@ -12,7 +12,7 @@ gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_V
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
-	$(gyp_shared_intermediate_dir)/mksnapshot.arm \
+	$(gyp_shared_intermediate_dir)/mksnapshot \
 	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/js2c.stamp \
 	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/generate_trig_table.stamp
 
@@ -22,9 +22,9 @@ $(gyp_intermediate_dir)/snapshot.cc: gyp_var_prefix := $(GYP_VAR_PREFIX)
 $(gyp_intermediate_dir)/snapshot.cc: gyp_intermediate_dir := $(abspath $(gyp_intermediate_dir))
 $(gyp_intermediate_dir)/snapshot.cc: gyp_shared_intermediate_dir := $(abspath $(gyp_shared_intermediate_dir))
 $(gyp_intermediate_dir)/snapshot.cc: export PATH := $(subst $(ANDROID_BUILD_PATHS),,$(PATH))
-$(gyp_intermediate_dir)/snapshot.cc: $(gyp_shared_intermediate_dir)/mksnapshot.arm $(GYP_TARGET_DEPENDENCIES)
+$(gyp_intermediate_dir)/snapshot.cc: $(gyp_shared_intermediate_dir)/mksnapshot $(GYP_TARGET_DEPENDENCIES)
 	@echo "Gyp action: v8_tools_gyp_v8_gyp_v8_snapshot_target_run_mksnapshot ($@)"
-	$(hide)cd $(gyp_local_path)/v8/tools/gyp; mkdir -p $(gyp_intermediate_dir); "$(gyp_shared_intermediate_dir)/mksnapshot.arm" --log-snapshot-positions --logfile "$(gyp_intermediate_dir)/snapshot.log" --random-seed 314159265 "$(gyp_intermediate_dir)/snapshot.cc"
+	$(hide)cd $(gyp_local_path)/v8/tools/gyp; mkdir -p $(gyp_intermediate_dir); "$(gyp_shared_intermediate_dir)/mksnapshot" --log-snapshot-positions --logfile "$(gyp_intermediate_dir)/snapshot.log" --random-seed 314159265 "$(gyp_intermediate_dir)/snapshot.cc"
 
 
 

@@ -38,7 +38,6 @@ MY_CFLAGS_Debug := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
-	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-m64 \
 	-Os \
@@ -110,7 +109,6 @@ MY_CFLAGS_Release := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
-	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-m64 \
 	-fno-ident \

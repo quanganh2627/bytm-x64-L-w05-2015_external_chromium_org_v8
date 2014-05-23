@@ -37,6 +37,7 @@ MY_CFLAGS_Debug := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-fno-tree-sra \
 	-fno-partial-inlining \
@@ -144,6 +145,7 @@ MY_CFLAGS_Release := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-fno-tree-sra \
 	-fno-partial-inlining \
