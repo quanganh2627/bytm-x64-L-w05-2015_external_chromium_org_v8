@@ -51,6 +51,8 @@
 #include "arm/lithium-codegen-arm.h"
 #elif V8_TARGET_ARCH_MIPS
 #include "mips/lithium-codegen-mips.h"
+#elif V8_TARGET_ARCH_X87
+#include "x87/lithium-codegen-x87.h"
 #else
 #error Unsupported target architecture.
 #endif
@@ -1726,7 +1728,7 @@ HValue* HGraphBuilder::BuildNumberToString(HValue* object, Type* type) {
   if_found.Else();
   {
     // Cache miss, fallback to runtime.
-    Add<HPushArgument>(object);
+    Add<HPushArguments>(zone(), object);
     Push(Add<HCallRuntime>(
             isolate()->factory()->empty_string(),
             Runtime::FunctionForId(Runtime::kHiddenNumberToStringSkipCache),
@@ -2050,8 +2052,7 @@ HValue* HGraphBuilder::BuildUncheckedStringAdd(
     if_sameencodingandsequential.Else();
     {
       // Fallback to the runtime to add the two strings.
-      Add<HPushArgument>(left);
-      Add<HPushArgument>(right);
+      Add<HPushArguments>(zone(), left, right);
       Push(Add<HCallRuntime>(
             isolate()->factory()->empty_string(),
             Runtime::FunctionForId(Runtime::kHiddenStringAdd),
@@ -2473,14 +2474,14 @@ void HGraphBuilder::BuildFillElementsWithHole(HValue* elements,
   }
 
   // Special loop unfolding case
-  STATIC_ASSERT(JSArray::kPreallocatedArrayElements <=
-                kElementLoopUnrollThreshold);
+  static const int kLoopUnfoldLimit = 8;
+  STATIC_ASSERT(JSArray::kPreallocatedArrayElements <= kLoopUnfoldLimit);
   int initial_capacity = -1;
   if (from->IsInteger32Constant() && to->IsInteger32Constant()) {
     int constant_from = from->GetInteger32Constant();
     int constant_to = to->GetInteger32Constant();
 
-    if (constant_from == 0 && constant_to <= kElementLoopUnrollThreshold) {
+    if (constant_from == 0 && constant_to <= kLoopUnfoldLimit) {
       initial_capacity = constant_to;
     }
   }
@@ -4188,9 +4189,11 @@ void HOptimizedGraphBuilder::PushArgumentsFromEnvironment(int count) {
     arguments.Add(Pop(), zone());
   }
 
+  HPushArguments* push_args = New<HPushArguments>(zone());
   while (!arguments.is_empty()) {
-    Add<HPushArgument>(arguments.RemoveLast());
+    push_args->AddArgument(arguments.RemoveLast());
   }
+  AddInstruction(push_args);
 }
 
 
@@ -5184,10 +5187,11 @@ void HOptimizedGraphBuilder::VisitObjectLiteral(ObjectLiteral* expr) {
     flags |= expr->has_function()
         ? ObjectLiteral::kHasFunction : ObjectLiteral::kNoFlags;
 
-    Add<HPushArgument>(Add<HConstant>(closure_literals));
-    Add<HPushArgument>(Add<HConstant>(literal_index));
-    Add<HPushArgument>(Add<HConstant>(constant_properties));
-    Add<HPushArgument>(Add<HConstant>(flags));
+    Add<HPushArguments>(zone(),
+                        Add<HConstant>(closure_literals),
+                        Add<HConstant>(literal_index),
+                        Add<HConstant>(constant_properties),
+                        Add<HConstant>(flags));
 
     // TODO(mvstanton): Add a flag to turn off creation of any
     // AllocationMementos for this call: we are in crankshaft and should have
@@ -5342,10 +5346,11 @@ void HOptimizedGraphBuilder::VisitArrayLiteral(ArrayLiteral* expr) {
         : ArrayLiteral::kNoFlags;
     flags |= ArrayLiteral::kDisableMementos;
 
-    Add<HPushArgument>(Add<HConstant>(literals));
-    Add<HPushArgument>(Add<HConstant>(literal_index));
-    Add<HPushArgument>(Add<HConstant>(constants));
-    Add<HPushArgument>(Add<HConstant>(flags));
+    Add<HPushArguments>(zone(),
+                        Add<HConstant>(literals),
+                        Add<HConstant>(literal_index),
+                        Add<HConstant>(constants),
+                        Add<HConstant>(flags));
 
     // TODO(mvstanton): Consider a flag to turn off creation of any
     // AllocationMementos for this call: we are in crankshaft and should have
@@ -6379,7 +6384,7 @@ void HOptimizedGraphBuilder::VisitThrow(Throw* expr) {
 
   HValue* value = environment()->Pop();
   if (!FLAG_hydrogen_track_positions) SetSourcePosition(expr->position());
-  Add<HPushArgument>(value);
+  Add<HPushArguments>(zone(), value);
   Add<HCallRuntime>(isolate()->factory()->empty_string(),
                     Runtime::FunctionForId(Runtime::kHiddenThrow), 1);
   Add<HSimulate>(expr->id());
@@ -6781,7 +6786,7 @@ void HOptimizedGraphBuilder::EnsureArgumentsArePushedForAccess() {
   HInstruction* insert_after = entry;
   for (int i = 0; i < arguments_values->length(); i++) {
     HValue* argument = arguments_values->at(i);
-    HInstruction* push_argument = New<HPushArgument>(argument);
+    HInstruction* push_argument = New<HPushArguments>(zone(), argument);
     push_argument->InsertAfter(insert_after);
     insert_after = push_argument;
   }
@@ -8076,7 +8081,7 @@ bool HOptimizedGraphBuilder::TryInlineApiCall(Handle<JSFunction> function,
       ASSERT_EQ(NULL, receiver);
       // Receiver is on expression stack.
       receiver = Pop();
-      Add<HPushArgument>(receiver);
+      Add<HPushArguments>(zone(), receiver);
       break;
     case kCallApiSetter:
       {
@@ -8087,8 +8092,7 @@ bool HOptimizedGraphBuilder::TryInlineApiCall(Handle<JSFunction> function,
         // Receiver and value are on expression stack.
         HValue* value = Pop();
         receiver = Pop();
-        Add<HPushArgument>(receiver);
-        Add<HPushArgument>(value);
+        Add<HPushArguments>(zone(), receiver, value);
         break;
      }
   }
@@ -8230,56 +8234,6 @@ HValue* HOptimizedGraphBuilder::ImplicitReceiverFor(HValue* function,
 }
 
 
-void HOptimizedGraphBuilder::BuildArrayCall(Expression* expression,
-                                            int arguments_count,
-                                            HValue* function,
-                                            Handle<AllocationSite> site) {
-  Add<HCheckValue>(function, array_function());
-
-  if (IsCallArrayInlineable(arguments_count, site)) {
-    BuildInlinedCallArray(expression, arguments_count, site);
-    return;
-  }
-
-  HInstruction* call = PreProcessCall(New<HCallNewArray>(
-      function, arguments_count + 1, site->GetElementsKind()));
-  if (expression->IsCall()) {
-    Drop(1);
-  }
-  ast_context()->ReturnInstruction(call, expression->id());
-}
-
-
-bool HOptimizedGraphBuilder::TryHandleArrayCall(Call* expr, HValue* function) {
-  if (!array_function().is_identical_to(expr->target())) {
-    return false;
-  }
-
-  Handle<AllocationSite> site = expr->allocation_site();
-  if (site.is_null()) return false;
-
-  BuildArrayCall(expr,
-                 expr->arguments()->length(),
-                 function,
-                 site);
-  return true;
-}
-
-
-bool HOptimizedGraphBuilder::TryHandleArrayCallNew(CallNew* expr,
-                                                   HValue* function) {
-  if (!array_function().is_identical_to(expr->target())) {
-    return false;
-  }
-
-  BuildArrayCall(expr,
-                 expr->arguments()->length(),
-                 function,
-                 expr->allocation_site());
-  return true;
-}
-
-
 void HOptimizedGraphBuilder::VisitCall(Call* expr) {
   ASSERT(!HasStackOverflow());
   ASSERT(current_block() != NULL);
@@ -8374,7 +8328,8 @@ void HOptimizedGraphBuilder::VisitCall(Call* expr) {
     // evaluation of the arguments.
     CHECK_ALIVE(VisitForValue(expr->expression()));
     HValue* function = Top();
-    if (expr->global_call()) {
+    bool global_call = proxy != NULL && proxy->var()->IsUnallocated();
+    if (global_call) {
       Variable* var = proxy->var();
       bool known_global_function = false;
       // If there is a global property cell for the name at compile time and
@@ -8408,7 +8363,6 @@ void HOptimizedGraphBuilder::VisitCall(Call* expr) {
           return;
         }
         if (TryInlineApiFunctionCall(expr, receiver)) return;
-        if (TryHandleArrayCall(expr, function)) return;
         if (TryInlineCall(expr)) return;
 
         PushArgumentsFromEnvironment(argument_count);
@@ -8458,21 +8412,20 @@ void HOptimizedGraphBuilder::VisitCall(Call* expr) {
 }
 
 
-void HOptimizedGraphBuilder::BuildInlinedCallArray(
-    Expression* expression,
-    int argument_count,
-    Handle<AllocationSite> site) {
-  ASSERT(!site.is_null());
-  ASSERT(argument_count >= 0 && argument_count <= 1);
+void HOptimizedGraphBuilder::BuildInlinedCallNewArray(CallNew* expr) {
   NoObservableSideEffectsScope no_effects(this);
 
+  int argument_count = expr->arguments()->length();
   // We should at least have the constructor on the expression stack.
   HValue* constructor = environment()->ExpressionStackAt(argument_count);
+
+  ElementsKind kind = expr->elements_kind();
+  Handle<AllocationSite> site = expr->allocation_site();
+  ASSERT(!site.is_null());
 
   // Register on the site for deoptimization if the transition feedback changes.
   AllocationSite::AddDependentCompilationInfo(
       site, AllocationSite::TRANSITIONS, top_info());
-  ElementsKind kind = site->GetElementsKind();
   HInstruction* site_instruction = Add<HConstant>(site);
 
   // In the single constant argument case, we may have to adjust elements kind
@@ -8495,12 +8448,32 @@ void HOptimizedGraphBuilder::BuildInlinedCallArray(
                                site_instruction,
                                constructor,
                                DISABLE_ALLOCATION_SITES);
-  HValue* new_object = argument_count == 0
-      ? array_builder.AllocateEmptyArray()
-      : BuildAllocateArrayFromLength(&array_builder, Top());
+  HValue* new_object;
+  if (argument_count == 0) {
+    new_object = array_builder.AllocateEmptyArray();
+  } else if (argument_count == 1) {
+    HValue* argument = environment()->Top();
+    new_object = BuildAllocateArrayFromLength(&array_builder, argument);
+  } else {
+    HValue* length = Add<HConstant>(argument_count);
+    // Smi arrays need to initialize array elements with the hole because
+    // bailout could occur if the arguments don't fit in a smi.
+    //
+    // TODO(mvstanton): If all the arguments are constants in smi range, then
+    // we could set fill_with_hole to false and save a few instructions.
+    JSArrayBuilder::FillMode fill_mode = IsFastSmiElementsKind(kind)
+        ? JSArrayBuilder::FILL_WITH_HOLE
+        : JSArrayBuilder::DONT_FILL_WITH_HOLE;
+    new_object = array_builder.AllocateArray(length, length, fill_mode);
+    HValue* elements = array_builder.GetElementsLocation();
+    for (int i = 0; i < argument_count; i++) {
+      HValue* value = environment()->ExpressionStackAt(argument_count - i - 1);
+      HValue* constant_i = Add<HConstant>(i);
+      Add<HStoreKeyed>(elements, constant_i, value, kind);
+    }
+  }
 
-  int args_to_drop = argument_count + (expression->IsCall() ? 2 : 1);
-  Drop(args_to_drop);
+  Drop(argument_count + 1);  // drop constructor and args.
   ast_context()->ReturnValue(new_object);
 }
 
@@ -8514,13 +8487,14 @@ static bool IsAllocationInlineable(Handle<JSFunction> constructor) {
 }
 
 
-bool HOptimizedGraphBuilder::IsCallArrayInlineable(
-    int argument_count,
-    Handle<AllocationSite> site) {
+bool HOptimizedGraphBuilder::IsCallNewArrayInlineable(CallNew* expr) {
   Handle<JSFunction> caller = current_info()->closure();
-  Handle<JSFunction> target = array_function();
+  Handle<JSFunction> target(isolate()->native_context()->array_function(),
+                            isolate());
+  int argument_count = expr->arguments()->length();
   // We should have the function plus array arguments on the environment stack.
   ASSERT(environment()->length() >= (argument_count + 1));
+  Handle<AllocationSite> site = expr->allocation_site();
   ASSERT(!site.is_null());
 
   bool inline_ok = false;
@@ -8530,24 +8504,22 @@ bool HOptimizedGraphBuilder::IsCallArrayInlineable(
       HValue* argument = Top();
       if (argument->IsConstant()) {
         // Do not inline if the constant length argument is not a smi or
-        // outside the valid range for unrolled loop initialization.
+        // outside the valid range for a fast array.
         HConstant* constant_argument = HConstant::cast(argument);
         if (constant_argument->HasSmiValue()) {
           int value = constant_argument->Integer32Value();
-          inline_ok = value >= 0 && value <= kElementLoopUnrollThreshold;
+          inline_ok = value >= 0 &&
+              value < JSObject::kInitialMaxFastElementArray;
           if (!inline_ok) {
             TraceInline(target, caller,
-                        "Constant length outside of valid inlining range.");
+                        "Length outside of valid array range");
           }
         }
       } else {
-        TraceInline(target, caller,
-                    "Dont inline [new] Array(n) where n isn't constant.");
+        inline_ok = true;
       }
-    } else if (argument_count == 0) {
-      inline_ok = true;
     } else {
-      TraceInline(target, caller, "Too many arguments to inline.");
+      inline_ok = true;
     }
   } else {
     TraceInline(target, caller, "AllocationSite requested no inlining.");
@@ -8582,8 +8554,8 @@ void HOptimizedGraphBuilder::VisitCallNew(CallNew* expr) {
 
     // Force completion of inobject slack tracking before generating
     // allocation code to finalize instance size.
-    if (constructor->shared()->IsInobjectSlackTrackingInProgress()) {
-      constructor->shared()->CompleteInobjectSlackTracking();
+    if (constructor->IsInobjectSlackTrackingInProgress()) {
+      constructor->CompleteInobjectSlackTracking();
     }
 
     // Calculate instance size from initial map of constructor.
@@ -8610,25 +8582,16 @@ void HOptimizedGraphBuilder::VisitCallNew(CallNew* expr) {
       }
     }
 
-    HAllocate* receiver =
-        BuildAllocate(size_in_bytes, HType::JSObject(), JS_OBJECT_TYPE,
-                      allocation_mode);
+    HAllocate* receiver = BuildAllocate(
+        size_in_bytes, HType::JSObject(), JS_OBJECT_TYPE, allocation_mode);
     receiver->set_known_initial_map(initial_map);
-
-    // Load the initial map from the constructor.
-    HValue* constructor_value = Add<HConstant>(constructor);
-    HValue* initial_map_value =
-      Add<HLoadNamedField>(constructor_value, static_cast<HValue*>(NULL),
-                           HObjectAccess::ForMapAndOffset(
-                               handle(constructor->map()),
-                               JSFunction::kPrototypeOrInitialMapOffset));
 
     // Initialize map and fields of the newly allocated object.
     { NoObservableSideEffectsScope no_effects(this);
       ASSERT(initial_map->instance_type() == JS_OBJECT_TYPE);
       Add<HStoreNamedField>(receiver,
           HObjectAccess::ForMapAndOffset(initial_map, JSObject::kMapOffset),
-          initial_map_value);
+          Add<HConstant>(initial_map));
       HValue* empty_fixed_array = Add<HConstant>(factory->empty_fixed_array());
       Add<HStoreNamedField>(receiver,
           HObjectAccess::ForMapAndOffset(initial_map,
@@ -8655,21 +8618,25 @@ void HOptimizedGraphBuilder::VisitCallNew(CallNew* expr) {
     ASSERT(environment()->ExpressionStackAt(receiver_index) == function);
     environment()->SetExpressionStackAt(receiver_index, receiver);
 
-    if (TryInlineConstruct(expr, receiver)) return;
+    if (TryInlineConstruct(expr, receiver)) {
+      // Inlining worked, add a dependency on the initial map to make sure that
+      // this code is deoptimized whenever the initial map of the constructor
+      // changes.
+      Map::AddDependentCompilationInfo(
+          initial_map, DependentCode::kInitialMapChangedGroup, top_info());
+      return;
+    }
 
     // TODO(mstarzinger): For now we remove the previous HAllocate and all
-    // corresponding instructions and instead add HPushArgument for the
+    // corresponding instructions and instead add HPushArguments for the
     // arguments in case inlining failed.  What we actually should do is for
     // inlining to try to build a subgraph without mutating the parent graph.
     HInstruction* instr = current_block()->last();
-    while (instr != initial_map_value) {
+    do {
       HInstruction* prev_instr = instr->previous();
       instr->DeleteAndReplaceWith(NULL);
       instr = prev_instr;
-    }
-    initial_map_value->DeleteAndReplaceWith(NULL);
-    receiver->DeleteAndReplaceWith(NULL);
-    check->DeleteAndReplaceWith(NULL);
+    } while (instr != check);
     environment()->SetExpressionStackAt(receiver_index, function);
     HInstruction* call =
       PreProcessCall(New<HCallNew>(function, argument_count));
@@ -8677,10 +8644,25 @@ void HOptimizedGraphBuilder::VisitCallNew(CallNew* expr) {
   } else {
     // The constructor function is both an operand to the instruction and an
     // argument to the construct call.
-    if (TryHandleArrayCallNew(expr, function)) return;
+    Handle<JSFunction> array_function(
+        isolate()->native_context()->array_function(), isolate());
+    bool use_call_new_array = expr->target().is_identical_to(array_function);
+    if (use_call_new_array && IsCallNewArrayInlineable(expr)) {
+      // Verify we are still calling the array function for our native context.
+      Add<HCheckValue>(function, array_function);
+      BuildInlinedCallNewArray(expr);
+      return;
+    }
 
-    HInstruction* call =
-        PreProcessCall(New<HCallNew>(function, argument_count));
+    HBinaryCall* call;
+    if (use_call_new_array) {
+      Add<HCheckValue>(function, array_function);
+      call = New<HCallNewArray>(function, argument_count,
+                                expr->elements_kind());
+    } else {
+      call = New<HCallNew>(function, argument_count);
+    }
+    PreProcessCall(call);
     return ast_context()->ReturnInstruction(call, expr->id());
   }
 }
@@ -9140,9 +9122,8 @@ void HOptimizedGraphBuilder::VisitDelete(UnaryOperation* expr) {
     HValue* key = Pop();
     HValue* obj = Pop();
     HValue* function = AddLoadJSBuiltin(Builtins::DELETE);
-    Add<HPushArgument>(obj);
-    Add<HPushArgument>(key);
-    Add<HPushArgument>(Add<HConstant>(function_strict_mode()));
+    Add<HPushArguments>(zone(),
+                        obj, key, Add<HConstant>(function_strict_mode()));
     // TODO(olivf) InvokeFunction produces a check for the parameter count,
     // even though we are certain to pass the correct number of arguments here.
     HInstruction* instr = New<HInvokeFunction>(function, 3);
@@ -9627,8 +9608,7 @@ HValue* HGraphBuilder::BuildBinaryOperation(
     } else if (!left_type->Is(Type::String())) {
       ASSERT(right_type->Is(Type::String()));
       HValue* function = AddLoadJSBuiltin(Builtins::STRING_ADD_RIGHT);
-      Add<HPushArgument>(left);
-      Add<HPushArgument>(right);
+      Add<HPushArguments>(zone(), left, right);
       return AddUncasted<HInvokeFunction>(function, 2);
     }
 
@@ -9639,8 +9619,7 @@ HValue* HGraphBuilder::BuildBinaryOperation(
     } else if (!right_type->Is(Type::String())) {
       ASSERT(left_type->Is(Type::String()));
       HValue* function = AddLoadJSBuiltin(Builtins::STRING_ADD_LEFT);
-      Add<HPushArgument>(left);
-      Add<HPushArgument>(right);
+      Add<HPushArguments>(zone(), left, right);
       return AddUncasted<HInvokeFunction>(function, 2);
     }
 
@@ -9702,8 +9681,7 @@ HValue* HGraphBuilder::BuildBinaryOperation(
   // operation in optimized code, which is more expensive, than a stub call.
   if (graph()->info()->IsStub() && is_non_primitive) {
     HValue* function = AddLoadJSBuiltin(BinaryOpIC::TokenToJSBuiltin(op));
-    Add<HPushArgument>(left);
-    Add<HPushArgument>(right);
+    Add<HPushArguments>(zone(), left, right);
     instr = AddUncasted<HInvokeFunction>(function, 2);
   } else {
     switch (op) {
@@ -10067,8 +10045,7 @@ void HOptimizedGraphBuilder::VisitCompareOperation(CompareOperation* expr) {
     UNREACHABLE();
   } else if (op == Token::IN) {
     HValue* function = AddLoadJSBuiltin(Builtins::IN);
-    Add<HPushArgument>(left);
-    Add<HPushArgument>(right);
+    Add<HPushArguments>(zone(), left, right);
     // TODO(olivf) InvokeFunction produces a check for the parameter count,
     // even though we are certain to pass the correct number of arguments here.
     HInstruction* result = New<HInvokeFunction>(function, 2);
