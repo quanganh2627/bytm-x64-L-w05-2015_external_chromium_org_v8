@@ -429,6 +429,7 @@ class LDummyUse V8_FINAL : public LTemplateInstruction<1, 1, 0> {
 
 class LDeoptimize V8_FINAL : public LTemplateInstruction<0, 0, 0> {
  public:
+  virtual bool IsControl() const V8_OVERRIDE { return true; }
   DECLARE_CONCRETE_INSTRUCTION(Deoptimize, "deoptimize")
   DECLARE_HYDROGEN_ACCESSOR(Deoptimize)
 };
@@ -1967,15 +1968,13 @@ class LInteger32ToDouble V8_FINAL : public LTemplateInstruction<1, 1, 0> {
 };
 
 
-class LUint32ToDouble V8_FINAL : public LTemplateInstruction<1, 1, 1> {
+class LUint32ToDouble V8_FINAL : public LTemplateInstruction<1, 1, 0> {
  public:
-  explicit LUint32ToDouble(LOperand* value, LOperand* temp) {
+  explicit LUint32ToDouble(LOperand* value) {
     inputs_[0] = value;
-    temps_[0] = temp;
   }
 
   LOperand* value() { return inputs_[0]; }
-  LOperand* temp() { return temps_[0]; }
 
   DECLARE_CONCRETE_INSTRUCTION(Uint32ToDouble, "uint32-to-double")
 };

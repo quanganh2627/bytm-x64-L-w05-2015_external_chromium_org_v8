@@ -191,10 +191,13 @@ bool LCodeGen::GeneratePrologue() {
   int heap_slots = info_->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
   if (heap_slots > 0) {
     Comment(";;; Allocate local context");
+    bool need_write_barrier = true;
     // Argument to NewContext is the function, which is still in rdi.
     if (heap_slots <= FastNewContextStub::kMaximumSlots) {
       FastNewContextStub stub(isolate(), heap_slots);
       __ CallStub(&stub);
+      // Result of FastNewContextStub is always in new space.
+      need_write_barrier = false;
     } else {
       __ Push(rdi);
       __ CallRuntime(Runtime::kHiddenNewFunctionContext, 1);
@@ -218,7 +221,14 @@ bool LCodeGen::GeneratePrologue() {
         int context_offset = Context::SlotOffset(var->index());
         __ movp(Operand(rsi, context_offset), rax);
         // Update the write barrier. This clobbers rax and rbx.
-        __ RecordWriteContextSlot(rsi, context_offset, rax, rbx, kSaveFPRegs);
+        if (need_write_barrier) {
+          __ RecordWriteContextSlot(rsi, context_offset, rax, rbx, kSaveFPRegs);
+        } else if (FLAG_debug_code) {
+          Label done;
+          __ JumpIfInNewSpace(rsi, rax, &done, Label::kNear);
+          __ Abort(kExpectedNewSpaceObject);
+          __ bind(&done);
+        }
       }
     }
     Comment(";;; End allocate local context");
@@ -3715,9 +3725,14 @@ void LCodeGen::DoMathRound(LMathRound* instr) {
 
 
 void LCodeGen::DoMathSqrt(LMathSqrt* instr) {
-  XMMRegister input_reg = ToDoubleRegister(instr->value());
-  ASSERT(ToDoubleRegister(instr->result()).is(input_reg));
-  __ sqrtsd(input_reg, input_reg);
+  XMMRegister output = ToDoubleRegister(instr->result());
+  if (instr->value()->IsDoubleRegister()) {
+    XMMRegister input = ToDoubleRegister(instr->value());
+    __ sqrtsd(output, input);
+  } else {
+    Operand input = ToOperand(instr->value());
+    __ sqrtsd(output, input);
+  }
 }
 
 
@@ -3985,29 +4000,12 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
   }
 
   Register object = ToRegister(instr->object());
-  SmiCheck check_needed = hinstr->value()->IsHeapObject()
-                          ? OMIT_SMI_CHECK : INLINE_SMI_CHECK;
+  __ AssertNotSmi(object);
 
-  ASSERT(!(representation.IsSmi() &&
-           instr->value()->IsConstantOperand() &&
-           !IsInteger32Constant(LConstantOperand::cast(instr->value()))));
-  if (representation.IsHeapObject()) {
-    if (instr->value()->IsConstantOperand()) {
-      LConstantOperand* operand_value = LConstantOperand::cast(instr->value());
-      if (chunk_->LookupConstant(operand_value)->HasSmiValue()) {
-        DeoptimizeIf(no_condition, instr->environment());
-      }
-    } else {
-      if (!hinstr->value()->type().IsHeapObject()) {
-        Register value = ToRegister(instr->value());
-        Condition cc = masm()->CheckSmi(value);
-        DeoptimizeIf(cc, instr->environment());
-
-        // We know now that value is not a smi, so we can omit the check below.
-        check_needed = OMIT_SMI_CHECK;
-      }
-    }
-  } else if (representation.IsDouble()) {
+  ASSERT(!representation.IsSmi() ||
+         !instr->value()->IsConstantOperand() ||
+         IsInteger32Constant(LConstantOperand::cast(instr->value())));
+  if (representation.IsDouble()) {
     ASSERT(access.IsInobject());
     ASSERT(!hinstr->has_transition());
     ASSERT(!hinstr->NeedsWriteBarrier());
@@ -4092,7 +4090,7 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
                         temp,
                         kSaveFPRegs,
                         EMIT_REMEMBERED_SET,
-                        check_needed);
+                        hinstr->SmiCheckForWriteBarrier());
   }
 }
 
@@ -4531,11 +4529,8 @@ void LCodeGen::DoInteger32ToDouble(LInteger32ToDouble* instr) {
 void LCodeGen::DoUint32ToDouble(LUint32ToDouble* instr) {
   LOperand* input = instr->value();
   LOperand* output = instr->result();
-  LOperand* temp = instr->temp();
 
-  __ LoadUint32(ToDoubleRegister(output),
-                ToRegister(input),
-                ToDoubleRegister(temp));
+  __ LoadUint32(ToDoubleRegister(output), ToRegister(input));
 }
 
 
@@ -4582,8 +4577,7 @@ void LCodeGen::DoDeferredNumberTagU(LNumberTagU* instr) {
   // Load value into temp_xmm which will be preserved across potential call to
   // runtime (MacroAssembler::EnterExitFrameEpilogue preserves only allocatable
   // XMM registers on x64).
-  XMMRegister xmm_scratch = double_scratch0();
-  __ LoadUint32(temp_xmm, reg, xmm_scratch);
+  __ LoadUint32(temp_xmm, reg);
 
   if (FLAG_inline_new) {
     __ AllocateHeapNumber(reg, tmp, &slow);

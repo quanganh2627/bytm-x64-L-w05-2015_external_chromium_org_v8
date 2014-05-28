@@ -1182,9 +1182,8 @@ LInstruction* LChunkBuilder::DoMathExp(HUnaryMathOperation* instr) {
 
 
 LInstruction* LChunkBuilder::DoMathSqrt(HUnaryMathOperation* instr) {
-  LOperand* input = UseRegisterAtStart(instr->value());
-  LMathSqrt* result = new(zone()) LMathSqrt(input);
-  return DefineSameAsFirst(result);
+  LOperand* input = UseAtStart(instr->value());
+  return DefineAsRegister(new(zone()) LMathSqrt(input));
 }
 
 
@@ -1904,9 +1903,7 @@ LInstruction* LChunkBuilder::DoChange(HChange* instr) {
     } else {
       ASSERT(to.IsDouble());
       if (val->CheckFlag(HInstruction::kUint32)) {
-        LOperand* temp = FixedTemp(xmm1);
-        return DefineAsRegister(
-            new(zone()) LUint32ToDouble(UseRegister(val), temp));
+        return DefineAsRegister(new(zone()) LUint32ToDouble(UseRegister(val)));
       } else {
         LOperand* value = Use(val);
         return DefineAsRegister(new(zone()) LInteger32ToDouble(value));
@@ -2330,15 +2327,7 @@ LInstruction* LChunkBuilder::DoStoreNamedField(HStoreNamedField* instr) {
   LOperand* temp = (!is_in_object || needs_write_barrier ||
       needs_write_barrier_for_map) ? TempRegister() : NULL;
 
-  LInstruction* result = new(zone()) LStoreNamedField(obj, val, temp);
-  if (!instr->access().IsExternalMemory() &&
-      instr->field_representation().IsHeapObject() &&
-      (val->IsConstantOperand()
-       ? HConstant::cast(instr->value())->HasSmiValue()
-       : !instr->value()->type().IsHeapObject())) {
-    result = AssignEnvironment(result);
-  }
-  return result;
+  return new(zone()) LStoreNamedField(obj, val, temp);
 }
 
 

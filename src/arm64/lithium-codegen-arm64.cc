@@ -694,10 +694,13 @@ bool LCodeGen::GeneratePrologue() {
   int heap_slots = info()->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
   if (heap_slots > 0) {
     Comment(";;; Allocate local context");
+    bool need_write_barrier = true;
     // Argument to NewContext is the function, which is in x1.
     if (heap_slots <= FastNewContextStub::kMaximumSlots) {
       FastNewContextStub stub(isolate(), heap_slots);
       __ CallStub(&stub);
+      // Result of FastNewContextStub is always in new space.
+      need_write_barrier = false;
     } else {
       __ Push(x1);
       __ CallRuntime(Runtime::kHiddenNewFunctionContext, 1);
@@ -723,8 +726,15 @@ bool LCodeGen::GeneratePrologue() {
         MemOperand target = ContextMemOperand(cp, var->index());
         __ Str(value, target);
         // Update the write barrier. This clobbers value and scratch.
-        __ RecordWriteContextSlot(cp, target.offset(), value, scratch,
-                                  GetLinkRegisterState(), kSaveFPRegs);
+        if (need_write_barrier) {
+          __ RecordWriteContextSlot(cp, target.offset(), value, scratch,
+                                    GetLinkRegisterState(), kSaveFPRegs);
+        } else if (FLAG_debug_code) {
+          Label done;
+          __ JumpIfInNewSpace(cp, &done);
+          __ Abort(kExpectedNewSpaceObject);
+          __ bind(&done);
+        }
       }
     }
     Comment(";;; End allocate local context");
@@ -5310,7 +5320,11 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
     Register value = ToRegister(instr->value());
     __ Store(value, MemOperand(object, offset), representation);
     return;
-  } else if (representation.IsDouble()) {
+  }
+
+  __ AssertNotSmi(object);
+
+  if (representation.IsDouble()) {
     ASSERT(access.IsInobject());
     ASSERT(!instr->hydrogen()->has_transition());
     ASSERT(!instr->hydrogen()->NeedsWriteBarrier());
@@ -5321,19 +5335,9 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
 
   Register value = ToRegister(instr->value());
 
-  SmiCheck check_needed = instr->hydrogen()->value()->IsHeapObject()
-      ? OMIT_SMI_CHECK : INLINE_SMI_CHECK;
-
-  ASSERT(!(representation.IsSmi() &&
-           instr->value()->IsConstantOperand() &&
-           !IsInteger32Constant(LConstantOperand::cast(instr->value()))));
-  if (representation.IsHeapObject() &&
-      !instr->hydrogen()->value()->type().IsHeapObject()) {
-    DeoptimizeIfSmi(value, instr->environment());
-
-    // We know now that value is not a smi, so we can omit the check below.
-    check_needed = OMIT_SMI_CHECK;
-  }
+  ASSERT(!representation.IsSmi() ||
+         !instr->value()->IsConstantOperand() ||
+         IsInteger32Constant(LConstantOperand::cast(instr->value())));
 
   if (instr->hydrogen()->has_transition()) {
     Handle<Map> transition = instr->hydrogen()->transition_map();
@@ -5393,7 +5397,7 @@ void LCodeGen::DoStoreNamedField(LStoreNamedField* instr) {
                         GetLinkRegisterState(),
                         kSaveFPRegs,
                         EMIT_REMEMBERED_SET,
-                        check_needed);
+                        instr->hydrogen()->SmiCheckForWriteBarrier());
   }
 }
 

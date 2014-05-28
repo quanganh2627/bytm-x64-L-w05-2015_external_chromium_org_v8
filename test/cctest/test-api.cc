@@ -14912,7 +14912,7 @@ TEST(PreCompileSerialization) {
   // Serialize.
   const v8::ScriptCompiler::CachedData* cd = source.GetCachedData();
   char* serialized_data = i::NewArray<char>(cd->length);
-  i::OS::MemCopy(serialized_data, cd->data, cd->length);
+  i::MemCopy(serialized_data, cd->data, cd->length);
 
   // Deserialize.
   i::ScriptData* deserialized = i::ScriptData::New(serialized_data, cd->length);
@@ -18092,14 +18092,14 @@ TEST(ExternalInternalizedStringCollectedAtGC) {
 
 static double DoubleFromBits(uint64_t value) {
   double target;
-  i::OS::MemCopy(&target, &value, sizeof(target));
+  i::MemCopy(&target, &value, sizeof(target));
   return target;
 }
 
 
 static uint64_t DoubleToBits(double value) {
   uint64_t target;
-  i::OS::MemCopy(&target, &value, sizeof(target));
+  i::MemCopy(&target, &value, sizeof(target));
   return target;
 }
 
@@ -22431,14 +22431,13 @@ void StoringEventLoggerCallback(const char* message, int status) {
 TEST(EventLogging) {
   v8::Isolate* isolate = CcTest::isolate();
   isolate->SetEventLogger(StoringEventLoggerCallback);
-  v8::internal::HistogramTimer* histogramTimer =
-      new v8::internal::HistogramTimer(
-          "V8.Test", 0, 10000, 50,
-          reinterpret_cast<v8::internal::Isolate*>(isolate));
-  histogramTimer->Start();
+  v8::internal::HistogramTimer histogramTimer(
+      "V8.Test", 0, 10000, 50,
+      reinterpret_cast<v8::internal::Isolate*>(isolate));
+  histogramTimer.Start();
   CHECK_EQ("V8.Test", last_event_message);
   CHECK_EQ(0, last_event_status);
-  histogramTimer->Stop();
+  histogramTimer.Stop();
   CHECK_EQ("V8.Test", last_event_message);
   CHECK_EQ(1, last_event_status);
 }

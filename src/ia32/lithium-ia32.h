@@ -415,6 +415,7 @@ class LDummyUse V8_FINAL : public LTemplateInstruction<1, 1, 0> {
 
 class LDeoptimize V8_FINAL : public LTemplateInstruction<0, 0, 0> {
  public:
+  virtual bool IsControl() const V8_OVERRIDE { return true; }
   DECLARE_CONCRETE_INSTRUCTION(Deoptimize, "deoptimize")
   DECLARE_HYDROGEN_ACCESSOR(Deoptimize)
 };
@@ -1997,15 +1998,13 @@ class LInteger32ToDouble V8_FINAL : public LTemplateInstruction<1, 1, 0> {
 };
 
 
-class LUint32ToDouble V8_FINAL : public LTemplateInstruction<1, 1, 1> {
+class LUint32ToDouble V8_FINAL : public LTemplateInstruction<1, 1, 0> {
  public:
-  explicit LUint32ToDouble(LOperand* value, LOperand* temp) {
+  explicit LUint32ToDouble(LOperand* value) {
     inputs_[0] = value;
-    temps_[0] = temp;
   }
 
   LOperand* value() { return inputs_[0]; }
-  LOperand* temp() { return temps_[0]; }
 
   DECLARE_CONCRETE_INSTRUCTION(Uint32ToDouble, "uint32-to-double")
 };
@@ -2025,17 +2024,15 @@ class LNumberTagI V8_FINAL : public LTemplateInstruction<1, 1, 1> {
 };
 
 
-class LNumberTagU V8_FINAL : public LTemplateInstruction<1, 1, 2> {
+class LNumberTagU V8_FINAL : public LTemplateInstruction<1, 1, 1> {
  public:
-  LNumberTagU(LOperand* value, LOperand* temp1, LOperand* temp2) {
+  LNumberTagU(LOperand* value, LOperand* temp) {
     inputs_[0] = value;
-    temps_[0] = temp1;
-    temps_[1] = temp2;
+    temps_[0] = temp;
   }
 
   LOperand* value() { return inputs_[0]; }
-  LOperand* temp1() { return temps_[0]; }
-  LOperand* temp2() { return temps_[1]; }
+  LOperand* temp() { return temps_[0]; }
 
   DECLARE_CONCRETE_INSTRUCTION(NumberTagU, "number-tag-u")
 };

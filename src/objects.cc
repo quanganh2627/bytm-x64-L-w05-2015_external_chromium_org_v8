@@ -9668,7 +9668,7 @@ bool String::SlowAsArrayIndex(uint32_t* index) {
     uint32_t field = hash_field();
     if ((field & kIsNotArrayIndexMask) != 0) return false;
     // Isolate the array index form the full hash field.
-    *index = (kArrayIndexHashMask & field) >> kHashShift;
+    *index = ArrayIndexValueBits::decode(field);
     return true;
   } else {
     return ComputeArrayIndex(index);
@@ -9726,8 +9726,8 @@ uint32_t StringHasher::MakeArrayIndexHash(uint32_t value, int length) {
   ASSERT(TenToThe(String::kMaxCachedArrayIndexLength) <
          (1 << String::kArrayIndexValueBits));
 
-  value <<= String::kHashShift;
-  value |= length << String::kArrayIndexHashLengthShift;
+  value <<= String::ArrayIndexValueBits::kShift;
+  value |= length << String::ArrayIndexLengthBits::kShift;
 
   ASSERT((value & String::kIsNotArrayIndexMask) == 0);
   ASSERT((length > String::kMaxCachedArrayIndexLength) ||
@@ -11205,13 +11205,30 @@ void Code::ClearInlineCaches(Code::Kind* kind) {
 void SharedFunctionInfo::ClearTypeFeedbackInfo() {
   FixedArray* vector = feedback_vector();
   Heap* heap = GetHeap();
-  for (int i = 0; i < vector->length(); i++) {
+  int length = vector->length();
+
+  for (int i = 0; i < length; i++) {
     Object* obj = vector->get(i);
-    if (!obj->IsAllocationSite()) {
-      vector->set(
-          i,
-          TypeFeedbackInfo::RawUninitializedSentinel(heap),
-          SKIP_WRITE_BARRIER);
+    if (obj->IsHeapObject()) {
+      InstanceType instance_type =
+          HeapObject::cast(obj)->map()->instance_type();
+      switch (instance_type) {
+        case ALLOCATION_SITE_TYPE:
+          // AllocationSites are not cleared because they do not store
+          // information that leaks.
+          break;
+        case JS_FUNCTION_TYPE:
+          // No need to clear the native context array function.
+          if (obj == JSFunction::cast(obj)->context()->native_context()->
+              get(Context::ARRAY_FUNCTION_INDEX)) {
+            break;
+          }
+          // Fall through...
+
+        default:
+          vector->set(i, TypeFeedbackInfo::RawUninitializedSentinel(heap),
+                      SKIP_WRITE_BARRIER);
+      }
     }
   }
 }
@@ -16707,7 +16724,7 @@ Handle<DeclaredAccessorDescriptor> DeclaredAccessorDescriptor::Create(
     if (previous_length != 0) {
       uint8_t* previous_array =
           previous->serialized_data()->GetDataStartAddress();
-      OS::MemCopy(array, previous_array, previous_length);
+      MemCopy(array, previous_array, previous_length);
       array += previous_length;
     }
     ASSERT(reinterpret_cast<uintptr_t>(array) % sizeof(uintptr_t) == 0);
