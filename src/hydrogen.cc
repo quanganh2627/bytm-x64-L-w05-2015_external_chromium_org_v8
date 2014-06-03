@@ -701,11 +701,11 @@ HConstant* HGraph::GetConstant##Name() {                                       \
 }
 
 
-DEFINE_GET_CONSTANT(Undefined, undefined, undefined, HType::Tagged(), false)
+DEFINE_GET_CONSTANT(Undefined, undefined, undefined, HType::Undefined(), false)
 DEFINE_GET_CONSTANT(True, true, boolean, HType::Boolean(), true)
 DEFINE_GET_CONSTANT(False, false, boolean, HType::Boolean(), false)
-DEFINE_GET_CONSTANT(Hole, the_hole, the_hole, HType::Tagged(), false)
-DEFINE_GET_CONSTANT(Null, null, null, HType::Tagged(), false)
+DEFINE_GET_CONSTANT(Hole, the_hole, the_hole, HType::None(), false)
+DEFINE_GET_CONSTANT(Null, null, null, HType::Null(), false)
 
 
 #undef DEFINE_GET_CONSTANT
@@ -1553,7 +1553,7 @@ HValue* HGraphBuilder::BuildRegExpConstructResult(HValue* length,
 
   // Determine the elements FixedArray.
   HValue* elements = Add<HInnerAllocatedObject>(
-      result, Add<HConstant>(JSRegExpResult::kSize));
+      result, Add<HConstant>(JSRegExpResult::kSize), HType::HeapObject());
 
   // Initialize the JSRegExpResult header.
   HValue* global_object = Add<HLoadNamedField>(
@@ -1677,26 +1677,32 @@ HValue* HGraphBuilder::BuildNumberToString(HValue* object, Type* type) {
                                       static_cast<HValue*>(NULL),
                                       FAST_ELEMENTS, ALLOW_RETURN_HOLE);
 
-        // Check if key is a heap number (the number string cache contains only
-        // SMIs and heap number, so it is sufficient to do a SMI check here).
+        // Check if the key is a heap number and compare it with the object.
         IfBuilder if_keyisnotsmi(this);
         HValue* keyisnotsmi = if_keyisnotsmi.IfNot<HIsSmiAndBranch>(key);
         if_keyisnotsmi.Then();
         {
-          // Check if values of key and object match.
-          IfBuilder if_keyeqobject(this);
-          if_keyeqobject.If<HCompareNumericAndBranch>(
-              Add<HLoadNamedField>(key, keyisnotsmi,
-                                   HObjectAccess::ForHeapNumberValue()),
-              Add<HLoadNamedField>(object, objectisnumber,
-                                   HObjectAccess::ForHeapNumberValue()),
-              Token::EQ);
-          if_keyeqobject.Then();
+          IfBuilder if_keyisheapnumber(this);
+          if_keyisheapnumber.If<HCompareMap>(
+              key, isolate()->factory()->heap_number_map());
+          if_keyisheapnumber.Then();
           {
-            // Make the key_index available.
-            Push(key_index);
+            // Check if values of key and object match.
+            IfBuilder if_keyeqobject(this);
+            if_keyeqobject.If<HCompareNumericAndBranch>(
+                Add<HLoadNamedField>(key, keyisnotsmi,
+                                     HObjectAccess::ForHeapNumberValue()),
+                Add<HLoadNamedField>(object, objectisnumber,
+                                     HObjectAccess::ForHeapNumberValue()),
+                Token::EQ);
+            if_keyeqobject.Then();
+            {
+              // Make the key_index available.
+              Push(key_index);
+            }
+            if_keyeqobject.JoinContinuation(&found);
           }
-          if_keyeqobject.JoinContinuation(&found);
+          if_keyisheapnumber.JoinContinuation(&found);
         }
         if_keyisnotsmi.JoinContinuation(&found);
       }
@@ -2293,7 +2299,7 @@ HValue* HGraphBuilder::BuildAllocateElements(ElementsKind kind,
   HValue* total_size = AddUncasted<HAdd>(mul, header_size);
   total_size->ClearFlag(HValue::kCanOverflow);
 
-  return Add<HAllocate>(total_size, HType::NonPrimitive(), NOT_TENURED,
+  return Add<HAllocate>(total_size, HType::HeapObject(), NOT_TENURED,
                         instance_type);
 }
 
@@ -2352,7 +2358,7 @@ HInnerAllocatedObject* HGraphBuilder::BuildJSArrayHeader(HValue* array,
   }
 
   HInnerAllocatedObject* elements = Add<HInnerAllocatedObject>(
-      array, Add<HConstant>(elements_location));
+      array, Add<HConstant>(elements_location), HType::HeapObject());
   Add<HStoreNamedField>(array, HObjectAccess::ForElementsPointer(), elements);
   return elements;
 }
@@ -2525,8 +2531,7 @@ void HGraphBuilder::BuildCopyElements(HValue* array,
       capacity->IsConstant() &&
       HConstant::cast(capacity)->HasInteger32Value()) {
     int constant_candidate = HConstant::cast(capacity)->Integer32Value();
-    if (constant_candidate <=
-        FastCloneShallowArrayStub::kMaximumInlinedCloneLength) {
+    if (constant_candidate <= kElementLoopUnrollThreshold) {
       constant_capacity = constant_candidate;
     }
   }
@@ -2642,7 +2647,7 @@ HValue* HGraphBuilder::BuildCloneShallowArrayCommon(
 
   if (extra_size != NULL) {
     HValue* elements = Add<HInnerAllocatedObject>(object,
-        Add<HConstant>(array_size));
+        Add<HConstant>(array_size), HType::HeapObject());
     if (return_elements != NULL) *return_elements = elements;
   }
 
@@ -2701,6 +2706,12 @@ HValue* HGraphBuilder::BuildCloneShallowArrayNonEmpty(HValue* boilerplate,
   extra->ClearFlag(HValue::kCanOverflow);
   extra = AddUncasted<HAdd>(extra, Add<HConstant>(FixedArray::kHeaderSize));
   extra->ClearFlag(HValue::kCanOverflow);
+  // This function implicitly relies on the fact that the
+  // FastCloneShallowArrayStub is called only for literals shorter than
+  // JSObject::kInitialMaxFastElementArray and therefore the size of the
+  // resulting folded allocation will always be in allowed range.
+  // Can't add HBoundsCheck here because otherwise the stub will eager a frame.
+
   HValue* elements = NULL;
   HValue* result = BuildCloneShallowArrayCommon(boilerplate,
       allocation_site, extra, &elements, mode);
@@ -2794,7 +2805,7 @@ void HGraphBuilder::BuildCreateAllocationMemento(
     HValue* allocation_site) {
   ASSERT(allocation_site != NULL);
   HInnerAllocatedObject* allocation_memento = Add<HInnerAllocatedObject>(
-      previous_object, previous_object_size);
+      previous_object, previous_object_size, HType::HeapObject());
   AddStoreMapConstant(
       allocation_memento, isolate()->factory()->allocation_memento_map());
   Add<HStoreNamedField>(
@@ -5480,7 +5491,7 @@ HInstruction* HOptimizedGraphBuilder::BuildStoreNamedField(
 
       // TODO(hpayer): Allocation site pretenuring support.
       HInstruction* heap_number = Add<HAllocate>(heap_number_size,
-          HType::Tagged(),
+          HType::HeapObject(),
           NOT_TENURED,
           HEAP_NUMBER_TYPE);
       AddStoreMapConstant(heap_number, isolate()->factory()->heap_number_map());
@@ -5668,20 +5679,8 @@ void HOptimizedGraphBuilder::PropertyAccessInfo::LoadFieldMaps(
   ASSERT_EQ(num_field_maps, field_maps_.length());
 
   // Determine field HType from field HeapType.
-  if (field_type->Is(HeapType::Number())) {
-    field_type_ = HType::HeapNumber();
-  } else if (field_type->Is(HeapType::String())) {
-    field_type_ = HType::String();
-  } else if (field_type->Is(HeapType::Boolean())) {
-    field_type_ = HType::Boolean();
-  } else if (field_type->Is(HeapType::Array())) {
-    field_type_ = HType::JSArray();
-  } else if (field_type->Is(HeapType::Object())) {
-    field_type_ = HType::JSObject();
-  } else if (field_type->Is(HeapType::Null()) ||
-             field_type->Is(HeapType::Undefined())) {
-    field_type_ = HType::NonPrimitive();
-  }
+  field_type_ = HType::FromType<HeapType>(field_type);
+  ASSERT(field_type_.IsHeapObject());
 
   // Add dependency on the map that introduced the field.
   Map::AddDependentCompilationInfo(
@@ -8740,7 +8739,6 @@ void HOptimizedGraphBuilder::GenerateDataViewInitialize(
     CallRuntime* expr) {
   ZoneList<Expression*>* arguments = expr->arguments();
 
-  NoObservableSideEffectsScope scope(this);
   ASSERT(arguments->length()== 4);
   CHECK_ALIVE(VisitForValue(arguments->at(0)));
   HValue* obj = Pop();
@@ -8754,8 +8752,11 @@ void HOptimizedGraphBuilder::GenerateDataViewInitialize(
   CHECK_ALIVE(VisitForValue(arguments->at(3)));
   HValue* byte_length = Pop();
 
-  BuildArrayBufferViewInitialization<JSDataView>(
-      obj, buffer, byte_offset, byte_length);
+  {
+    NoObservableSideEffectsScope scope(this);
+    BuildArrayBufferViewInitialization<JSDataView>(
+        obj, buffer, byte_offset, byte_length);
+  }
 }
 
 
@@ -8791,7 +8792,7 @@ HValue* HOptimizedGraphBuilder::BuildAllocateExternalElements(
   HValue* elements =
       Add<HAllocate>(
           Add<HConstant>(ExternalArray::kAlignedSize),
-          HType::NonPrimitive(),
+          HType::HeapObject(),
           NOT_TENURED,
           external_array_map->instance_type());
 
@@ -8848,7 +8849,7 @@ HValue* HOptimizedGraphBuilder::BuildAllocateFixedTypedArray(
   Handle<Map> fixed_typed_array_map(
       isolate()->heap()->MapForFixedTypedArray(array_type));
   HValue* elements =
-      Add<HAllocate>(total_size, HType::NonPrimitive(),
+      Add<HAllocate>(total_size, HType::HeapObject(),
                      NOT_TENURED, fixed_typed_array_map->instance_type());
   AddStoreMapConstant(elements, fixed_typed_array_map);
 
@@ -8876,7 +8877,6 @@ void HOptimizedGraphBuilder::GenerateTypedArrayInitialize(
     CallRuntime* expr) {
   ZoneList<Expression*>* arguments = expr->arguments();
 
-  NoObservableSideEffectsScope scope(this);
   static const int kObjectArg = 0;
   static const int kArrayIdArg = 1;
   static const int kBufferArg = 2;
@@ -8931,6 +8931,7 @@ void HOptimizedGraphBuilder::GenerateTypedArrayInitialize(
   CHECK_ALIVE(VisitForValue(arguments->at(kByteLengthArg)));
   HValue* byte_length = Pop();
 
+  NoObservableSideEffectsScope scope(this);
   IfBuilder byte_offset_smi(this);
 
   if (!is_zero_byte_offset) {
@@ -10281,7 +10282,7 @@ HInstruction* HOptimizedGraphBuilder::BuildFastLiteral(
     InstanceType instance_type = boilerplate_object->HasFastDoubleElements()
         ? FIXED_DOUBLE_ARRAY_TYPE : FIXED_ARRAY_TYPE;
     object_elements = Add<HAllocate>(
-        object_elements_size, HType::NonPrimitive(),
+        object_elements_size, HType::HeapObject(),
         pretenure_flag, instance_type, site_context->current());
   }
   BuildInitElementsInObjectHeader(boilerplate_object, object, object_elements);
@@ -10515,7 +10516,7 @@ void HOptimizedGraphBuilder::VisitDeclarations(
         DeclareGlobalsNativeFlag::encode(current_info()->is_native()) |
         DeclareGlobalsStrictMode::encode(current_info()->strict_mode());
     Add<HDeclareGlobals>(array, flags);
-    globals_.Clear();
+    globals_.Rewind(0);
   }
 }
 

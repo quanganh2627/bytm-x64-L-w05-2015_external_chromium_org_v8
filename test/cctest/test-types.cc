@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "cctest.h"
+#include "hydrogen-types.h"
 #include "types.h"
 #include "utils/random-number-generator.h"
 
@@ -1725,7 +1726,7 @@ struct Tests : Rep {
         T.Union(T.ObjectConstant2, T.ObjectConstant1));
   }
 
-  void Distributivity() {
+  void Distributivity1() {
     // Distributivity:
     // Union(T1, Intersect(T2, T3)) = Intersect(Union(T1, T2), Union(T1, T3))
     for (TypeIterator it1 = T.types.begin(); it1 != T.types.end(); ++it1) {
@@ -1743,7 +1744,9 @@ struct Tests : Rep {
         }
       }
     }
+  }
 
+  void Distributivity2() {
     // Distributivity:
     // Intersect(T1, Union(T2, T3)) = Union(Intersect(T1, T2), Intersect(T1,T3))
     for (TypeIterator it1 = T.types.begin(); it1 != T.types.end(); ++it1) {
@@ -1772,6 +1775,18 @@ struct Tests : Rep {
       TypeHandle2 type2 = T2.template Convert<Type>(type1);
       TypeHandle type3 = T.template Convert<Type2>(type2);
       CheckEqual(type1, type3);
+    }
+  }
+
+  void HTypeFromType() {
+    for (TypeIterator it1 = T.types.begin(); it1 != T.types.end(); ++it1) {
+      for (TypeIterator it2 = T.types.begin(); it2 != T.types.end(); ++it2) {
+        TypeHandle type1 = *it1;
+        TypeHandle type2 = *it2;
+        HType htype1 = HType::FromType<Type>(type1);
+        HType htype2 = HType::FromType<Type>(type2);
+        CHECK(!type1->Is(type2) || htype1.IsSubtypeOf(htype2));
+      }
     }
   }
 };
@@ -1899,10 +1914,17 @@ TEST(Intersect2) {
 }
 
 
-TEST(Distributivity) {
+TEST(Distributivity1) {
   CcTest::InitializeVM();
-  ZoneTests().Distributivity();
-  HeapTests().Distributivity();
+  ZoneTests().Distributivity1();
+  HeapTests().Distributivity1();
+}
+
+
+TEST(Distributivity2) {
+  CcTest::InitializeVM();
+  ZoneTests().Distributivity2();
+  HeapTests().Distributivity2();
 }
 
 
@@ -1910,4 +1932,11 @@ TEST(Convert) {
   CcTest::InitializeVM();
   ZoneTests().Convert<HeapType, Handle<HeapType>, Isolate, HeapRep>();
   HeapTests().Convert<Type, Type*, Zone, ZoneRep>();
+}
+
+
+TEST(HTypeFromType) {
+  CcTest::InitializeVM();
+  ZoneTests().HTypeFromType();
+  HeapTests().HTypeFromType();
 }

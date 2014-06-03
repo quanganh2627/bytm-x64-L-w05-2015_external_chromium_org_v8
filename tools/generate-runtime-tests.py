@@ -288,6 +288,12 @@ class Generator(object):
     # 'foo' + 'bar'
     return self._Variable(name, "\"%s\" + \"%s\"" % (s1, s2))
 
+  def _SeqTwoByteString(self, name):
+    s1 = self._RawRandomString(1, 5)
+    s2 = self._RawRandomString(1, 5)
+    # 'foo' + unicode + 'bar'
+    return self._Variable(name, "\"%s\" + \"\\2082\" + \"%s\"" % (s1, s2))
+
   def _SlicedString(self, name):
     s = self._RawRandomString(20, 30)
     # 'ffoo12345678901234567890'.substr(1)
@@ -674,7 +680,9 @@ class Generator(object):
     "Number": ["1.5", _Number],
     "Object": ["new Object()", _Object],
     "PropertyDetails": ["513", _PropertyDetails],
+    "SeqOneByteString": ["\"seq 1-byte\"", _SeqString],
     "SeqString": ["\"seqstring\"", _SeqString],
+    "SeqTwoByteString": ["\"seq \\u2082-byte\"", _SeqTwoByteString],
     "Smi": ["1", _Smi],
     "StrictMode": ["1", _StrictMode],
     "String": ["\"foo\"", _String],
@@ -820,7 +828,6 @@ def FindInlineRuntimeFunctions():
   inline_functions = []
   with open(HEADERFILENAME, "r") as f:
     inline_list = "#define INLINE_FUNCTION_LIST(F) \\\n"
-    inline_opt_list = "#define INLINE_OPTIMIZED_FUNCTION_LIST(F) \\\n"
     inline_function = re.compile(r"^\s*F\((\w+), \d+, \d+\)\s*\\?")
     mode = "SEARCHING"
     for line in f:
@@ -831,7 +838,7 @@ def FindInlineRuntimeFunctions():
         if not line.endswith("\\\n"):
           mode = "SEARCHING"
       elif mode == "SEARCHING":
-        if line == inline_list or line == inline_opt_list:
+        if line == inline_list:
           mode = "ACTIVE"
   return inline_functions
 

@@ -67,15 +67,13 @@
 
   # This tests only the type system, so there is no point in running several
   # variants.
+  'test-hydrogen-types/*': [PASS, NO_VARIANTS],
   'test-types/*': [PASS, NO_VARIANTS],
 
   # BUG(2999).
   'test-cpu-profiler/CollectCpuProfile': [PASS, FLAKY],
   # BUG(3287).
   'test-cpu-profiler/SampleWhenFrameIsNotSetup': [PASS, FLAKY],
-
-   # BUG(3350). Crashes.
-  'test-heap/PathTracer': [SKIP],
 
   ############################################################################
   # Slow tests.
