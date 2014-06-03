@@ -56,6 +56,11 @@ void MacroAssembler::Store(Register src,
   } else if (r.IsInteger16() || r.IsUInteger16()) {
     sh(src, dst);
   } else {
+    if (r.IsHeapObject()) {
+      AssertNotSmi(src);
+    } else if (r.IsSmi()) {
+      AssertSmi(src);
+    }
     sw(src, dst);
   }
 }
@@ -1194,7 +1199,7 @@ void MacroAssembler::BranchF(Label* target,
         break;
       default:
         CHECK(0);
-    };
+    }
   }
 
   if (bd == PROTECT) {
@@ -3117,33 +3122,12 @@ void MacroAssembler::AllocateAsciiConsString(Register result,
                                              Register scratch1,
                                              Register scratch2,
                                              Label* gc_required) {
-  Label allocate_new_space, install_map;
-  AllocationFlags flags = TAG_OBJECT;
-
-  ExternalReference high_promotion_mode = ExternalReference::
-      new_space_high_promotion_mode_active_address(isolate());
-  li(scratch1, Operand(high_promotion_mode));
-  lw(scratch1, MemOperand(scratch1, 0));
-  Branch(&allocate_new_space, eq, scratch1, Operand(zero_reg));
-
   Allocate(ConsString::kSize,
            result,
            scratch1,
            scratch2,
            gc_required,
-           static_cast<AllocationFlags>(flags | PRETENURE_OLD_POINTER_SPACE));
-
-  jmp(&install_map);
-
-  bind(&allocate_new_space);
-  Allocate(ConsString::kSize,
-           result,
-           scratch1,
-           scratch2,
-           gc_required,
-           flags);
-
-  bind(&install_map);
+           TAG_OBJECT);
 
   InitializeNewString(result,
                       length,
@@ -4015,19 +3999,14 @@ bool MacroAssembler::AllowThisStubCall(CodeStub* stub) {
 }
 
 
-void MacroAssembler::IndexFromHash(Register hash,
-                                   Register index) {
+void MacroAssembler::IndexFromHash(Register hash, Register index) {
   // If the hash field contains an array index pick it out. The assert checks
   // that the constants for the maximum number of digits for an array index
   // cached in the hash field and the number of bits reserved for it does not
   // conflict.
   ASSERT(TenToThe(String::kMaxCachedArrayIndexLength) <
          (1 << String::kArrayIndexValueBits));
-  // We want the smi-tagged index in key.  kArrayIndexValueMask has zeros in
-  // the low kHashShift bits.
-  STATIC_ASSERT(kSmiTag == 0);
-  Ext(hash, hash, String::kHashShift, String::kArrayIndexValueBits);
-  sll(index, hash, kSmiTagSize);
+  DecodeFieldToSmi<String::ArrayIndexValueBits>(index, hash);
 }
 
 
@@ -4452,36 +4431,37 @@ void MacroAssembler::LoadGlobalFunctionInitialMap(Register function,
 }
 
 
-void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
-  if (frame_mode == BUILD_STUB_FRAME) {
+void MacroAssembler::StubPrologue() {
     Push(ra, fp, cp);
     Push(Smi::FromInt(StackFrame::STUB));
     // Adjust FP to point to saved FP.
     Addu(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
+}
+
+
+void MacroAssembler::Prologue(bool code_pre_aging) {
+  PredictableCodeSizeScope predictible_code_size_scope(
+      this, kNoCodeAgeSequenceLength);
+  // The following three instructions must remain together and unmodified
+  // for code aging to work properly.
+  if (code_pre_aging) {
+    // Pre-age the code.
+    Code* stub = Code::GetPreAgedCodeAgeStub(isolate());
+    nop(Assembler::CODE_AGE_MARKER_NOP);
+    // Load the stub address to t9 and call it,
+    // GetCodeAgeAndParity() extracts the stub address from this instruction.
+    li(t9,
+       Operand(reinterpret_cast<uint32_t>(stub->instruction_start())),
+       CONSTANT_SIZE);
+    nop();  // Prevent jalr to jal optimization.
+    jalr(t9, a0);
+    nop();  // Branch delay slot nop.
+    nop();  // Pad the empty space.
   } else {
-    PredictableCodeSizeScope predictible_code_size_scope(
-      this, kNoCodeAgeSequenceLength * Assembler::kInstrSize);
-    // The following three instructions must remain together and unmodified
-    // for code aging to work properly.
-    if (isolate()->IsCodePreAgingActive()) {
-      // Pre-age the code.
-      Code* stub = Code::GetPreAgedCodeAgeStub(isolate());
-      nop(Assembler::CODE_AGE_MARKER_NOP);
-      // Load the stub address to t9 and call it,
-      // GetCodeAgeAndParity() extracts the stub address from this instruction.
-      li(t9,
-         Operand(reinterpret_cast<uint32_t>(stub->instruction_start())),
-         CONSTANT_SIZE);
-      nop();  // Prevent jalr to jal optimization.
-      jalr(t9, a0);
-      nop();  // Branch delay slot nop.
-      nop();  // Pad the empty space.
-    } else {
-      Push(ra, fp, cp, a1);
-      nop(Assembler::CODE_AGE_SEQUENCE_NOP);
-      // Adjust fp to point to caller's fp.
-      Addu(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
-    }
+    Push(ra, fp, cp, a1);
+    nop(Assembler::CODE_AGE_SEQUENCE_NOP);
+    // Adjust fp to point to caller's fp.
+    Addu(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
   }
 }
 
@@ -5236,7 +5216,7 @@ void MacroAssembler::CheckMapDeprecated(Handle<Map> map,
   if (map->CanBeDeprecated()) {
     li(scratch, Operand(map));
     lw(scratch, FieldMemOperand(scratch, Map::kBitField3Offset));
-    And(scratch, scratch, Operand(Smi::FromInt(Map::Deprecated::kMask)));
+    And(scratch, scratch, Operand(Map::Deprecated::kMask));
     Branch(if_deprecated, ne, scratch, Operand(zero_reg));
   }
 }
@@ -5493,7 +5473,8 @@ void MacroAssembler::NumberOfOwnDescriptors(Register dst, Register map) {
 void MacroAssembler::EnumLength(Register dst, Register map) {
   STATIC_ASSERT(Map::EnumLengthBits::kShift == 0);
   lw(dst, FieldMemOperand(map, Map::kBitField3Offset));
-  And(dst, dst, Operand(Smi::FromInt(Map::EnumLengthBits::kMask)));
+  And(dst, dst, Operand(Map::EnumLengthBits::kMask));
+  SmiTag(dst);
 }
 
 
@@ -5646,7 +5627,7 @@ void MacroAssembler::JumpIfDictionaryInPrototypeChain(
   bind(&loop_again);
   lw(current, FieldMemOperand(current, HeapObject::kMapOffset));
   lb(scratch1, FieldMemOperand(current, Map::kBitField2Offset));
-  Ext(scratch1, scratch1, Map::kElementsKindShift, Map::kElementsKindBitCount);
+  DecodeField<Map::ElementsKindBits>(scratch1);
   Branch(found, eq, scratch1, Operand(DICTIONARY_ELEMENTS));
   lw(current, FieldMemOperand(current, Map::kPrototypeOffset));
   Branch(&loop_again, ne, current, Operand(factory->null_value()));
@@ -5664,10 +5645,13 @@ bool AreAliased(Register r1, Register r2, Register r3, Register r4) {
 }
 
 
-CodePatcher::CodePatcher(byte* address, int instructions)
+CodePatcher::CodePatcher(byte* address,
+                         int instructions,
+                         FlushICache flush_cache)
     : address_(address),
       size_(instructions * Assembler::kInstrSize),
-      masm_(NULL, address, size_ + Assembler::kGap) {
+      masm_(NULL, address, size_ + Assembler::kGap),
+      flush_cache_(flush_cache) {
   // Create a new macro assembler pointing to the address of the code to patch.
   // The size is adjusted with kGap on order for the assembler to generate size
   // bytes of instructions without failing with buffer size constraints.
@@ -5677,7 +5661,9 @@ CodePatcher::CodePatcher(byte* address, int instructions)
 
 CodePatcher::~CodePatcher() {
   // Indicate that code has changed.
-  CPU::FlushICache(address_, size_);
+  if (flush_cache_ == FLUSH) {
+    CPU::FlushICache(address_, size_);
+  }
 
   // Check that the code was patched as expected.
   ASSERT(masm_.pc_ == address_ + size_);

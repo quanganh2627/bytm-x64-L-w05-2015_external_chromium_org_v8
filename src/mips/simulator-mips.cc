@@ -840,12 +840,12 @@ void Simulator::CheckICache(v8::internal::HashMap* i_cache,
   char* cached_line = cache_page->CachedData(offset & ~CachePage::kLineMask);
   if (cache_hit) {
     // Check that the data in memory matches the contents of the I-cache.
-    CHECK(memcmp(reinterpret_cast<void*>(instr),
-                 cache_page->CachedData(offset),
-                 Instruction::kInstrSize) == 0);
+    CHECK_EQ(0, memcmp(reinterpret_cast<void*>(instr),
+                       cache_page->CachedData(offset),
+                       Instruction::kInstrSize));
   } else {
     // Cache miss.  Load memory into the cache.
-    OS::MemCopy(cached_line, line, CachePage::kLineLength);
+    memcpy(cached_line, line, CachePage::kLineLength);
     *cache_valid_byte = CachePage::LINE_VALID;
   }
 }
@@ -1047,8 +1047,8 @@ double Simulator::get_double_from_register_pair(int reg) {
   // Read the bits from the unsigned integer register_[] array
   // into the double precision floating point value and return it.
   char buffer[2 * sizeof(registers_[0])];
-  OS::MemCopy(buffer, &registers_[reg], 2 * sizeof(registers_[0]));
-  OS::MemCopy(&dm_val, buffer, 2 * sizeof(registers_[0]));
+  memcpy(buffer, &registers_[reg], 2 * sizeof(registers_[0]));
+  memcpy(&dm_val, buffer, 2 * sizeof(registers_[0]));
   return(dm_val);
 }
 
@@ -1096,14 +1096,14 @@ void Simulator::GetFpArgs(double* x, double* y, int32_t* z) {
     // Registers a0 and a1 -> x.
     reg_buffer[0] = get_register(a0);
     reg_buffer[1] = get_register(a1);
-    OS::MemCopy(x, buffer, sizeof(buffer));
+    memcpy(x, buffer, sizeof(buffer));
     // Registers a2 and a3 -> y.
     reg_buffer[0] = get_register(a2);
     reg_buffer[1] = get_register(a3);
-    OS::MemCopy(y, buffer, sizeof(buffer));
+    memcpy(y, buffer, sizeof(buffer));
     // Register 2 -> z.
     reg_buffer[0] = get_register(a2);
-    OS::MemCopy(z, buffer, sizeof(*z));
+    memcpy(z, buffer, sizeof(*z));
   }
 }
 
@@ -1115,7 +1115,7 @@ void Simulator::SetFpResult(const double& result) {
   } else {
     char buffer[2 * sizeof(registers_[0])];
     int32_t* reg_buffer = reinterpret_cast<int32_t*>(buffer);
-    OS::MemCopy(buffer, &result, sizeof(buffer));
+    memcpy(buffer, &result, sizeof(buffer));
     // Copy result to v0 and v1.
     set_register(v0, reg_buffer[0]);
     set_register(v1, reg_buffer[1]);
@@ -1762,7 +1762,7 @@ void Simulator::ConfigureTypeRegister(Instruction* instr,
           break;
         default:
           UNIMPLEMENTED_MIPS();
-      };
+      }
       break;
     case COP1X:
       break;
@@ -1899,7 +1899,7 @@ void Simulator::ConfigureTypeRegister(Instruction* instr,
           break;
         default:
           UNREACHABLE();
-      };
+      }
       break;
     case SPECIAL2:
       switch (instr->FunctionFieldRaw()) {
@@ -1915,7 +1915,7 @@ void Simulator::ConfigureTypeRegister(Instruction* instr,
           break;
         default:
           UNREACHABLE();
-      };
+      }
       break;
     case SPECIAL3:
       switch (instr->FunctionFieldRaw()) {
@@ -1941,11 +1941,11 @@ void Simulator::ConfigureTypeRegister(Instruction* instr,
         }
         default:
           UNREACHABLE();
-      };
+      }
       break;
     default:
       UNREACHABLE();
-  };
+  }
 }
 
 
@@ -2204,7 +2204,7 @@ void Simulator::DecodeTypeRegister(Instruction* instr) {
               break;
             default:
               UNREACHABLE();
-          };
+          }
           break;
         case L:
           switch (instr->FunctionFieldRaw()) {
@@ -2226,7 +2226,7 @@ void Simulator::DecodeTypeRegister(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-      };
+      }
       break;
     case COP1X:
       switch (instr->FunctionFieldRaw()) {
@@ -2239,7 +2239,7 @@ void Simulator::DecodeTypeRegister(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-      };
+      }
       break;
     case SPECIAL:
       switch (instr->FunctionFieldRaw()) {
@@ -2320,7 +2320,7 @@ void Simulator::DecodeTypeRegister(Instruction* instr) {
           break;
         default:  // For other special opcodes we do the default operation.
           set_register(rd_reg, alu_out);
-      };
+      }
       break;
     case SPECIAL2:
       switch (instr->FunctionFieldRaw()) {
@@ -2346,14 +2346,14 @@ void Simulator::DecodeTypeRegister(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-      };
+      }
       break;
     // Unimplemented opcodes raised an error in the configuration step before,
     // so we can use the default here to set the destination register in common
     // cases.
     default:
       set_register(rd_reg, alu_out);
-  };
+  }
 }
 
 
@@ -2414,7 +2414,7 @@ void Simulator::DecodeTypeImmediate(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-      };
+      }
       break;
     // ------------- REGIMM class.
     case REGIMM:
@@ -2433,7 +2433,7 @@ void Simulator::DecodeTypeImmediate(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-      };
+      }
       switch (instr->RtFieldRaw()) {
         case BLTZ:
         case BLTZAL:
@@ -2452,7 +2452,7 @@ void Simulator::DecodeTypeImmediate(Instruction* instr) {
           }
         default:
           break;
-        };
+        }
     break;  // case REGIMM.
     // ------------- Branch instructions.
     // When comparing to zero, the encoding of rt field is always 0, so we don't
@@ -2585,7 +2585,7 @@ void Simulator::DecodeTypeImmediate(Instruction* instr) {
       break;
     default:
       UNREACHABLE();
-  };
+  }
 
   // ---------- Raise exceptions triggered.
   SignalExceptions();
@@ -2661,7 +2661,7 @@ void Simulator::DecodeTypeImmediate(Instruction* instr) {
       break;
     default:
       break;
-  };
+  }
 
 
   if (execute_branch_delay_instruction) {
@@ -2887,9 +2887,9 @@ double Simulator::CallFP(byte* entry, double d0, double d1) {
   } else {
     int buffer[2];
     ASSERT(sizeof(buffer[0]) * 2 == sizeof(d0));
-    OS::MemCopy(buffer, &d0, sizeof(d0));
+    memcpy(buffer, &d0, sizeof(d0));
     set_dw_register(a0, buffer);
-    OS::MemCopy(buffer, &d1, sizeof(d1));
+    memcpy(buffer, &d1, sizeof(d1));
     set_dw_register(a2, buffer);
   }
   CallInternal(entry);

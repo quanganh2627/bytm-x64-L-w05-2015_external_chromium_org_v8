@@ -7,7 +7,7 @@
 
 #include "assembler.h"
 #include "frames.h"
-#include "v8globals.h"
+#include "globals.h"
 
 namespace v8 {
 namespace internal {
@@ -274,7 +274,8 @@ class MacroAssembler: public Assembler {
   void DebugBreak();
 
   // Generates function and stub prologue code.
-  void Prologue(PrologueFrameMode frame_mode);
+  void StubPrologue();
+  void Prologue(bool code_pre_aging);
 
   // Enter specific kind of exit frame; either in normal or
   // debug mode. Expects the number of arguments in register rax and
@@ -1003,7 +1004,7 @@ class MacroAssembler: public Assembler {
       MinusZeroMode minus_zero_mode, Label* lost_precision,
       Label::Distance dst = Label::kFar);
 
-  void LoadUint32(XMMRegister dst, Register src, XMMRegister scratch);
+  void LoadUint32(XMMRegister dst, Register src);
 
   void LoadInstanceDescriptors(Register map, Register descriptors);
   void EnumLength(Register dst, Register map);
@@ -1011,11 +1012,18 @@ class MacroAssembler: public Assembler {
 
   template<typename Field>
   void DecodeField(Register reg) {
-    static const int shift = Field::kShift + kSmiShift;
+    static const int shift = Field::kShift;
     static const int mask = Field::kMask >> Field::kShift;
-    shrp(reg, Immediate(shift));
+    if (shift != 0) {
+      shrp(reg, Immediate(shift));
+    }
     andp(reg, Immediate(mask));
-    shlp(reg, Immediate(kSmiShift));
+  }
+
+  template<typename Field>
+  void DecodeFieldToSmi(Register reg) {
+    andp(reg, Immediate(Field::kMask));
+    shlp(reg, Immediate(kSmiShift - Field::kShift));
   }
 
   // Abort execution if argument is not a number, enabled via --debug-code.

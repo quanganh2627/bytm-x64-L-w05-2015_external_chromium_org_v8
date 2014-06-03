@@ -17,7 +17,6 @@
 #include <time.h>
 
 #include <sys/mman.h>
-#include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -43,7 +42,6 @@
 
 #include "v8.h"
 
-#include "codegen.h"
 #include "isolate-inl.h"
 #include "platform.h"
 
@@ -54,15 +52,13 @@ namespace internal {
 static const pthread_t kNoThread = (pthread_t) 0;
 
 
-uint64_t OS::CpuFeaturesImpliedByPlatform() {
-#if V8_OS_MACOSX
-  // Mac OS X requires all these to install so we can assume they are present.
-  // These constants are defined by the CPUid instructions.
-  const uint64_t one = 1;
-  return (one << SSE2) | (one << CMOV);
-#else
-  return 0;  // Nothing special about the other systems.
-#endif
+unsigned OS::CpuFeaturesImpliedByPlatform() {
+  return 0;  // Nothing special.
+}
+
+
+int OS::NumberOfProcessorsOnline() {
+  return static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
 }
 
 
@@ -285,33 +281,6 @@ void OS::DebugBreak() {
 // ----------------------------------------------------------------------------
 // Math functions
 
-double modulo(double x, double y) {
-  return std::fmod(x, y);
-}
-
-
-#define UNARY_MATH_FUNCTION(name, generator)             \
-static UnaryMathFunction fast_##name##_function = NULL;  \
-void init_fast_##name##_function() {                     \
-  fast_##name##_function = generator;                    \
-}                                                        \
-double fast_##name(double x) {                           \
-  return (*fast_##name##_function)(x);                   \
-}
-
-UNARY_MATH_FUNCTION(exp, CreateExpFunction())
-UNARY_MATH_FUNCTION(sqrt, CreateSqrtFunction())
-
-#undef UNARY_MATH_FUNCTION
-
-
-void lazily_initialize_fast_exp() {
-  if (fast_exp_function == NULL) {
-    init_fast_exp_function();
-  }
-}
-
-
 double OS::nan_value() {
   // NAN from math.h is defined in C99 and not in POSIX.
   return NAN;
@@ -475,74 +444,6 @@ int OS::VSNPrintF(Vector<char> str,
   } else {
     return n;
   }
-}
-
-
-#if V8_TARGET_ARCH_IA32
-static void MemMoveWrapper(void* dest, const void* src, size_t size) {
-  memmove(dest, src, size);
-}
-
-
-// Initialize to library version so we can call this at any time during startup.
-static OS::MemMoveFunction memmove_function = &MemMoveWrapper;
-
-// Defined in codegen-ia32.cc.
-OS::MemMoveFunction CreateMemMoveFunction();
-
-// Copy memory area. No restrictions.
-void OS::MemMove(void* dest, const void* src, size_t size) {
-  if (size == 0) return;
-  // Note: here we rely on dependent reads being ordered. This is true
-  // on all architectures we currently support.
-  (*memmove_function)(dest, src, size);
-}
-
-#elif defined(V8_HOST_ARCH_ARM)
-void OS::MemCopyUint16Uint8Wrapper(uint16_t* dest,
-                                   const uint8_t* src,
-                                   size_t chars) {
-  uint16_t *limit = dest + chars;
-  while (dest < limit) {
-    *dest++ = static_cast<uint16_t>(*src++);
-  }
-}
-
-
-OS::MemCopyUint8Function OS::memcopy_uint8_function = &OS::MemCopyUint8Wrapper;
-OS::MemCopyUint16Uint8Function OS::memcopy_uint16_uint8_function =
-    &OS::MemCopyUint16Uint8Wrapper;
-// Defined in codegen-arm.cc.
-OS::MemCopyUint8Function CreateMemCopyUint8Function(
-    OS::MemCopyUint8Function stub);
-OS::MemCopyUint16Uint8Function CreateMemCopyUint16Uint8Function(
-    OS::MemCopyUint16Uint8Function stub);
-
-#elif defined(V8_HOST_ARCH_MIPS)
-OS::MemCopyUint8Function OS::memcopy_uint8_function = &OS::MemCopyUint8Wrapper;
-// Defined in codegen-mips.cc.
-OS::MemCopyUint8Function CreateMemCopyUint8Function(
-    OS::MemCopyUint8Function stub);
-#endif
-
-
-void OS::PostSetUp() {
-#if V8_TARGET_ARCH_IA32
-  OS::MemMoveFunction generated_memmove = CreateMemMoveFunction();
-  if (generated_memmove != NULL) {
-    memmove_function = generated_memmove;
-  }
-#elif defined(V8_HOST_ARCH_ARM)
-  OS::memcopy_uint8_function =
-      CreateMemCopyUint8Function(&OS::MemCopyUint8Wrapper);
-  OS::memcopy_uint16_uint8_function =
-      CreateMemCopyUint16Uint8Function(&OS::MemCopyUint16Uint8Wrapper);
-#elif defined(V8_HOST_ARCH_MIPS)
-  OS::memcopy_uint8_function =
-      CreateMemCopyUint8Function(&OS::MemCopyUint8Wrapper);
-#endif
-  // fast_exp is initialized lazily.
-  init_fast_sqrt_function();
 }
 
 

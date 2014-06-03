@@ -77,9 +77,7 @@ int MacroAssembler::CallSize(
   int size = 2 * kInstrSize;
   Instr mov_instr = cond | MOV | LeaveCC;
   intptr_t immediate = reinterpret_cast<intptr_t>(target);
-  if (!Operand(immediate, rmode).is_single_instruction(isolate(),
-                                                       this,
-                                                       mov_instr)) {
+  if (!Operand(immediate, rmode).is_single_instruction(this, mov_instr)) {
     size += kInstrSize;
   }
   return size;
@@ -99,9 +97,7 @@ int MacroAssembler::CallSizeNotPredictableCodeSize(Isolate* isolate,
   int size = 2 * kInstrSize;
   Instr mov_instr = cond | MOV | LeaveCC;
   intptr_t immediate = reinterpret_cast<intptr_t>(target);
-  if (!Operand(immediate, rmode).is_single_instruction(isolate,
-                                                       NULL,
-                                                       mov_instr)) {
+  if (!Operand(immediate, rmode).is_single_instruction(NULL, mov_instr)) {
     size += kInstrSize;
   }
   return size;
@@ -261,11 +257,11 @@ void MacroAssembler::Move(DwVfpRegister dst, DwVfpRegister src) {
 void MacroAssembler::And(Register dst, Register src1, const Operand& src2,
                          Condition cond) {
   if (!src2.is_reg() &&
-      !src2.must_output_reloc_info(isolate(), this) &&
+      !src2.must_output_reloc_info(this) &&
       src2.immediate() == 0) {
     mov(dst, Operand::Zero(), LeaveCC, cond);
-  } else if (!src2.is_single_instruction(isolate(), this) &&
-             !src2.must_output_reloc_info(isolate(), this) &&
+  } else if (!src2.is_single_instruction(this) &&
+             !src2.must_output_reloc_info(this) &&
              CpuFeatures::IsSupported(ARMv7) &&
              IsPowerOf2(src2.immediate() + 1)) {
     ubfx(dst, src1, 0,
@@ -405,6 +401,11 @@ void MacroAssembler::Store(Register src,
   } else if (r.IsInteger16() || r.IsUInteger16()) {
     strh(src, dst);
   } else {
+    if (r.IsHeapObject()) {
+      AssertNotSmi(src);
+    } else if (r.IsSmi()) {
+      AssertSmi(src);
+    }
     str(src, dst);
   }
 }
@@ -640,7 +641,7 @@ void MacroAssembler::PopSafepointRegisters() {
 
 void MacroAssembler::PushSafepointRegistersAndDoubles() {
   // Number of d-regs not known at snapshot time.
-  ASSERT(!Serializer::enabled(isolate()));
+  ASSERT(!serializer_enabled());
   PushSafepointRegisters();
   // Only save allocatable registers.
   ASSERT(kScratchDoubleReg.is(d15) && kDoubleRegZero.is(d14));
@@ -654,7 +655,7 @@ void MacroAssembler::PushSafepointRegistersAndDoubles() {
 
 void MacroAssembler::PopSafepointRegistersAndDoubles() {
   // Number of d-regs not known at snapshot time.
-  ASSERT(!Serializer::enabled(isolate()));
+  ASSERT(!serializer_enabled());
   // Only save allocatable registers.
   ASSERT(kScratchDoubleReg.is(d15) && kDoubleRegZero.is(d14));
   ASSERT(DwVfpRegister::NumReservedRegisters() == 2);
@@ -696,7 +697,7 @@ MemOperand MacroAssembler::SafepointRegisterSlot(Register reg) {
 
 MemOperand MacroAssembler::SafepointRegistersAndDoublesSlot(Register reg) {
   // Number of d-regs not known at snapshot time.
-  ASSERT(!Serializer::enabled(isolate()));
+  ASSERT(!serializer_enabled());
   // General purpose registers are pushed last on the stack.
   int doubles_size = DwVfpRegister::NumAllocatableRegisters() * kDoubleSize;
   int register_offset = SafepointRegisterStackIndex(reg.code()) * kPointerSize;
@@ -902,18 +903,24 @@ void MacroAssembler::LoadConstantPoolPointerRegister() {
 }
 
 
-void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
-  if (frame_mode == BUILD_STUB_FRAME) {
-    PushFixedFrame();
-    Push(Smi::FromInt(StackFrame::STUB));
-    // Adjust FP to point to saved FP.
-    add(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
-  } else {
-    PredictableCodeSizeScope predictible_code_size_scope(
-        this, kNoCodeAgeSequenceLength * Assembler::kInstrSize);
+void MacroAssembler::StubPrologue() {
+  PushFixedFrame();
+  Push(Smi::FromInt(StackFrame::STUB));
+  // Adjust FP to point to saved FP.
+  add(fp, sp, Operand(StandardFrameConstants::kFixedFrameSizeFromFp));
+  if (FLAG_enable_ool_constant_pool) {
+    LoadConstantPoolPointerRegister();
+    set_constant_pool_available(true);
+  }
+}
+
+
+void MacroAssembler::Prologue(bool code_pre_aging) {
+  { PredictableCodeSizeScope predictible_code_size_scope(
+        this, kNoCodeAgeSequenceLength);
     // The following three instructions must remain together and unmodified
     // for code aging to work properly.
-    if (isolate()->IsCodePreAgingActive()) {
+    if (code_pre_aging) {
       // Pre-age the code.
       Code* stub = Code::GetPreAgedCodeAgeStub(isolate());
       add(r0, pc, Operand(-8));
@@ -1750,7 +1757,7 @@ void MacroAssembler::Allocate(int object_size,
       object_size -= bits;
       shift += 8;
       Operand bits_operand(bits);
-      ASSERT(bits_operand.is_single_instruction(isolate(), this));
+      ASSERT(bits_operand.is_single_instruction(this));
       add(scratch2, source, bits_operand, SetCC, cond);
       source = scratch2;
       cond = cc;
@@ -1978,34 +1985,12 @@ void MacroAssembler::AllocateAsciiConsString(Register result,
                                              Register scratch1,
                                              Register scratch2,
                                              Label* gc_required) {
-  Label allocate_new_space, install_map;
-  AllocationFlags flags = TAG_OBJECT;
-
-  ExternalReference high_promotion_mode = ExternalReference::
-      new_space_high_promotion_mode_active_address(isolate());
-  mov(scratch1, Operand(high_promotion_mode));
-  ldr(scratch1, MemOperand(scratch1, 0));
-  cmp(scratch1, Operand::Zero());
-  b(eq, &allocate_new_space);
-
   Allocate(ConsString::kSize,
            result,
            scratch1,
            scratch2,
            gc_required,
-           static_cast<AllocationFlags>(flags | PRETENURE_OLD_POINTER_SPACE));
-
-  jmp(&install_map);
-
-  bind(&allocate_new_space);
-  Allocate(ConsString::kSize,
-           result,
-           scratch1,
-           scratch2,
-           gc_required,
-           flags);
-
-  bind(&install_map);
+           TAG_OBJECT);
 
   InitializeNewString(result,
                       length,
@@ -2454,10 +2439,7 @@ void MacroAssembler::IndexFromHash(Register hash, Register index) {
   // conflict.
   ASSERT(TenToThe(String::kMaxCachedArrayIndexLength) <
          (1 << String::kArrayIndexValueBits));
-  // We want the smi-tagged index in key.  kArrayIndexValueMask has zeros in
-  // the low kHashShift bits.
-  Ubfx(hash, hash, String::kHashShift, String::kArrayIndexValueBits);
-  SmiTag(index, hash);
+  DecodeFieldToSmi<String::ArrayIndexValueBits>(index, hash);
 }
 
 
@@ -3596,7 +3578,7 @@ void MacroAssembler::CheckMapDeprecated(Handle<Map> map,
   if (map->CanBeDeprecated()) {
     mov(scratch, Operand(map));
     ldr(scratch, FieldMemOperand(scratch, Map::kBitField3Offset));
-    tst(scratch, Operand(Smi::FromInt(Map::Deprecated::kMask)));
+    tst(scratch, Operand(Map::Deprecated::kMask));
     b(ne, if_deprecated);
   }
 }
@@ -3854,7 +3836,8 @@ void MacroAssembler::NumberOfOwnDescriptors(Register dst, Register map) {
 void MacroAssembler::EnumLength(Register dst, Register map) {
   STATIC_ASSERT(Map::EnumLengthBits::kShift == 0);
   ldr(dst, FieldMemOperand(map, Map::kBitField3Offset));
-  and_(dst, dst, Operand(Smi::FromInt(Map::EnumLengthBits::kMask)));
+  and_(dst, dst, Operand(Map::EnumLengthBits::kMask));
+  SmiTag(dst);
 }
 
 
@@ -3965,7 +3948,7 @@ void MacroAssembler::JumpIfDictionaryInPrototypeChain(
   bind(&loop_again);
   ldr(current, FieldMemOperand(current, HeapObject::kMapOffset));
   ldr(scratch1, FieldMemOperand(current, Map::kBitField2Offset));
-  Ubfx(scratch1, scratch1, Map::kElementsKindShift, Map::kElementsKindBitCount);
+  DecodeField<Map::ElementsKindBits>(scratch1);
   cmp(scratch1, Operand(DICTIONARY_ELEMENTS));
   b(eq, found);
   ldr(current, FieldMemOperand(current, Map::kPrototypeOffset));

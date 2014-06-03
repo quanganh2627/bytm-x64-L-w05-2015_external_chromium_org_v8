@@ -398,10 +398,10 @@ uint32_t StringShape::full_representation_tag() {
 }
 
 
-STATIC_CHECK((kStringRepresentationMask | kStringEncodingMask) ==
+STATIC_ASSERT((kStringRepresentationMask | kStringEncodingMask) ==
              Internals::kFullStringRepresentationMask);
 
-STATIC_CHECK(static_cast<uint32_t>(kStringEncodingMask) ==
+STATIC_ASSERT(static_cast<uint32_t>(kStringEncodingMask) ==
              Internals::kStringEncodingMask);
 
 
@@ -420,10 +420,10 @@ bool StringShape::IsExternalAscii() {
 }
 
 
-STATIC_CHECK((kExternalStringTag | kOneByteStringTag) ==
+STATIC_ASSERT((kExternalStringTag | kOneByteStringTag) ==
              Internals::kExternalAsciiRepresentationTag);
 
-STATIC_CHECK(v8::String::ASCII_ENCODING == kOneByteStringTag);
+STATIC_ASSERT(v8::String::ASCII_ENCODING == kOneByteStringTag);
 
 
 bool StringShape::IsExternalTwoByte() {
@@ -431,10 +431,10 @@ bool StringShape::IsExternalTwoByte() {
 }
 
 
-STATIC_CHECK((kExternalStringTag | kTwoByteStringTag) ==
+STATIC_ASSERT((kExternalStringTag | kTwoByteStringTag) ==
              Internals::kExternalTwoByteRepresentationTag);
 
-STATIC_CHECK(v8::String::TWO_BYTE_ENCODING == kTwoByteStringTag);
+STATIC_ASSERT(v8::String::TWO_BYTE_ENCODING == kTwoByteStringTag);
 
 uc32 FlatStringReader::Get(int index) {
   ASSERT(0 <= index && index <= length_);
@@ -1566,7 +1566,7 @@ inline bool AllocationSite::IncrementMementoFoundCount() {
 
   int value = memento_found_count();
   set_memento_found_count(value + 1);
-  return value == 0;
+  return memento_found_count() == kPretenureMinimumCreated;
 }
 
 
@@ -1587,7 +1587,10 @@ inline bool AllocationSite::DigestPretenuringFeedback() {
           static_cast<double>(found_count) / create_count : 0.0;
   PretenureFlag current_mode = GetPretenureMode();
 
-  if (minimum_mementos_created) {
+  // TODO(hpayer): Add an intermediate state MAYBE_TENURE which collects
+  // more lifetime feedback for tenuring candidates. In the meantime, we
+  // just allow transitions from undecided to tenured or not tenured.
+  if (minimum_mementos_created && pretenure_decision() == kUndecided) {
     PretenureDecision result = ratio >= kPretenureRatio
         ? kTenure
         : kDontTenure;
@@ -3670,10 +3673,9 @@ void* FixedTypedArrayBase::DataPtr() {
 }
 
 
-int FixedTypedArrayBase::DataSize() {
-  InstanceType instance_type = map()->instance_type();
+int FixedTypedArrayBase::DataSize(InstanceType type) {
   int element_size;
-  switch (instance_type) {
+  switch (type) {
 #define TYPED_ARRAY_CASE(Type, type, TYPE, ctype, size)                       \
     case FIXED_##TYPE##_ARRAY_TYPE:                                           \
       element_size = size;                                                    \
@@ -3689,8 +3691,18 @@ int FixedTypedArrayBase::DataSize() {
 }
 
 
+int FixedTypedArrayBase::DataSize() {
+  return DataSize(map()->instance_type());
+}
+
+
 int FixedTypedArrayBase::size() {
   return OBJECT_POINTER_ALIGN(kDataOffset + DataSize());
+}
+
+
+int FixedTypedArrayBase::TypedArraySize(InstanceType type) {
+  return OBJECT_POINTER_ALIGN(kDataOffset + DataSize(type));
 }
 
 
@@ -3915,7 +3927,7 @@ int HeapObject::SizeFromMap(Map* map) {
   int instance_size = map->instance_size();
   if (instance_size != kVariableSizeSentinel) return instance_size;
   // Only inline the most frequent cases.
-  int instance_type = static_cast<int>(map->instance_type());
+  InstanceType instance_type = map->instance_type();
   if (instance_type == FIXED_ARRAY_TYPE) {
     return FixedArray::BodyDescriptor::SizeOf(map, this);
   }
@@ -3948,7 +3960,8 @@ int HeapObject::SizeFromMap(Map* map) {
   }
   if (instance_type >= FIRST_FIXED_TYPED_ARRAY_TYPE &&
       instance_type <= LAST_FIXED_TYPED_ARRAY_TYPE) {
-    return reinterpret_cast<FixedTypedArrayBase*>(this)->size();
+    return reinterpret_cast<FixedTypedArrayBase*>(
+        this)->TypedArraySize(instance_type);
   }
   ASSERT(instance_type == CODE_TYPE);
   return reinterpret_cast<Code*>(this)->CodeSize();
@@ -4033,12 +4046,12 @@ bool Map::has_non_instance_prototype() {
 
 
 void Map::set_function_with_prototype(bool value) {
-  set_bit_field3(FunctionWithPrototype::update(bit_field3(), value));
+  set_bit_field(FunctionWithPrototype::update(bit_field(), value));
 }
 
 
 bool Map::function_with_prototype() {
-  return FunctionWithPrototype::decode(bit_field3());
+  return FunctionWithPrototype::decode(bit_field());
 }
 
 
@@ -4066,19 +4079,6 @@ void Map::set_is_extensible(bool value) {
 
 bool Map::is_extensible() {
   return ((1 << kIsExtensible) & bit_field2()) != 0;
-}
-
-
-void Map::set_attached_to_shared_function_info(bool value) {
-  if (value) {
-    set_bit_field2(bit_field2() | (1 << kAttachedToSharedFunctionInfo));
-  } else {
-    set_bit_field2(bit_field2() & ~(1 << kAttachedToSharedFunctionInfo));
-  }
-}
-
-bool Map::attached_to_shared_function_info() {
-  return ((1 << kAttachedToSharedFunctionInfo) & bit_field2()) != 0;
 }
 
 
@@ -4145,6 +4145,26 @@ void Map::set_migration_target(bool value) {
 
 bool Map::is_migration_target() {
   return IsMigrationTarget::decode(bit_field3());
+}
+
+
+void Map::set_done_inobject_slack_tracking(bool value) {
+  set_bit_field3(DoneInobjectSlackTracking::update(bit_field3(), value));
+}
+
+
+bool Map::done_inobject_slack_tracking() {
+  return DoneInobjectSlackTracking::decode(bit_field3());
+}
+
+
+void Map::set_construction_count(int value) {
+  set_bit_field3(ConstructionCount::update(bit_field3(), value));
+}
+
+
+int Map::construction_count() {
+  return ConstructionCount::decode(bit_field3());
 }
 
 
@@ -4753,16 +4773,15 @@ ACCESSORS(Map, instance_descriptors, DescriptorArray, kDescriptorsOffset)
 
 
 void Map::set_bit_field3(uint32_t bits) {
-  // Ensure the upper 2 bits have the same value by sign extending it. This is
-  // necessary to be able to use the 31st bit.
-  int value = bits << 1;
-  WRITE_FIELD(this, kBitField3Offset, Smi::FromInt(value >> 1));
+  if (kInt32Size != kPointerSize) {
+    WRITE_UINT32_FIELD(this, kBitField3Offset + kInt32Size, 0);
+  }
+  WRITE_UINT32_FIELD(this, kBitField3Offset, bits);
 }
 
 
 uint32_t Map::bit_field3() {
-  Object* value = READ_FIELD(this, kBitField3Offset);
-  return Smi::cast(value)->value();
+  return READ_UINT32_FIELD(this, kBitField3Offset);
 }
 
 
@@ -5049,7 +5068,6 @@ ACCESSORS(SharedFunctionInfo, optimized_code_map, Object,
 ACCESSORS(SharedFunctionInfo, construct_stub, Code, kConstructStubOffset)
 ACCESSORS(SharedFunctionInfo, feedback_vector, FixedArray,
           kFeedbackVectorOffset)
-ACCESSORS(SharedFunctionInfo, initial_map, Object, kInitialMapOffset)
 ACCESSORS(SharedFunctionInfo, instance_class_name, Object,
           kInstanceClassNameOffset)
 ACCESSORS(SharedFunctionInfo, function_data, Object, kFunctionDataOffset)
@@ -5126,7 +5144,7 @@ SMI_ACCESSORS(SharedFunctionInfo, profiler_ticks, kProfilerTicksOffset)
   void holder::set_##name(int value) {                            \
     ASSERT(kHeapObjectTag == 1);                                  \
     ASSERT((value & 0xC0000000) == 0xC0000000 ||                  \
-           (value & 0xC0000000) == 0x000000000);                  \
+           (value & 0xC0000000) == 0x0);                          \
     WRITE_INT_FIELD(this,                                         \
                     offset,                                       \
                     (value << 1) & ~kHeapObjectTag);              \
@@ -5172,28 +5190,6 @@ PSEUDO_SMI_ACCESSORS_HI(SharedFunctionInfo,
                         kProfilerTicksOffset)
 
 #endif
-
-
-int SharedFunctionInfo::construction_count() {
-  return READ_BYTE_FIELD(this, kConstructionCountOffset);
-}
-
-
-void SharedFunctionInfo::set_construction_count(int value) {
-  ASSERT(0 <= value && value < 256);
-  WRITE_BYTE_FIELD(this, kConstructionCountOffset, static_cast<byte>(value));
-}
-
-
-BOOL_ACCESSORS(SharedFunctionInfo,
-               compiler_hints,
-               live_objects_may_exist,
-               kLiveObjectsMayExist)
-
-
-bool SharedFunctionInfo::IsInobjectSlackTrackingInProgress() {
-  return initial_map() != GetHeap()->undefined_value();
-}
 
 
 BOOL_GETTER(SharedFunctionInfo,
@@ -5244,11 +5240,6 @@ BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, dont_inline, kDontInline)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, dont_cache, kDontCache)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, dont_flush, kDontFlush)
 BOOL_ACCESSORS(SharedFunctionInfo, compiler_hints, is_generator, kIsGenerator)
-
-void SharedFunctionInfo::BeforeVisitingPointers() {
-  if (IsInobjectSlackTrackingInProgress()) DetachInitialMap();
-}
-
 
 ACCESSORS(CodeCache, default_cache, FixedArray, kDefaultCacheOffset)
 ACCESSORS(CodeCache, normal_type_cache, Object, kNormalTypeCacheOffset)
@@ -5437,6 +5428,15 @@ bool JSFunction::IsBuiltin() {
 }
 
 
+bool JSFunction::IsNative() {
+  Object* script = shared()->script();
+  bool native = script->IsScript() &&
+                Script::cast(script)->type()->value() == Script::TYPE_NATIVE;
+  ASSERT(!IsBuiltin() || native);  // All builtins are also native.
+  return native;
+}
+
+
 bool JSFunction::NeedsArgumentsAdaption() {
   return shared()->formal_parameter_count() !=
       SharedFunctionInfo::kDontAdaptArgumentsSentinel;
@@ -5468,6 +5468,12 @@ bool JSFunction::IsMarkedForConcurrentOptimization() {
 bool JSFunction::IsInOptimizationQueue() {
   return code() == GetIsolate()->builtins()->builtin(
       Builtins::kInOptimizationQueue);
+}
+
+
+bool JSFunction::IsInobjectSlackTrackingInProgress() {
+  return has_initial_map() &&
+      initial_map()->construction_count() != JSFunction::kNoSlackTracking;
 }
 
 
@@ -5681,12 +5687,7 @@ ACCESSORS(JSMap, table, Object, kTableOffset)
 
 ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(table, Object, kTableOffset)
 ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(index, Smi, kIndexOffset)
-ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(count, Smi, kCountOffset)
 ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(kind, Smi, kKindOffset)
-ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(next_iterator, Object,
-                                      kNextIteratorOffset)
-ORDERED_HASH_TABLE_ITERATOR_ACCESSORS(previous_iterator, Object,
-                                      kPreviousIteratorOffset)
 
 #undef ORDERED_HASH_TABLE_ITERATOR_ACCESSORS
 
@@ -5716,6 +5717,14 @@ bool JSGeneratorObject::is_suspended() {
   ASSERT_LT(kGeneratorExecuting, kGeneratorClosed);
   ASSERT_EQ(kGeneratorClosed, 0);
   return continuation() > 0;
+}
+
+bool JSGeneratorObject::is_closed() {
+  return continuation() == kGeneratorClosed;
+}
+
+bool JSGeneratorObject::is_executing() {
+  return continuation() == kGeneratorExecuting;
 }
 
 JSGeneratorObject* JSGeneratorObject::cast(Object* obj) {
@@ -6279,13 +6288,12 @@ bool JSReceiver::HasProperty(Handle<JSReceiver> object,
 }
 
 
-bool JSReceiver::HasLocalProperty(Handle<JSReceiver> object,
-                                  Handle<Name> name) {
+bool JSReceiver::HasOwnProperty(Handle<JSReceiver> object, Handle<Name> name) {
   if (object->IsJSProxy()) {
     Handle<JSProxy> proxy = Handle<JSProxy>::cast(object);
     return JSProxy::HasPropertyWithHandler(proxy, name);
   }
-  return GetLocalPropertyAttribute(object, name) != ABSENT;
+  return GetOwnPropertyAttribute(object, name) != ABSENT;
 }
 
 
@@ -6320,7 +6328,7 @@ bool JSGlobalProxy::IsDetachedFrom(GlobalObject* global) {
 }
 
 
-Handle<Object> JSReceiver::GetOrCreateIdentityHash(Handle<JSReceiver> object) {
+Handle<Smi> JSReceiver::GetOrCreateIdentityHash(Handle<JSReceiver> object) {
   return object->IsJSProxy()
       ? JSProxy::GetOrCreateIdentityHash(Handle<JSProxy>::cast(object))
       : JSObject::GetOrCreateIdentityHash(Handle<JSObject>::cast(object));
@@ -6344,7 +6352,7 @@ bool JSReceiver::HasElement(Handle<JSReceiver> object, uint32_t index) {
 }
 
 
-bool JSReceiver::HasLocalElement(Handle<JSReceiver> object, uint32_t index) {
+bool JSReceiver::HasOwnElement(Handle<JSReceiver> object, uint32_t index) {
   if (object->IsJSProxy()) {
     Handle<JSProxy> proxy = Handle<JSProxy>::cast(object);
     return JSProxy::HasElementWithHandler(proxy, index);
@@ -6354,7 +6362,7 @@ bool JSReceiver::HasLocalElement(Handle<JSReceiver> object, uint32_t index) {
 }
 
 
-PropertyAttributes JSReceiver::GetLocalElementAttribute(
+PropertyAttributes JSReceiver::GetOwnElementAttribute(
     Handle<JSReceiver> object, uint32_t index) {
   if (object->IsJSProxy()) {
     return JSProxy::GetElementAttributeWithHandler(

@@ -19,6 +19,8 @@
 #include "arm/lithium-arm.h"
 #elif V8_TARGET_ARCH_MIPS
 #include "mips/lithium-mips.h"
+#elif V8_TARGET_ARCH_X87
+#include "x87/lithium-x87.h"
 #else
 #error Unsupported target architecture.
 #endif
@@ -341,6 +343,8 @@ HType HType::TypeFromValue(Handle<Object> value) {
     result = HType::JSObject();
   } else if (value->IsJSArray()) {
     result = HType::JSArray();
+  } else if (value->IsHeapObject()) {
+    result = HType::NonPrimitive();
   }
   return result;
 }
@@ -817,6 +821,7 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kArgumentsElements:
     case HValue::kArgumentsLength:
     case HValue::kArgumentsObject:
+    case HValue::kArrayShift:
     case HValue::kBlockEntry:
     case HValue::kBoundsCheckBaseIndexInformation:
     case HValue::kCallFunction:
@@ -865,7 +870,7 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kMathMinMax:
     case HValue::kParameter:
     case HValue::kPhi:
-    case HValue::kPushArgument:
+    case HValue::kPushArguments:
     case HValue::kRegExpLiteral:
     case HValue::kReturn:
     case HValue::kRor:
@@ -873,6 +878,7 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kSeqStringGetChar:
     case HValue::kStoreCodeEntry:
     case HValue::kStoreKeyed:
+    case HValue::kStoreNamedField:
     case HValue::kStoreNamedGeneric:
     case HValue::kStringCharCodeAt:
     case HValue::kStringCharFromCode:
@@ -921,7 +927,6 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kStoreContextSlot:
     case HValue::kStoreGlobalCell:
     case HValue::kStoreKeyedGeneric:
-    case HValue::kStoreNamedField:
     case HValue::kStringAdd:
     case HValue::kStringCompareAndBranch:
     case HValue::kSub:
@@ -2899,6 +2904,7 @@ bool HConstant::EmitAtUses() {
   if (UseCount() == 0) return true;
   if (IsCell()) return false;
   if (representation().IsDouble()) return false;
+  if (representation().IsExternal()) return false;
   return true;
 }
 
@@ -3418,7 +3424,7 @@ void HLoadNamedField::PrintDataTo(StringStream* stream) {
   object()->PrintNameTo(stream);
   access_.PrintTo(stream);
 
-  if (maps()->size() != 0) {
+  if (maps() != NULL) {
     stream->Add(" [%p", *maps()->at(0).handle());
     for (int i = 1; i < maps()->size(); ++i) {
       stream->Add(",%p", *maps()->at(i).handle());
@@ -3454,7 +3460,7 @@ void HLoadKeyed::PrintDataTo(StringStream* stream) {
   stream->Add("[");
   key()->PrintNameTo(stream);
   if (IsDehoisted()) {
-    stream->Add(" + %d]", index_offset());
+    stream->Add(" + %d]", base_offset());
   } else {
     stream->Add("]");
   }
@@ -3606,7 +3612,7 @@ void HStoreKeyed::PrintDataTo(StringStream* stream) {
   stream->Add("[");
   key()->PrintNameTo(stream);
   if (IsDehoisted()) {
-    stream->Add(" + %d] = ", index_offset());
+    stream->Add(" + %d] = ", base_offset());
   } else {
     stream->Add("] = ");
   }
@@ -3634,6 +3640,12 @@ void HTransitionElementsKind::PrintDataTo(StringStream* stream) {
               *transitioned_map().handle(),
               ElementsAccessor::ForKind(to_kind)->name());
   if (IsSimpleMapChangeTransition(from_kind, to_kind)) stream->Add(" (simple)");
+}
+
+
+void HArrayShift::PrintDataTo(StringStream* stream) {
+  object()->PrintNameTo(stream);
+  stream->Add(" [%s]", ElementsAccessor::ForKind(kind())->name());
 }
 
 
@@ -3818,19 +3830,18 @@ bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
       dominator_allocate);
   dominator_allocate->UpdateSize(new_dominator_size_constant);
 
+  bool keep_new_space_iterable = FLAG_log_gc || FLAG_heap_stats;
 #ifdef VERIFY_HEAP
-  if (FLAG_verify_heap && dominator_allocate->IsNewSpaceAllocation()) {
+  keep_new_space_iterable = keep_new_space_iterable || FLAG_verify_heap;
+#endif
+
+  if (keep_new_space_iterable && dominator_allocate->IsNewSpaceAllocation()) {
     dominator_allocate->MakePrefillWithFiller();
   } else {
     // TODO(hpayer): This is a short-term hack to make allocation mementos
     // work again in new space.
     dominator_allocate->ClearNextMapWord(original_object_size);
   }
-#else
-  // TODO(hpayer): This is a short-term hack to make allocation mementos
-  // work again in new space.
-  dominator_allocate->ClearNextMapWord(original_object_size);
-#endif
 
   dominator_allocate->UpdateClearNextMapWord(MustClearNextMapWord());
 
@@ -3949,7 +3960,7 @@ void HAllocate::CreateFreeSpaceFiller(int32_t free_space_size) {
   free_space_instr->InsertBefore(this);
   HConstant* filler_map = HConstant::CreateAndInsertAfter(
       zone, Unique<Map>::CreateImmovable(
-          isolate()->factory()->free_space_map()), free_space_instr);
+          isolate()->factory()->free_space_map()), true, free_space_instr);
   HInstruction* store_map = HStoreNamedField::New(zone, context(),
       free_space_instr, HObjectAccess::ForMap(), filler_map);
   store_map->SetFlag(HValue::kHasNoObservableSideEffects);

@@ -19,7 +19,6 @@
 
 #include "v8.h"
 
-#include "codegen.h"
 #include "isolate-inl.h"
 #include "platform.h"
 
@@ -105,91 +104,6 @@ namespace internal {
 
 intptr_t OS::MaxVirtualMemory() {
   return 0;
-}
-
-
-#if V8_TARGET_ARCH_IA32
-static void MemMoveWrapper(void* dest, const void* src, size_t size) {
-  memmove(dest, src, size);
-}
-
-
-// Initialize to library version so we can call this at any time during startup.
-static OS::MemMoveFunction memmove_function = &MemMoveWrapper;
-
-// Defined in codegen-ia32.cc.
-OS::MemMoveFunction CreateMemMoveFunction();
-
-// Copy memory area to disjoint memory area.
-void OS::MemMove(void* dest, const void* src, size_t size) {
-  if (size == 0) return;
-  // Note: here we rely on dependent reads being ordered. This is true
-  // on all architectures we currently support.
-  (*memmove_function)(dest, src, size);
-}
-
-#endif  // V8_TARGET_ARCH_IA32
-
-#ifdef _WIN64
-typedef double (*ModuloFunction)(double, double);
-static ModuloFunction modulo_function = NULL;
-// Defined in codegen-x64.cc.
-ModuloFunction CreateModuloFunction();
-
-void init_modulo_function() {
-  modulo_function = CreateModuloFunction();
-}
-
-
-double modulo(double x, double y) {
-  // Note: here we rely on dependent reads being ordered. This is true
-  // on all architectures we currently support.
-  return (*modulo_function)(x, y);
-}
-#else  // Win32
-
-double modulo(double x, double y) {
-  // Workaround MS fmod bugs. ECMA-262 says:
-  // dividend is finite and divisor is an infinity => result equals dividend
-  // dividend is a zero and divisor is nonzero finite => result equals dividend
-  if (!(std::isfinite(x) && (!std::isfinite(y) && !std::isnan(y))) &&
-      !(x == 0 && (y != 0 && std::isfinite(y)))) {
-    x = fmod(x, y);
-  }
-  return x;
-}
-
-#endif  // _WIN64
-
-
-#define UNARY_MATH_FUNCTION(name, generator)             \
-static UnaryMathFunction fast_##name##_function = NULL;  \
-void init_fast_##name##_function() {                     \
-  fast_##name##_function = generator;                    \
-}                                                        \
-double fast_##name(double x) {                           \
-  return (*fast_##name##_function)(x);                   \
-}
-
-UNARY_MATH_FUNCTION(exp, CreateExpFunction())
-UNARY_MATH_FUNCTION(sqrt, CreateSqrtFunction())
-
-#undef UNARY_MATH_FUNCTION
-
-
-void lazily_initialize_fast_exp() {
-  if (fast_exp_function == NULL) {
-    init_fast_exp_function();
-  }
-}
-
-
-void MathSetup() {
-#ifdef _WIN64
-  init_modulo_function();
-#endif
-  // fast_exp is initialized lazily.
-  init_fast_sqrt_function();
 }
 
 
@@ -512,19 +426,6 @@ char* Win32Time::LocalTimezone(TimezoneCache* cache) {
   // Return the standard or DST time zone name based on whether daylight
   // saving is in effect at the given time.
   return InDST(cache) ? cache->dst_tz_name_ : cache->std_tz_name_;
-}
-
-
-void OS::PostSetUp() {
-  // Math functions depend on CPU features therefore they are initialized after
-  // CPU.
-  MathSetup();
-#if V8_TARGET_ARCH_IA32
-  OS::MemMoveFunction generated_memmove = CreateMemMoveFunction();
-  if (generated_memmove != NULL) {
-    memmove_function = generated_memmove;
-  }
-#endif
 }
 
 
@@ -979,7 +880,7 @@ OS::MemoryMappedFile* OS::MemoryMappedFile::create(const char* name, int size,
   if (file_mapping == NULL) return NULL;
   // Map a view of the file into memory
   void* memory = MapViewOfFile(file_mapping, FILE_MAP_ALL_ACCESS, 0, 0, size);
-  if (memory) OS::MemMove(memory, initial, size);
+  if (memory) MemMove(memory, initial, size);
   return new Win32MemoryMappedFile(file, file_mapping, memory, size);
 }
 
@@ -1257,8 +1158,15 @@ void OS::SignalCodeMovingGC() { }
 #endif  // __MINGW32__
 
 
-uint64_t OS::CpuFeaturesImpliedByPlatform() {
+unsigned OS::CpuFeaturesImpliedByPlatform() {
   return 0;  // Windows runs on anything.
+}
+
+
+int OS::NumberOfProcessorsOnline() {
+  SYSTEM_INFO info;
+  GetSystemInfo(&info);
+  return info.dwNumberOfProcessors;
 }
 
 

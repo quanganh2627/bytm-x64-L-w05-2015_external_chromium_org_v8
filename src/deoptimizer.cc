@@ -1764,7 +1764,8 @@ void Deoptimizer::DoComputeCompiledStubFrame(TranslationIterator* iterator,
     output_frame->SetRegister(constant_pool_reg.code(), constant_pool_value);
   }
   output_frame->SetState(Smi::FromInt(FullCodeGenerator::NO_REGISTERS));
-  Code* notify_failure = NotifyStubFailureBuiltin();
+  Code* notify_failure =
+      isolate_->builtins()->builtin(Builtins::kNotifyStubFailureSaveDoubles);
   output_frame->SetContinuation(
       reinterpret_cast<intptr_t>(notify_failure->entry()));
 }
@@ -2905,8 +2906,7 @@ int32_t TranslationIterator::Next() {
 Handle<ByteArray> TranslationBuffer::CreateByteArray(Factory* factory) {
   int length = contents_.length();
   Handle<ByteArray> result = factory->NewByteArray(length, TENURED);
-  OS::MemCopy(
-      result->GetDataStartAddress(), contents_.ToVector().start(), length);
+  MemCopy(result->GetDataStartAddress(), contents_.ToVector().start(), length);
   return result;
 }
 

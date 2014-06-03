@@ -10282,7 +10282,7 @@ THREADED_TEST(SetPrototype) {
 
 
 // Getting property names of an object with a prototype chain that
-// triggers dictionary elements in GetLocalPropertyNames() shouldn't
+// triggers dictionary elements in GetOwnPropertyNames() shouldn't
 // crash the runtime.
 THREADED_TEST(Regress91517) {
   i::FLAG_allow_natives_syntax = true;
@@ -10321,11 +10321,11 @@ THREADED_TEST(Regress91517) {
   CHECK(o3->SetPrototype(o2));
   CHECK(o2->SetPrototype(o1));
 
-  // Call the runtime version of GetLocalPropertyNames() on the natively
+  // Call the runtime version of GetOwnPropertyNames() on the natively
   // created object through JavaScript.
   context->Global()->Set(v8_str("obj"), o4);
   // PROPERTY_ATTRIBUTES_NONE = 0
-  CompileRun("var names = %GetLocalPropertyNames(obj, 0);");
+  CompileRun("var names = %GetOwnPropertyNames(obj, 0);");
 
   ExpectInt32("names.length", 1006);
   ExpectTrue("names.indexOf(\"baz\") >= 0");
@@ -10376,12 +10376,12 @@ THREADED_TEST(Regress269562) {
   o1->SetHiddenValue(
       v8_str("h1"), v8::Integer::New(context->GetIsolate(), 2013));
 
-  // Call the runtime version of GetLocalPropertyNames() on
+  // Call the runtime version of GetOwnPropertyNames() on
   // the natively created object through JavaScript.
   context->Global()->Set(v8_str("obj"), o2);
   context->Global()->Set(v8_str("sym"), sym);
   // PROPERTY_ATTRIBUTES_NONE = 0
-  CompileRun("var names = %GetLocalPropertyNames(obj, 0);");
+  CompileRun("var names = %GetOwnPropertyNames(obj, 0);");
 
   ExpectInt32("names.length", 7);
   ExpectTrue("names.indexOf(\"foo\") >= 0");
@@ -13514,7 +13514,6 @@ THREADED_TEST(LockUnlockLock) {
 
 
 static int GetGlobalObjectsCount() {
-  CcTest::heap()->EnsureHeapIsIterable();
   int count = 0;
   i::HeapIterator it(CcTest::heap());
   for (i::HeapObject* object = it.next(); object != NULL; object = it.next())
@@ -14913,7 +14912,7 @@ TEST(PreCompileSerialization) {
   // Serialize.
   const v8::ScriptCompiler::CachedData* cd = source.GetCachedData();
   char* serialized_data = i::NewArray<char>(cd->length);
-  i::OS::MemCopy(serialized_data, cd->data, cd->length);
+  i::MemCopy(serialized_data, cd->data, cd->length);
 
   // Deserialize.
   i::ScriptData* deserialized = i::ScriptData::New(serialized_data, cd->length);
@@ -18093,14 +18092,14 @@ TEST(ExternalInternalizedStringCollectedAtGC) {
 
 static double DoubleFromBits(uint64_t value) {
   double target;
-  i::OS::MemCopy(&target, &value, sizeof(target));
+  i::MemCopy(&target, &value, sizeof(target));
   return target;
 }
 
 
 static uint64_t DoubleToBits(double value) {
   uint64_t target;
-  i::OS::MemCopy(&target, &value, sizeof(target));
+  i::MemCopy(&target, &value, sizeof(target));
   return target;
 }
 
@@ -19252,7 +19251,7 @@ TEST(GCInFailedAccessCheckCallback) {
   ExpectUndefined("Object.prototype.__lookupGetter__.call("
                   "    other, \'x\')");
 
-  // HasLocalElement.
+  // HasOwnElement.
   ExpectFalse("Object.prototype.hasOwnProperty.call(other, \'0\')");
 
   CHECK_EQ(false, global0->HasRealIndexedProperty(0));
@@ -19269,7 +19268,6 @@ TEST(IsolateNewDispose) {
   v8::Isolate* current_isolate = CcTest::isolate();
   v8::Isolate* isolate = v8::Isolate::New();
   CHECK(isolate != NULL);
-  CHECK(!reinterpret_cast<i::Isolate*>(isolate)->IsDefaultIsolate());
   CHECK(current_isolate != isolate);
   CHECK(current_isolate == CcTest::isolate());
 
@@ -19534,10 +19532,9 @@ class InitDefaultIsolateThread : public v8::internal::Thread {
     isolate->Enter();
     switch (testCase_) {
       case SetResourceConstraints: {
-        static const int K = 1024;
         v8::ResourceConstraints constraints;
-        constraints.set_max_new_space_size(2 * K * K);
-        constraints.set_max_old_space_size(4 * K * K);
+        constraints.set_max_semi_space_size(1);
+        constraints.set_max_old_space_size(4);
         v8::SetResourceConstraints(CcTest::isolate(), &constraints);
         break;
       }
@@ -20823,6 +20820,25 @@ TEST(SetAutorunMicrotasks) {
 }
 
 
+TEST(RunMicrotasksWithoutEnteringContext) {
+  v8::Isolate* isolate = CcTest::isolate();
+  HandleScope handle_scope(isolate);
+  isolate->SetAutorunMicrotasks(false);
+  Handle<Context> context = Context::New(isolate);
+  {
+    Context::Scope context_scope(context);
+    CompileRun("var ext1Calls = 0;");
+    isolate->EnqueueMicrotask(Function::New(isolate, MicrotaskOne));
+  }
+  isolate->RunMicrotasks();
+  {
+    Context::Scope context_scope(context);
+    CHECK_EQ(1, CompileRun("ext1Calls")->Int32Value());
+  }
+  isolate->SetAutorunMicrotasks(true);
+}
+
+
 static int probes_counter = 0;
 static int misses_counter = 0;
 static int updates_counter = 0;
@@ -21341,6 +21357,23 @@ THREADED_TEST(Regress142088) {
 }
 
 
+THREADED_TEST(Regress3337) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  Local<v8::Object> o1 = Object::New(isolate);
+  Local<v8::Object> o2 = Object::New(isolate);
+  i::Handle<i::JSObject> io1 = v8::Utils::OpenHandle(*o1);
+  i::Handle<i::JSObject> io2 = v8::Utils::OpenHandle(*o2);
+  CHECK(io1->map() == io2->map());
+  o1->SetIndexedPropertiesToExternalArrayData(
+      NULL, v8::kExternalUint32Array, 0);
+  o2->SetIndexedPropertiesToExternalArrayData(
+      NULL, v8::kExternalUint32Array, 0);
+  CHECK(io1->map() == io2->map());
+}
+
+
 THREADED_TEST(Regress137496) {
   i::FLAG_expose_gc = true;
   LocalContext context;
@@ -21669,13 +21702,13 @@ TEST(AccessCheckThrows) {
   CheckCorrectThrow("%IgnoreAttributesAndSetProperty(other, 'x', 'foo')");
   CheckCorrectThrow("%DeleteProperty(other, 'x', 0)");
   CheckCorrectThrow("%DeleteProperty(other, '1', 0)");
-  CheckCorrectThrow("%HasLocalProperty(other, 'x')");
+  CheckCorrectThrow("%HasOwnProperty(other, 'x')");
   CheckCorrectThrow("%HasProperty(other, 'x')");
   CheckCorrectThrow("%HasElement(other, 1)");
   CheckCorrectThrow("%IsPropertyEnumerable(other, 'x')");
   CheckCorrectThrow("%GetPropertyNames(other)");
   // PROPERTY_ATTRIBUTES_NONE = 0
-  CheckCorrectThrow("%GetLocalPropertyNames(other, 0)");
+  CheckCorrectThrow("%GetOwnPropertyNames(other, 0)");
   CheckCorrectThrow("%DefineOrRedefineAccessorProperty("
                         "other, 'x', null, null, 1)");
 
@@ -21802,11 +21835,12 @@ class RequestInterruptTestBase {
 
   virtual ~RequestInterruptTestBase() { }
 
+  virtual void StartInterruptThread() = 0;
+
   virtual void TestBody() = 0;
 
   void RunTest() {
-    InterruptThread i_thread(this);
-    i_thread.Start();
+    StartInterruptThread();
 
     v8::HandleScope handle_scope(isolate_);
 
@@ -21835,7 +21869,6 @@ class RequestInterruptTestBase {
     return should_continue_;
   }
 
- protected:
   static void ShouldContinueCallback(
       const v8::FunctionCallbackInfo<Value>& info) {
     RequestInterruptTestBase* test =
@@ -21844,6 +21877,24 @@ class RequestInterruptTestBase {
     info.GetReturnValue().Set(test->ShouldContinue());
   }
 
+  LocalContext env_;
+  v8::Isolate* isolate_;
+  i::Semaphore sem_;
+  int warmup_;
+  bool should_continue_;
+};
+
+
+class RequestInterruptTestBaseWithSimpleInterrupt
+    : public RequestInterruptTestBase {
+ public:
+  RequestInterruptTestBaseWithSimpleInterrupt() : i_thread(this) { }
+
+  virtual void StartInterruptThread() {
+    i_thread.Start();
+  }
+
+ private:
   class InterruptThread : public i::Thread {
    public:
     explicit InterruptThread(RequestInterruptTestBase* test)
@@ -21863,15 +21914,12 @@ class RequestInterruptTestBase {
      RequestInterruptTestBase* test_;
   };
 
-  LocalContext env_;
-  v8::Isolate* isolate_;
-  i::Semaphore sem_;
-  int warmup_;
-  bool should_continue_;
+  InterruptThread i_thread;
 };
 
 
-class RequestInterruptTestWithFunctionCall : public RequestInterruptTestBase {
+class RequestInterruptTestWithFunctionCall
+    : public RequestInterruptTestBaseWithSimpleInterrupt {
  public:
   virtual void TestBody() {
     Local<Function> func = Function::New(
@@ -21883,7 +21931,8 @@ class RequestInterruptTestWithFunctionCall : public RequestInterruptTestBase {
 };
 
 
-class RequestInterruptTestWithMethodCall : public RequestInterruptTestBase {
+class RequestInterruptTestWithMethodCall
+    : public RequestInterruptTestBaseWithSimpleInterrupt {
  public:
   virtual void TestBody() {
     v8::Local<v8::FunctionTemplate> t = v8::FunctionTemplate::New(isolate_);
@@ -21897,7 +21946,8 @@ class RequestInterruptTestWithMethodCall : public RequestInterruptTestBase {
 };
 
 
-class RequestInterruptTestWithAccessor : public RequestInterruptTestBase {
+class RequestInterruptTestWithAccessor
+    : public RequestInterruptTestBaseWithSimpleInterrupt {
  public:
   virtual void TestBody() {
     v8::Local<v8::FunctionTemplate> t = v8::FunctionTemplate::New(isolate_);
@@ -21911,7 +21961,8 @@ class RequestInterruptTestWithAccessor : public RequestInterruptTestBase {
 };
 
 
-class RequestInterruptTestWithNativeAccessor : public RequestInterruptTestBase {
+class RequestInterruptTestWithNativeAccessor
+    : public RequestInterruptTestBaseWithSimpleInterrupt {
  public:
   virtual void TestBody() {
     v8::Local<v8::FunctionTemplate> t = v8::FunctionTemplate::New(isolate_);
@@ -21938,7 +21989,7 @@ class RequestInterruptTestWithNativeAccessor : public RequestInterruptTestBase {
 
 
 class RequestInterruptTestWithMethodCallAndInterceptor
-    : public RequestInterruptTestBase {
+    : public RequestInterruptTestBaseWithSimpleInterrupt {
  public:
   virtual void TestBody() {
     v8::Local<v8::FunctionTemplate> t = v8::FunctionTemplate::New(isolate_);
@@ -21961,7 +22012,8 @@ class RequestInterruptTestWithMethodCallAndInterceptor
 };
 
 
-class RequestInterruptTestWithMathAbs : public RequestInterruptTestBase {
+class RequestInterruptTestWithMathAbs
+    : public RequestInterruptTestBaseWithSimpleInterrupt {
  public:
   virtual void TestBody() {
     env_->Global()->Set(v8_str("WakeUpInterruptor"), Function::New(
@@ -22042,6 +22094,61 @@ TEST(RequestInterruptTestWithMethodCallAndInterceptor) {
 
 TEST(RequestInterruptTestWithMathAbs) {
   RequestInterruptTestWithMathAbs().RunTest();
+}
+
+
+class ClearInterruptFromAnotherThread
+    : public RequestInterruptTestBase {
+ public:
+  ClearInterruptFromAnotherThread() : i_thread(this), sem2_(0) { }
+
+  virtual void StartInterruptThread() {
+    i_thread.Start();
+  }
+
+  virtual void TestBody() {
+    Local<Function> func = Function::New(
+        isolate_, ShouldContinueCallback, v8::External::New(isolate_, this));
+    env_->Global()->Set(v8_str("ShouldContinue"), func);
+
+    CompileRun("while (ShouldContinue()) { }");
+  }
+
+ private:
+  class InterruptThread : public i::Thread {
+   public:
+    explicit InterruptThread(ClearInterruptFromAnotherThread* test)
+        : Thread("RequestInterruptTest"), test_(test) {}
+
+    virtual void Run() {
+      test_->sem_.Wait();
+      test_->isolate_->RequestInterrupt(&OnInterrupt, test_);
+      test_->sem_.Wait();
+      test_->isolate_->ClearInterrupt();
+      test_->sem2_.Signal();
+    }
+
+    static void OnInterrupt(v8::Isolate* isolate, void* data) {
+      ClearInterruptFromAnotherThread* test =
+          reinterpret_cast<ClearInterruptFromAnotherThread*>(data);
+      test->sem_.Signal();
+      bool success = test->sem2_.WaitFor(i::TimeDelta::FromSeconds(2));
+      // Crash instead of timeout to make this failure more prominent.
+      CHECK(success);
+      test->should_continue_ = false;
+    }
+
+   private:
+     ClearInterruptFromAnotherThread* test_;
+  };
+
+  InterruptThread i_thread;
+  i::Semaphore sem2_;
+};
+
+
+TEST(ClearInterruptFromAnotherThread) {
+  ClearInterruptFromAnotherThread().RunTest();
 }
 
 
@@ -22150,152 +22257,152 @@ class ApiCallOptimizationChecker {
     info.GetReturnValue().Set(v8_str("returned"));
   }
 
-  public:
-    enum SignatureType {
-      kNoSignature,
-      kSignatureOnReceiver,
-      kSignatureOnPrototype
-    };
+ public:
+  enum SignatureType {
+    kNoSignature,
+    kSignatureOnReceiver,
+    kSignatureOnPrototype
+  };
 
-    void RunAll() {
-      SignatureType signature_types[] =
-        {kNoSignature, kSignatureOnReceiver, kSignatureOnPrototype};
-      for (unsigned i = 0; i < ARRAY_SIZE(signature_types); i++) {
-        SignatureType signature_type = signature_types[i];
-        for (int j = 0; j < 2; j++) {
-          bool global = j == 0;
-          int key = signature_type +
-              ARRAY_SIZE(signature_types) * (global ? 1 : 0);
-          Run(signature_type, global, key);
-        }
+  void RunAll() {
+    SignatureType signature_types[] =
+      {kNoSignature, kSignatureOnReceiver, kSignatureOnPrototype};
+    for (unsigned i = 0; i < ARRAY_SIZE(signature_types); i++) {
+      SignatureType signature_type = signature_types[i];
+      for (int j = 0; j < 2; j++) {
+        bool global = j == 0;
+        int key = signature_type +
+            ARRAY_SIZE(signature_types) * (global ? 1 : 0);
+        Run(signature_type, global, key);
       }
     }
+  }
 
-    void Run(SignatureType signature_type, bool global, int key) {
-      v8::Isolate* isolate = CcTest::isolate();
-      v8::HandleScope scope(isolate);
-      // Build a template for signature checks.
-      Local<v8::ObjectTemplate> signature_template;
-      Local<v8::Signature> signature;
-      {
-        Local<v8::FunctionTemplate> parent_template =
-          FunctionTemplate::New(isolate);
-        parent_template->SetHiddenPrototype(true);
-        Local<v8::FunctionTemplate> function_template
-            = FunctionTemplate::New(isolate);
-        function_template->Inherit(parent_template);
-        switch (signature_type) {
-          case kNoSignature:
-            break;
-          case kSignatureOnReceiver:
-            signature = v8::Signature::New(isolate, function_template);
-            break;
-          case kSignatureOnPrototype:
-            signature = v8::Signature::New(isolate, parent_template);
-            break;
-        }
-        signature_template = function_template->InstanceTemplate();
+  void Run(SignatureType signature_type, bool global, int key) {
+    v8::Isolate* isolate = CcTest::isolate();
+    v8::HandleScope scope(isolate);
+    // Build a template for signature checks.
+    Local<v8::ObjectTemplate> signature_template;
+    Local<v8::Signature> signature;
+    {
+      Local<v8::FunctionTemplate> parent_template =
+        FunctionTemplate::New(isolate);
+      parent_template->SetHiddenPrototype(true);
+      Local<v8::FunctionTemplate> function_template
+          = FunctionTemplate::New(isolate);
+      function_template->Inherit(parent_template);
+      switch (signature_type) {
+        case kNoSignature:
+          break;
+        case kSignatureOnReceiver:
+          signature = v8::Signature::New(isolate, function_template);
+          break;
+        case kSignatureOnPrototype:
+          signature = v8::Signature::New(isolate, parent_template);
+          break;
       }
-      // Global object must pass checks.
-      Local<v8::Context> context =
-          v8::Context::New(isolate, NULL, signature_template);
-      v8::Context::Scope context_scope(context);
-      // Install regular object that can pass signature checks.
-      Local<Object> function_receiver = signature_template->NewInstance();
-      context->Global()->Set(v8_str("function_receiver"), function_receiver);
-      // Get the holder objects.
-      Local<Object> inner_global =
-          Local<Object>::Cast(context->Global()->GetPrototype());
-      // Install functions on hidden prototype object if there is one.
-      data = Object::New(isolate);
-      Local<FunctionTemplate> function_template = FunctionTemplate::New(
-          isolate, OptimizationCallback, data, signature);
-      Local<Function> function = function_template->GetFunction();
-      Local<Object> global_holder = inner_global;
-      Local<Object> function_holder = function_receiver;
-      if (signature_type == kSignatureOnPrototype) {
-        function_holder = Local<Object>::Cast(function_holder->GetPrototype());
-        global_holder = Local<Object>::Cast(global_holder->GetPrototype());
-      }
-      global_holder->Set(v8_str("g_f"), function);
-      global_holder->SetAccessorProperty(v8_str("g_acc"), function, function);
-      function_holder->Set(v8_str("f"), function);
-      function_holder->SetAccessorProperty(v8_str("acc"), function, function);
-      // Initialize expected values.
-      callee = function;
-      count = 0;
-      if (global) {
-        receiver = context->Global();
-        holder = inner_global;
-      } else {
-        holder = function_receiver;
-        // If not using a signature, add something else to the prototype chain
-        // to test the case that holder != receiver
-        if (signature_type == kNoSignature) {
-          receiver = Local<Object>::Cast(CompileRun(
-              "var receiver_subclass = {};\n"
-              "receiver_subclass.__proto__ = function_receiver;\n"
-              "receiver_subclass"));
-        } else {
-          receiver = Local<Object>::Cast(CompileRun(
-            "var receiver_subclass = function_receiver;\n"
+      signature_template = function_template->InstanceTemplate();
+    }
+    // Global object must pass checks.
+    Local<v8::Context> context =
+        v8::Context::New(isolate, NULL, signature_template);
+    v8::Context::Scope context_scope(context);
+    // Install regular object that can pass signature checks.
+    Local<Object> function_receiver = signature_template->NewInstance();
+    context->Global()->Set(v8_str("function_receiver"), function_receiver);
+    // Get the holder objects.
+    Local<Object> inner_global =
+        Local<Object>::Cast(context->Global()->GetPrototype());
+    // Install functions on hidden prototype object if there is one.
+    data = Object::New(isolate);
+    Local<FunctionTemplate> function_template = FunctionTemplate::New(
+        isolate, OptimizationCallback, data, signature);
+    Local<Function> function = function_template->GetFunction();
+    Local<Object> global_holder = inner_global;
+    Local<Object> function_holder = function_receiver;
+    if (signature_type == kSignatureOnPrototype) {
+      function_holder = Local<Object>::Cast(function_holder->GetPrototype());
+      global_holder = Local<Object>::Cast(global_holder->GetPrototype());
+    }
+    global_holder->Set(v8_str("g_f"), function);
+    global_holder->SetAccessorProperty(v8_str("g_acc"), function, function);
+    function_holder->Set(v8_str("f"), function);
+    function_holder->SetAccessorProperty(v8_str("acc"), function, function);
+    // Initialize expected values.
+    callee = function;
+    count = 0;
+    if (global) {
+      receiver = context->Global();
+      holder = inner_global;
+    } else {
+      holder = function_receiver;
+      // If not using a signature, add something else to the prototype chain
+      // to test the case that holder != receiver
+      if (signature_type == kNoSignature) {
+        receiver = Local<Object>::Cast(CompileRun(
+            "var receiver_subclass = {};\n"
+            "receiver_subclass.__proto__ = function_receiver;\n"
             "receiver_subclass"));
-        }
-      }
-      // With no signature, the holder is not set.
-      if (signature_type == kNoSignature) holder = receiver;
-      // build wrap_function
-      i::ScopedVector<char> wrap_function(200);
-      if (global) {
-        i::OS::SNPrintF(
-            wrap_function,
-            "function wrap_f_%d() { var f = g_f; return f(); }\n"
-            "function wrap_get_%d() { return this.g_acc; }\n"
-            "function wrap_set_%d() { return this.g_acc = 1; }\n",
-            key, key, key);
       } else {
-        i::OS::SNPrintF(
-            wrap_function,
-            "function wrap_f_%d() { return receiver_subclass.f(); }\n"
-            "function wrap_get_%d() { return receiver_subclass.acc; }\n"
-            "function wrap_set_%d() { return receiver_subclass.acc = 1; }\n",
-            key, key, key);
+        receiver = Local<Object>::Cast(CompileRun(
+          "var receiver_subclass = function_receiver;\n"
+          "receiver_subclass"));
       }
-      // build source string
-      i::ScopedVector<char> source(1000);
-      i::OS::SNPrintF(
-          source,
-          "%s\n"  // wrap functions
-          "function wrap_f() { return wrap_f_%d(); }\n"
-          "function wrap_get() { return wrap_get_%d(); }\n"
-          "function wrap_set() { return wrap_set_%d(); }\n"
-          "check = function(returned) {\n"
-          "  if (returned !== 'returned') { throw returned; }\n"
-          "}\n"
-          "\n"
-          "check(wrap_f());\n"
-          "check(wrap_f());\n"
-          "%%OptimizeFunctionOnNextCall(wrap_f_%d);\n"
-          "check(wrap_f());\n"
-          "\n"
-          "check(wrap_get());\n"
-          "check(wrap_get());\n"
-          "%%OptimizeFunctionOnNextCall(wrap_get_%d);\n"
-          "check(wrap_get());\n"
-          "\n"
-          "check = function(returned) {\n"
-          "  if (returned !== 1) { throw returned; }\n"
-          "}\n"
-          "check(wrap_set());\n"
-          "check(wrap_set());\n"
-          "%%OptimizeFunctionOnNextCall(wrap_set_%d);\n"
-          "check(wrap_set());\n",
-          wrap_function.start(), key, key, key, key, key, key);
-      v8::TryCatch try_catch;
-      CompileRun(source.start());
-      ASSERT(!try_catch.HasCaught());
-      CHECK_EQ(9, count);
     }
+    // With no signature, the holder is not set.
+    if (signature_type == kNoSignature) holder = receiver;
+    // build wrap_function
+    i::ScopedVector<char> wrap_function(200);
+    if (global) {
+      i::OS::SNPrintF(
+          wrap_function,
+          "function wrap_f_%d() { var f = g_f; return f(); }\n"
+          "function wrap_get_%d() { return this.g_acc; }\n"
+          "function wrap_set_%d() { return this.g_acc = 1; }\n",
+          key, key, key);
+    } else {
+      i::OS::SNPrintF(
+          wrap_function,
+          "function wrap_f_%d() { return receiver_subclass.f(); }\n"
+          "function wrap_get_%d() { return receiver_subclass.acc; }\n"
+          "function wrap_set_%d() { return receiver_subclass.acc = 1; }\n",
+          key, key, key);
+    }
+    // build source string
+    i::ScopedVector<char> source(1000);
+    i::OS::SNPrintF(
+        source,
+        "%s\n"  // wrap functions
+        "function wrap_f() { return wrap_f_%d(); }\n"
+        "function wrap_get() { return wrap_get_%d(); }\n"
+        "function wrap_set() { return wrap_set_%d(); }\n"
+        "check = function(returned) {\n"
+        "  if (returned !== 'returned') { throw returned; }\n"
+        "}\n"
+        "\n"
+        "check(wrap_f());\n"
+        "check(wrap_f());\n"
+        "%%OptimizeFunctionOnNextCall(wrap_f_%d);\n"
+        "check(wrap_f());\n"
+        "\n"
+        "check(wrap_get());\n"
+        "check(wrap_get());\n"
+        "%%OptimizeFunctionOnNextCall(wrap_get_%d);\n"
+        "check(wrap_get());\n"
+        "\n"
+        "check = function(returned) {\n"
+        "  if (returned !== 1) { throw returned; }\n"
+        "}\n"
+        "check(wrap_set());\n"
+        "check(wrap_set());\n"
+        "%%OptimizeFunctionOnNextCall(wrap_set_%d);\n"
+        "check(wrap_set());\n",
+        wrap_function.start(), key, key, key, key, key, key);
+    v8::TryCatch try_catch;
+    CompileRun(source.start());
+    ASSERT(!try_catch.HasCaught());
+    CHECK_EQ(9, count);
+  }
 };
 
 
@@ -22324,22 +22431,19 @@ void StoringEventLoggerCallback(const char* message, int status) {
 TEST(EventLogging) {
   v8::Isolate* isolate = CcTest::isolate();
   isolate->SetEventLogger(StoringEventLoggerCallback);
-  v8::internal::HistogramTimer* histogramTimer =
-      new v8::internal::HistogramTimer(
-          "V8.Test", 0, 10000, 50,
-          reinterpret_cast<v8::internal::Isolate*>(isolate));
-  histogramTimer->Start();
+  v8::internal::HistogramTimer histogramTimer(
+      "V8.Test", 0, 10000, 50,
+      reinterpret_cast<v8::internal::Isolate*>(isolate));
+  histogramTimer.Start();
   CHECK_EQ("V8.Test", last_event_message);
   CHECK_EQ(0, last_event_status);
-  histogramTimer->Stop();
+  histogramTimer.Stop();
   CHECK_EQ("V8.Test", last_event_message);
   CHECK_EQ(1, last_event_status);
 }
 
 
 TEST(Promises) {
-  i::FLAG_harmony_promises = true;
-
   LocalContext context;
   v8::Isolate* isolate = context->GetIsolate();
   v8::HandleScope scope(isolate);
@@ -22524,4 +22628,23 @@ TEST(CaptureStackTraceForStackOverflow) {
   v8::TryCatch try_catch;
   CompileRun("(function f(x) { f(x+1); })(0)");
   CHECK(try_catch.HasCaught());
+}
+
+
+TEST(ScriptNameAndLineNumber) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  const char* url = "http://www.foo.com/foo.js";
+  v8::ScriptOrigin origin(v8_str(url), v8::Integer::New(isolate, 13));
+  v8::ScriptCompiler::Source script_source(v8_str("var foo;"), origin);
+  Local<Script> script = v8::ScriptCompiler::Compile(
+      isolate, &script_source);
+  Local<Value> script_name = script->GetUnboundScript()->GetScriptName();
+  CHECK(!script_name.IsEmpty());
+  CHECK(script_name->IsString());
+  String::Utf8Value utf8_name(script_name);
+  CHECK_EQ(url, *utf8_name);
+  int line_number = script->GetUnboundScript()->GetLineNumber(0);
+  CHECK_EQ(13, line_number);
 }

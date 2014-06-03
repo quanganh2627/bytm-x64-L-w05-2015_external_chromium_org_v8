@@ -60,7 +60,7 @@ int64_t MacroAssembler::RootRegisterDelta(ExternalReference other) {
 
 Operand MacroAssembler::ExternalOperand(ExternalReference target,
                                         Register scratch) {
-  if (root_array_available_ && !Serializer::enabled(isolate())) {
+  if (root_array_available_ && !serializer_enabled()) {
     int64_t delta = RootRegisterDelta(target);
     if (delta != kInvalidRootRegisterDelta && is_int32(delta)) {
       return Operand(kRootRegister, static_cast<int32_t>(delta));
@@ -72,7 +72,7 @@ Operand MacroAssembler::ExternalOperand(ExternalReference target,
 
 
 void MacroAssembler::Load(Register destination, ExternalReference source) {
-  if (root_array_available_ && !Serializer::enabled(isolate())) {
+  if (root_array_available_ && !serializer_enabled()) {
     int64_t delta = RootRegisterDelta(source);
     if (delta != kInvalidRootRegisterDelta && is_int32(delta)) {
       movp(destination, Operand(kRootRegister, static_cast<int32_t>(delta)));
@@ -90,7 +90,7 @@ void MacroAssembler::Load(Register destination, ExternalReference source) {
 
 
 void MacroAssembler::Store(ExternalReference destination, Register source) {
-  if (root_array_available_ && !Serializer::enabled(isolate())) {
+  if (root_array_available_ && !serializer_enabled()) {
     int64_t delta = RootRegisterDelta(destination);
     if (delta != kInvalidRootRegisterDelta && is_int32(delta)) {
       movp(Operand(kRootRegister, static_cast<int32_t>(delta)), source);
@@ -109,7 +109,7 @@ void MacroAssembler::Store(ExternalReference destination, Register source) {
 
 void MacroAssembler::LoadAddress(Register destination,
                                  ExternalReference source) {
-  if (root_array_available_ && !Serializer::enabled(isolate())) {
+  if (root_array_available_ && !serializer_enabled()) {
     int64_t delta = RootRegisterDelta(source);
     if (delta != kInvalidRootRegisterDelta && is_int32(delta)) {
       leap(destination, Operand(kRootRegister, static_cast<int32_t>(delta)));
@@ -122,7 +122,7 @@ void MacroAssembler::LoadAddress(Register destination,
 
 
 int MacroAssembler::LoadAddressSize(ExternalReference source) {
-  if (root_array_available_ && !Serializer::enabled(isolate())) {
+  if (root_array_available_ && !serializer_enabled()) {
     // This calculation depends on the internals of LoadAddress.
     // It's correctness is ensured by the asserts in the Call
     // instruction below.
@@ -144,7 +144,7 @@ int MacroAssembler::LoadAddressSize(ExternalReference source) {
 
 void MacroAssembler::PushAddress(ExternalReference source) {
   int64_t address = reinterpret_cast<int64_t>(source.address());
-  if (is_int32(address) && !Serializer::enabled(isolate())) {
+  if (is_int32(address) && !serializer_enabled()) {
     if (emit_debug_code()) {
       Move(kScratchRegister, kZapValue, Assembler::RelocInfoNone());
     }
@@ -252,7 +252,7 @@ void MacroAssembler::InNewSpace(Register object,
                                 Condition cc,
                                 Label* branch,
                                 Label::Distance distance) {
-  if (Serializer::enabled(isolate())) {
+  if (serializer_enabled()) {
     // Can't do arithmetic on external references if it might get serialized.
     // The mask isn't really an address.  We load it as an external reference in
     // case the size of the new space is different between the snapshot maker
@@ -548,16 +548,10 @@ void MacroAssembler::IndexFromHash(Register hash, Register index) {
   // reserved for it does not conflict.
   ASSERT(TenToThe(String::kMaxCachedArrayIndexLength) <
          (1 << String::kArrayIndexValueBits));
-  // We want the smi-tagged index in key. Even if we subsequently go to
-  // the slow case, converting the key to a smi is always valid.
-  // key: string key
-  // hash: key's hash field, including its array index value.
-  andp(hash, Immediate(String::kArrayIndexValueMask));
-  shrp(hash, Immediate(String::kHashShift));
-  // Here we actually clobber the key which will be used if calling into
-  // runtime later. However as the new key is the numeric value of a string key
-  // there is no difference in using either key.
-  Integer32ToSmi(index, hash);
+  if (!hash.is(index)) {
+    movl(index, hash);
+  }
+  DecodeFieldToSmi<String::ArrayIndexValueBits>(index);
 }
 
 
@@ -924,6 +918,11 @@ void MacroAssembler::Store(const Operand& dst, Register src, Representation r) {
   } else if (r.IsInteger32()) {
     movl(dst, src);
   } else {
+    if (r.IsHeapObject()) {
+      AssertNotSmi(src);
+    } else if (r.IsSmi()) {
+      AssertSmi(src);
+    }
     movp(dst, src);
   }
 }
@@ -3323,8 +3322,7 @@ void MacroAssembler::ClampDoubleToUint8(XMMRegister input_reg,
 
 
 void MacroAssembler::LoadUint32(XMMRegister dst,
-                                Register src,
-                                XMMRegister scratch) {
+                                Register src) {
   if (FLAG_debug_code) {
     cmpq(src, Immediate(0xffffffff));
     Assert(below_equal, kInputGPRIsExpectedToHaveUpper32Cleared);
@@ -3484,16 +3482,16 @@ void MacroAssembler::LoadInstanceDescriptors(Register map,
 
 
 void MacroAssembler::NumberOfOwnDescriptors(Register dst, Register map) {
-  movp(dst, FieldOperand(map, Map::kBitField3Offset));
+  movl(dst, FieldOperand(map, Map::kBitField3Offset));
   DecodeField<Map::NumberOfOwnDescriptorsBits>(dst);
 }
 
 
 void MacroAssembler::EnumLength(Register dst, Register map) {
   STATIC_ASSERT(Map::EnumLengthBits::kShift == 0);
-  movp(dst, FieldOperand(map, Map::kBitField3Offset));
-  Move(kScratchRegister, Smi::FromInt(Map::EnumLengthBits::kMask));
-  andp(dst, kScratchRegister);
+  movl(dst, FieldOperand(map, Map::kBitField3Offset));
+  andl(dst, Immediate(Map::EnumLengthBits::kMask));
+  Integer32ToSmi(dst, dst);
 }
 
 
@@ -3889,26 +3887,27 @@ void MacroAssembler::InvokePrologue(const ParameterCount& expected,
 }
 
 
-void MacroAssembler::Prologue(PrologueFrameMode frame_mode) {
-  if (frame_mode == BUILD_STUB_FRAME) {
+void MacroAssembler::StubPrologue() {
     pushq(rbp);  // Caller's frame pointer.
     movp(rbp, rsp);
     Push(rsi);  // Callee's context.
     Push(Smi::FromInt(StackFrame::STUB));
+}
+
+
+void MacroAssembler::Prologue(bool code_pre_aging) {
+  PredictableCodeSizeScope predictible_code_size_scope(this,
+      kNoCodeAgeSequenceLength);
+  if (code_pre_aging) {
+      // Pre-age the code.
+    Call(isolate()->builtins()->MarkCodeAsExecutedOnce(),
+         RelocInfo::CODE_AGE_SEQUENCE);
+    Nop(kNoCodeAgeSequenceLength - Assembler::kShortCallInstructionLength);
   } else {
-    PredictableCodeSizeScope predictible_code_size_scope(this,
-        kNoCodeAgeSequenceLength);
-    if (isolate()->IsCodePreAgingActive()) {
-        // Pre-age the code.
-      Call(isolate()->builtins()->MarkCodeAsExecutedOnce(),
-           RelocInfo::CODE_AGE_SEQUENCE);
-      Nop(kNoCodeAgeSequenceLength - Assembler::kShortCallInstructionLength);
-    } else {
-      pushq(rbp);  // Caller's frame pointer.
-      movp(rbp, rsp);
-      Push(rsi);  // Callee's context.
-      Push(rdi);  // Callee's JS function.
-    }
+    pushq(rbp);  // Caller's frame pointer.
+    movp(rbp, rsp);
+    Push(rsi);  // Callee's context.
+    Push(rdi);  // Callee's JS function.
   }
 }
 
@@ -4560,33 +4559,12 @@ void MacroAssembler::AllocateAsciiConsString(Register result,
                                              Register scratch1,
                                              Register scratch2,
                                              Label* gc_required) {
-  Label allocate_new_space, install_map;
-  AllocationFlags flags = TAG_OBJECT;
-
-  ExternalReference high_promotion_mode = ExternalReference::
-      new_space_high_promotion_mode_active_address(isolate());
-
-  Load(scratch1, high_promotion_mode);
-  testb(scratch1, Immediate(1));
-  j(zero, &allocate_new_space);
   Allocate(ConsString::kSize,
            result,
            scratch1,
            scratch2,
            gc_required,
-           static_cast<AllocationFlags>(flags | PRETENURE_OLD_POINTER_SPACE));
-
-  jmp(&install_map);
-
-  bind(&allocate_new_space);
-  Allocate(ConsString::kSize,
-           result,
-           scratch1,
-           scratch2,
-           gc_required,
-           flags);
-
-  bind(&install_map);
+           TAG_OBJECT);
 
   // Set the map. The other fields are left uninitialized.
   LoadRoot(kScratchRegister, Heap::kConsAsciiStringMapRootIndex);
@@ -4959,9 +4937,8 @@ void MacroAssembler::CheckMapDeprecated(Handle<Map> map,
                                         Label* if_deprecated) {
   if (map->CanBeDeprecated()) {
     Move(scratch, map);
-    movp(scratch, FieldOperand(scratch, Map::kBitField3Offset));
-    SmiToInteger32(scratch, scratch);
-    andp(scratch, Immediate(Map::Deprecated::kMask));
+    movl(scratch, FieldOperand(scratch, Map::kBitField3Offset));
+    andl(scratch, Immediate(Map::Deprecated::kMask));
     j(not_zero, if_deprecated);
   }
 }
@@ -5214,8 +5191,7 @@ void MacroAssembler::JumpIfDictionaryInPrototypeChain(
   bind(&loop_again);
   movp(current, FieldOperand(current, HeapObject::kMapOffset));
   movp(scratch1, FieldOperand(current, Map::kBitField2Offset));
-  andp(scratch1, Immediate(Map::kElementsKindMask));
-  shrp(scratch1, Immediate(Map::kElementsKindShift));
+  DecodeField<Map::ElementsKindBits>(scratch1);
   cmpp(scratch1, Immediate(DICTIONARY_ELEMENTS));
   j(equal, found);
   movp(current, FieldOperand(current, Map::kPrototypeOffset));

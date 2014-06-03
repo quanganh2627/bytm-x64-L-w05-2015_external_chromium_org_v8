@@ -300,6 +300,7 @@ class PersistentValueMap {
       K key = Traits::KeyFromWeakCallbackData(data);
       Traits::Dispose(data.GetIsolate(),
                       persistentValueMap->Remove(key).Pass(), key);
+      Traits::DisposeCallbackData(data.GetParameter());
     }
   }
 
@@ -337,7 +338,7 @@ class PersistentValueMap {
   static UniquePersistent<V> Release(PersistentContainerValue v) {
     UniquePersistent<V> p;
     p.val_ = FromVal(v);
-    if (Traits::kCallbackType != kNotWeak && !p.IsEmpty()) {
+    if (Traits::kCallbackType != kNotWeak && p.IsWeak()) {
       Traits::DisposeCallbackData(
           p.template ClearWeak<typename Traits::WeakCallbackDataType>());
     }
@@ -422,7 +423,7 @@ class PersistentValueVector {
    */
   void Append(UniquePersistent<V> persistent) {
     Traits::Append(&impl_, ClearAndLeak(&persistent));
-  };
+  }
 
   /**
    * Are there any values in the vector?

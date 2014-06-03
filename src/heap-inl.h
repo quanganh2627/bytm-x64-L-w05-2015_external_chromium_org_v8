@@ -13,7 +13,6 @@
 #include "list-inl.h"
 #include "objects.h"
 #include "platform.h"
-#include "v8-counters.h"
 #include "store-buffer.h"
 #include "store-buffer-inl.h"
 
@@ -123,8 +122,8 @@ AllocationResult Heap::AllocateOneByteInternalizedString(
   ASSERT_EQ(size, answer->Size());
 
   // Fill in the characters.
-  OS::MemCopy(answer->address() + SeqOneByteString::kHeaderSize,
-              str.start(), str.length());
+  MemCopy(answer->address() + SeqOneByteString::kHeaderSize, str.start(),
+          str.length());
 
   return answer;
 }
@@ -155,8 +154,8 @@ AllocationResult Heap::AllocateTwoByteInternalizedString(Vector<const uc16> str,
   ASSERT_EQ(size, answer->Size());
 
   // Fill in the characters.
-  OS::MemCopy(answer->address() + SeqTwoByteString::kHeaderSize,
-              str.start(), str.length() * kUC16Size);
+  MemCopy(answer->address() + SeqTwoByteString::kHeaderSize, str.start(),
+          str.length() * kUC16Size);
 
   return answer;
 }
@@ -430,7 +429,7 @@ void Heap::MoveBlock(Address dst, Address src, int byte_size) {
       *dst_slot++ = *src_slot++;
     }
   } else {
-    OS::MemMove(dst, src, static_cast<size_t>(byte_size));
+    MemMove(dst, src, static_cast<size_t>(byte_size));
   }
 }
 

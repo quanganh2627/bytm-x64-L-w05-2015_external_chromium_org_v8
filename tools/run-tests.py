@@ -50,7 +50,7 @@ from testrunner.objects import context
 
 
 ARCH_GUESS = utils.DefaultArch()
-DEFAULT_TESTS = ["mjsunit", "cctest", "message", "preparser"]
+DEFAULT_TESTS = ["mjsunit", "fuzz-natives", "cctest", "message", "preparser"]
 TIMEOUT_DEFAULT = 60
 TIMEOUT_SCALEFACTOR = {"debug"   : 4,
                        "release" : 1 }
@@ -80,6 +80,7 @@ SUPPORTED_ARCHS = ["android_arm",
                    "android_ia32",
                    "arm",
                    "ia32",
+                   "x87",
                    "mips",
                    "mipsel",
                    "nacl_ia32",
@@ -95,6 +96,7 @@ SLOW_ARCHS = ["android_arm",
               "mipsel",
               "nacl_ia32",
               "nacl_x64",
+              "x87",
               "arm64"]
 
 
@@ -173,6 +175,8 @@ def BuildOptions():
                     help=("Quick check mode (skip slow/flaky tests)"))
   result.add_option("--report", help="Print a summary of the tests to be run",
                     default=False, action="store_true")
+  result.add_option("--json-test-results",
+                    help="Path to a file for storing json results.")
   result.add_option("--shard-count",
                     help="Split testsuites into this number of shards",
                     default=1, type="int")
@@ -251,6 +255,9 @@ def ProcessOptions(options):
 
   if options.gc_stress:
     options.extra_flags += GC_STRESS_FLAGS
+
+  if options.asan:
+    options.extra_flags.append("--invoke-weak-callbacks")
 
   if options.j == 0:
     options.j = multiprocessing.cpu_count()
@@ -336,9 +343,8 @@ def Main():
   workspace = os.path.abspath(join(os.path.dirname(sys.argv[0]), ".."))
   if not options.no_presubmit:
     print ">>> running presubmit tests"
-    code = subprocess.call(
+    exit_code = subprocess.call(
         [sys.executable, join(workspace, "tools", "presubmit.py")])
-    exit_code = code
 
   suite_paths = utils.GetSuitePaths(join(workspace, "test"))
 
@@ -459,44 +465,42 @@ def Execute(arch, mode, args, options, suites, workspace):
     return 0
 
   # Run the tests, either locally or distributed on the network.
-  try:
-    start_time = time.time()
-    progress_indicator = progress.PROGRESS_INDICATORS[options.progress]()
-    if options.junitout:
-      progress_indicator = progress.JUnitTestProgressIndicator(
-          progress_indicator, options.junitout, options.junittestsuite)
+  start_time = time.time()
+  progress_indicator = progress.PROGRESS_INDICATORS[options.progress]()
+  if options.junitout:
+    progress_indicator = progress.JUnitTestProgressIndicator(
+        progress_indicator, options.junitout, options.junittestsuite)
+  if options.json_test_results:
+    progress_indicator = progress.JsonTestProgressIndicator(
+        progress_indicator, options.json_test_results, arch, mode)
 
-    run_networked = not options.no_network
-    if not run_networked:
-      print("Network distribution disabled, running tests locally.")
-    elif utils.GuessOS() != "linux":
-      print("Network distribution is only supported on Linux, sorry!")
+  run_networked = not options.no_network
+  if not run_networked:
+    print("Network distribution disabled, running tests locally.")
+  elif utils.GuessOS() != "linux":
+    print("Network distribution is only supported on Linux, sorry!")
+    run_networked = False
+  peers = []
+  if run_networked:
+    peers = network_execution.GetPeers()
+    if not peers:
+      print("No connection to distribution server; running tests locally.")
       run_networked = False
-    peers = []
-    if run_networked:
-      peers = network_execution.GetPeers()
-      if not peers:
-        print("No connection to distribution server; running tests locally.")
-        run_networked = False
-      elif len(peers) == 1:
-        print("No other peers on the network; running tests locally.")
-        run_networked = False
-      elif num_tests <= 100:
-        print("Less than 100 tests, running them locally.")
-        run_networked = False
+    elif len(peers) == 1:
+      print("No other peers on the network; running tests locally.")
+      run_networked = False
+    elif num_tests <= 100:
+      print("Less than 100 tests, running them locally.")
+      run_networked = False
 
-    if run_networked:
-      runner = network_execution.NetworkedRunner(suites, progress_indicator,
-                                                 ctx, peers, workspace)
-    else:
-      runner = execution.Runner(suites, progress_indicator, ctx)
+  if run_networked:
+    runner = network_execution.NetworkedRunner(suites, progress_indicator,
+                                               ctx, peers, workspace)
+  else:
+    runner = execution.Runner(suites, progress_indicator, ctx)
 
-    exit_code = runner.Run(options.j)
-    if runner.terminate:
-      return exit_code
-    overall_duration = time.time() - start_time
-  except KeyboardInterrupt:
-    raise
+  exit_code = runner.Run(options.j)
+  overall_duration = time.time() - start_time
 
   if options.time:
     verbose.PrintTestDurations(suites, overall_duration)

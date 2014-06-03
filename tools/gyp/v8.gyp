@@ -46,16 +46,13 @@
           # The dependency on v8_base should come from a transitive
           # dependency however the Android toolchain requires libv8_base.a
           # to appear before libv8_snapshot.a so it's listed explicitly.
-          'dependencies': ['v8_base.<(v8_target_arch)', 'v8_snapshot'],
+          'dependencies': ['v8_base', 'v8_snapshot'],
         },
         {
           # The dependency on v8_base should come from a transitive
           # dependency however the Android toolchain requires libv8_base.a
           # to appear before libv8_snapshot.a so it's listed explicitly.
-          'dependencies': [
-            'v8_base.<(v8_target_arch)',
-            'v8_nosnapshot.<(v8_target_arch)',
-          ],
+          'dependencies': ['v8_base', 'v8_nosnapshot'],
         }],
         ['component=="shared_library"', {
           'type': '<(component)',
@@ -112,14 +109,14 @@
         ['want_separate_host_toolset==1', {
           'toolsets': ['host', 'target'],
           'dependencies': [
-            'mksnapshot.<(v8_target_arch)#host',
+            'mksnapshot#host',
             'js2c#host',
             'generate_trig_table#host',
           ],
         }, {
           'toolsets': ['target'],
           'dependencies': [
-            'mksnapshot.<(v8_target_arch)',
+            'mksnapshot',
             'js2c',
             'generate_trig_table',
           ],
@@ -138,7 +135,7 @@
         }],
       ],
       'dependencies': [
-        'v8_base.<(v8_target_arch)',
+        'v8_base',
       ],
       'include_dirs+': [
         '../../src',
@@ -153,7 +150,7 @@
         {
           'action_name': 'run_mksnapshot',
           'inputs': [
-            '<(PRODUCT_DIR)/<(EXECUTABLE_PREFIX)mksnapshot.<(v8_target_arch)<(EXECUTABLE_SUFFIX)',
+            '<(PRODUCT_DIR)/<(EXECUTABLE_PREFIX)mksnapshot<(EXECUTABLE_SUFFIX)',
           ],
           'outputs': [
             '<(INTERMEDIATE_DIR)/snapshot.cc',
@@ -178,10 +175,10 @@
       ],
     },
     {
-      'target_name': 'v8_nosnapshot.<(v8_target_arch)',
+      'target_name': 'v8_nosnapshot',
       'type': 'static_library',
       'dependencies': [
-        'v8_base.<(v8_target_arch)',
+        'v8_base',
       ],
       'include_dirs+': [
         '../../src',
@@ -235,7 +232,7 @@
       ]
     },
     {
-      'target_name': 'v8_base.<(v8_target_arch)',
+      'target_name': 'v8_base',
       'type': 'static_library',
       'dependencies': [
         'v8_libbase.<(v8_target_arch)',
@@ -313,8 +310,6 @@
         '../../src/dateparser-inl.h',
         '../../src/dateparser.cc',
         '../../src/dateparser.h',
-        '../../src/debug-agent.cc',
-        '../../src/debug-agent.h',
         '../../src/debug.cc',
         '../../src/debug.h',
         '../../src/deoptimizer.cc',
@@ -502,8 +497,6 @@
         '../../src/platform/mutex.h',
         '../../src/platform/semaphore.cc',
         '../../src/platform/semaphore.h',
-        '../../src/platform/socket.cc',
-        '../../src/platform/socket.h',
         '../../src/preparse-data-format.h',
         '../../src/preparse-data.cc',
         '../../src/preparse-data.h',
@@ -590,12 +583,9 @@
         '../../src/utils.h',
         '../../src/utils/random-number-generator.cc',
         '../../src/utils/random-number-generator.h',
-        '../../src/v8-counters.cc',
-        '../../src/v8-counters.h',
         '../../src/v8.cc',
         '../../src/v8.h',
         '../../src/v8checks.h',
-        '../../src/v8globals.h',
         '../../src/v8memory.h',
         '../../src/v8threads.cc',
         '../../src/v8threads.h',
@@ -662,7 +652,6 @@
             '../../src/arm64/code-stubs-arm64.h',
             '../../src/arm64/constants-arm64.h',
             '../../src/arm64/cpu-arm64.cc',
-            '../../src/arm64/cpu-arm64.h',
             '../../src/arm64/debug-arm64.cc',
             '../../src/arm64/decoder-arm64.cc',
             '../../src/arm64/decoder-arm64.h',
@@ -696,7 +685,7 @@
             '../../src/arm64/utils-arm64.h',
           ],
         }],
-        ['v8_target_arch=="ia32" or v8_target_arch=="mac" or OS=="mac"', {
+        ['v8_target_arch=="ia32"', {
           'sources': [  ### gcmole(arch:ia32) ###
             '../../src/ia32/assembler-ia32-inl.h',
             '../../src/ia32/assembler-ia32.cc',
@@ -725,6 +714,37 @@
             '../../src/ia32/regexp-macro-assembler-ia32.cc',
             '../../src/ia32/regexp-macro-assembler-ia32.h',
             '../../src/ia32/stub-cache-ia32.cc',
+          ],
+        }],
+        ['v8_target_arch=="x87"', {
+          'sources': [  ### gcmole(arch:x87) ###
+            '../../src/x87/assembler-x87-inl.h',
+            '../../src/x87/assembler-x87.cc',
+            '../../src/x87/assembler-x87.h',
+            '../../src/x87/builtins-x87.cc',
+            '../../src/x87/code-stubs-x87.cc',
+            '../../src/x87/code-stubs-x87.h',
+            '../../src/x87/codegen-x87.cc',
+            '../../src/x87/codegen-x87.h',
+            '../../src/x87/cpu-x87.cc',
+            '../../src/x87/debug-x87.cc',
+            '../../src/x87/deoptimizer-x87.cc',
+            '../../src/x87/disasm-x87.cc',
+            '../../src/x87/frames-x87.cc',
+            '../../src/x87/frames-x87.h',
+            '../../src/x87/full-codegen-x87.cc',
+            '../../src/x87/ic-x87.cc',
+            '../../src/x87/lithium-codegen-x87.cc',
+            '../../src/x87/lithium-codegen-x87.h',
+            '../../src/x87/lithium-gap-resolver-x87.cc',
+            '../../src/x87/lithium-gap-resolver-x87.h',
+            '../../src/x87/lithium-x87.cc',
+            '../../src/x87/lithium-x87.h',
+            '../../src/x87/macro-assembler-x87.cc',
+            '../../src/x87/macro-assembler-x87.h',
+            '../../src/x87/regexp-macro-assembler-x87.cc',
+            '../../src/x87/regexp-macro-assembler-x87.h',
+            '../../src/x87/stub-cache-x87.cc',
           ],
         }],
         ['v8_target_arch=="mips" or v8_target_arch=="mipsel"', {
@@ -761,7 +781,7 @@
             '../../src/mips/stub-cache-mips.cc',
           ],
         }],
-        ['v8_target_arch=="x64" or v8_target_arch=="mac" or OS=="mac"', {
+        ['v8_target_arch=="x64"', {
           'sources': [  ### gcmole(arch:x64) ###
             '../../src/x64/assembler-x64-inl.h',
             '../../src/x64/assembler-x64.cc',
@@ -871,7 +891,7 @@
                 }],
                 ['_toolset=="target"', {
                   'libraries': [
-                    '-lbacktrace', '-lsocket'
+                    '-lbacktrace'
                   ],
                 }],
               ],
@@ -934,7 +954,7 @@
         ['OS=="solaris"', {
             'link_settings': {
               'libraries': [
-                '-lsocket -lnsl',
+                '-lnsl',
             ]},
             'sources': [
               '../../src/platform-solaris.cc',
@@ -1096,6 +1116,8 @@
           '../../src/regexp.js',
           '../../src/arraybuffer.js',
           '../../src/typedarray.js',
+          '../../src/weak_collection.js',
+          '../../src/promise.js',
           '../../src/object-observe.js',
           '../../src/macros.py',
         ],
@@ -1104,8 +1126,6 @@
           '../../src/symbol.js',
           '../../src/proxy.js',
           '../../src/collection.js',
-          '../../src/weak_collection.js',
-          '../../src/promise.js',
           '../../src/generator.js',
           '../../src/array-iterator.js',
           '../../src/harmony-string.js',
@@ -1183,12 +1203,9 @@
         ]
     },
     {
-      'target_name': 'mksnapshot.<(v8_target_arch)',
+      'target_name': 'mksnapshot',
       'type': 'executable',
-      'dependencies': [
-        'v8_base.<(v8_target_arch)',
-        'v8_nosnapshot.<(v8_target_arch)',
-      ],
+      'dependencies': ['v8_base', 'v8_nosnapshot'],
       'include_dirs+': [
         '../../src',
       ],

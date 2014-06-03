@@ -7,7 +7,7 @@
 
 #include "assembler.h"
 #include "mips/assembler-mips.h"
-#include "v8globals.h"
+#include "globals.h"
 
 namespace v8 {
 namespace internal {
@@ -734,7 +734,7 @@ class MacroAssembler: public Assembler {
                       FPURegister cmp1,
                       FPURegister cmp2) {
     BranchF(target, nan, cc, cmp1, cmp2, bd);
-  };
+  }
 
   // Truncates a double using a specific rounding mode, and writes the value
   // to the result register.
@@ -1484,15 +1484,40 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
   void NumberOfOwnDescriptors(Register dst, Register map);
 
   template<typename Field>
+  void DecodeField(Register dst, Register src) {
+    Ext(dst, src, Field::kShift, Field::kSize);
+  }
+
+  template<typename Field>
   void DecodeField(Register reg) {
+    DecodeField<Field>(reg, reg);
+  }
+
+  template<typename Field>
+  void DecodeFieldToSmi(Register dst, Register src) {
     static const int shift = Field::kShift;
-    static const int mask = (Field::kMask >> shift) << kSmiTagSize;
-    srl(reg, reg, shift);
-    And(reg, reg, Operand(mask));
+    static const int mask = Field::kMask >> shift << kSmiTagSize;
+    STATIC_ASSERT((mask & (0x80000000u >> (kSmiTagSize - 1))) == 0);
+    STATIC_ASSERT(kSmiTag == 0);
+    if (shift < kSmiTagSize) {
+      sll(dst, src, kSmiTagSize - shift);
+      And(dst, dst, Operand(mask));
+    } else if (shift > kSmiTagSize) {
+      srl(dst, src, shift - kSmiTagSize);
+      And(dst, dst, Operand(mask));
+    } else {
+      And(dst, src, Operand(mask));
+    }
+  }
+
+  template<typename Field>
+  void DecodeFieldToSmi(Register reg) {
+    DecodeField<Field>(reg, reg);
   }
 
   // Generates function and stub prologue code.
-  void Prologue(PrologueFrameMode frame_mode);
+  void StubPrologue();
+  void Prologue(bool code_pre_aging);
 
   // Activation support.
   void EnterFrame(StackFrame::Type type);
@@ -1614,7 +1639,14 @@ const Operand& rt = Operand(zero_reg), BranchDelaySlot bd = PROTECT
 // an assertion to fail.
 class CodePatcher {
  public:
-  CodePatcher(byte* address, int instructions);
+  enum FlushICache {
+    FLUSH,
+    DONT_FLUSH
+  };
+
+  CodePatcher(byte* address,
+              int instructions,
+              FlushICache flush_cache = FLUSH);
   virtual ~CodePatcher();
 
   // Macro assembler to emit code.
@@ -1634,6 +1666,7 @@ class CodePatcher {
   byte* address_;  // The address of the code being patched.
   int size_;  // Number of bytes of the expected patch size.
   MacroAssembler masm_;  // Macro assembler used to generate the code.
+  FlushICache flush_cache_;  // Whether to flush the I cache after patching.
 };
 
 

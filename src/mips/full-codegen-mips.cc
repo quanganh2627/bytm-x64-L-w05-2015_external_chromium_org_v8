@@ -176,7 +176,7 @@ void FullCodeGenerator::Generate() {
   FrameScope frame_scope(masm_, StackFrame::MANUAL);
 
   info->set_prologue_offset(masm_->pc_offset());
-  __ Prologue(BUILD_FUNCTION_FRAME);
+  __ Prologue(info->IsCodePreAgingActive());
   info->AddNoFrameRange(0, masm_->pc_offset());
 
   { Comment cmnt(masm_, "[ Allocate locals");
@@ -219,6 +219,7 @@ void FullCodeGenerator::Generate() {
   if (heap_slots > 0) {
     Comment cmnt(masm_, "[ Allocate context");
     // Argument to NewContext is the function, which is still in a1.
+    bool need_write_barrier = true;
     if (FLAG_harmony_scoping && info->scope()->is_global_scope()) {
       __ push(a1);
       __ Push(info->scope()->GetScopeInfo());
@@ -226,6 +227,8 @@ void FullCodeGenerator::Generate() {
     } else if (heap_slots <= FastNewContextStub::kMaximumSlots) {
       FastNewContextStub stub(isolate(), heap_slots);
       __ CallStub(&stub);
+      // Result of FastNewContextStub is always in new space.
+      need_write_barrier = false;
     } else {
       __ push(a1);
       __ CallRuntime(Runtime::kHiddenNewFunctionContext, 1);
@@ -249,8 +252,15 @@ void FullCodeGenerator::Generate() {
         __ sw(a0, target);
 
         // Update the write barrier.
-        __ RecordWriteContextSlot(
-            cp, target.offset(), a0, a3, kRAHasBeenSaved, kDontSaveFPRegs);
+        if (need_write_barrier) {
+          __ RecordWriteContextSlot(
+              cp, target.offset(), a0, a3, kRAHasBeenSaved, kDontSaveFPRegs);
+        } else if (FLAG_debug_code) {
+          Label done;
+          __ JumpIfInNewSpace(cp, a0, &done);
+          __ Abort(kExpectedNewSpaceObject);
+          __ bind(&done);
+        }
       }
     }
   }
@@ -353,7 +363,7 @@ void FullCodeGenerator::EmitProfilingCounterDecrement(int delta) {
 
 void FullCodeGenerator::EmitProfilingCounterReset() {
   int reset_value = FLAG_interrupt_budget;
-  if (isolate()->IsDebuggerActive()) {
+  if (info_->is_debug()) {
     // Detect debug break requests as soon as possible.
     reset_value = FLAG_interrupt_budget >> 4;
   }
@@ -1661,7 +1671,7 @@ void FullCodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   __ li(a0, Operand(Smi::FromInt(flags)));
   int properties_count = constant_properties->length() / 2;
   if (expr->may_store_doubles() || expr->depth() > 1 ||
-      Serializer::enabled(isolate()) || flags != ObjectLiteral::kFastElements ||
+      masm()->serializer_enabled() || flags != ObjectLiteral::kFastElements ||
       properties_count > FastCloneShallowObjectStub::kMaximumClonedProperties) {
     __ Push(a3, a2, a1, a0);
     __ CallRuntime(Runtime::kHiddenCreateObjectLiteral, 4);
@@ -1805,33 +1815,12 @@ void FullCodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
   __ lw(a3, FieldMemOperand(a3, JSFunction::kLiteralsOffset));
   __ li(a2, Operand(Smi::FromInt(expr->literal_index())));
   __ li(a1, Operand(constant_elements));
-  if (has_fast_elements && constant_elements_values->map() ==
-      isolate()->heap()->fixed_cow_array_map()) {
-    FastCloneShallowArrayStub stub(
-        isolate(),
-        FastCloneShallowArrayStub::COPY_ON_WRITE_ELEMENTS,
-        allocation_site_mode,
-        length);
-    __ CallStub(&stub);
-    __ IncrementCounter(isolate()->counters()->cow_arrays_created_stub(),
-        1, a1, a2);
-  } else if (expr->depth() > 1 || Serializer::enabled(isolate()) ||
-             length > FastCloneShallowArrayStub::kMaximumClonedLength) {
+  if (expr->depth() > 1) {
     __ li(a0, Operand(Smi::FromInt(flags)));
     __ Push(a3, a2, a1, a0);
     __ CallRuntime(Runtime::kHiddenCreateArrayLiteral, 4);
   } else {
-    ASSERT(IsFastSmiOrObjectElementsKind(constant_elements_kind) ||
-           FLAG_smi_only_arrays);
-    FastCloneShallowArrayStub::Mode mode =
-        FastCloneShallowArrayStub::CLONE_ANY_ELEMENTS;
-
-    if (has_fast_elements) {
-      mode = FastCloneShallowArrayStub::CLONE_ELEMENTS;
-    }
-
-    FastCloneShallowArrayStub stub(isolate(), mode, allocation_site_mode,
-                                   length);
+    FastCloneShallowArrayStub stub(isolate(), allocation_site_mode);
     __ CallStub(&stub);
   }
 
@@ -3060,7 +3049,7 @@ void FullCodeGenerator::EmitIsStringWrapperSafeForDefaultValueOf(
   __ Addu(t0, t0, Operand(DescriptorArray::kFirstOffset - kHeapObjectTag));
   // Calculate the end of the descriptor array.
   __ mov(a2, t0);
-  __ sll(t1, a3, kPointerSizeLog2 - kSmiTagSize);
+  __ sll(t1, a3, kPointerSizeLog2);
   __ Addu(a2, a2, t1);
 
   // Loop through all the keys in the descriptor array. If one of these is the

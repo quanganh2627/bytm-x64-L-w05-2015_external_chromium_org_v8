@@ -520,6 +520,19 @@ LUnallocated* LChunkBuilder::TempRegister() {
 }
 
 
+LUnallocated* LChunkBuilder::TempDoubleRegister() {
+  LUnallocated* operand =
+      new(zone()) LUnallocated(LUnallocated::MUST_HAVE_DOUBLE_REGISTER);
+  int vreg = allocator_->GetVirtualRegister();
+  if (!allocator_->AllocationOk()) {
+    Abort(kOutOfVirtualRegistersWhileTryingToAllocateTempRegister);
+    vreg = 0;
+  }
+  operand->set_virtual_register(vreg);
+  return operand;
+}
+
+
 int LPlatformChunk::GetNextSpillIndex() {
   return spill_slot_count_++;
 }
@@ -666,69 +679,76 @@ void LChunkBuilder::VisitInstruction(HInstruction* current) {
   ASSERT(argument_count_ >= 0);
 
   if (instr != NULL) {
-    // Associate the hydrogen instruction first, since we may need it for
-    // the ClobbersRegisters() or ClobbersDoubleRegisters() calls below.
-    instr->set_hydrogen_value(current);
+    AddInstruction(instr, current);
+  }
+
+  current_instruction_ = old_current;
+}
+
+
+void LChunkBuilder::AddInstruction(LInstruction* instr,
+                                   HInstruction* hydrogen_val) {
+  // Associate the hydrogen instruction first, since we may need it for
+  // the ClobbersRegisters() or ClobbersDoubleRegisters() calls below.
+  instr->set_hydrogen_value(hydrogen_val);
 
 #if DEBUG
-    // Make sure that the lithium instruction has either no fixed register
-    // constraints in temps or the result OR no uses that are only used at
-    // start. If this invariant doesn't hold, the register allocator can decide
-    // to insert a split of a range immediately before the instruction due to an
-    // already allocated register needing to be used for the instruction's fixed
-    // register constraint. In this case, the register allocator won't see an
-    // interference between the split child and the use-at-start (it would if
-    // the it was just a plain use), so it is free to move the split child into
-    // the same register that is used for the use-at-start.
-    // See https://code.google.com/p/chromium/issues/detail?id=201590
-    if (!(instr->ClobbersRegisters() &&
-          instr->ClobbersDoubleRegisters(isolate()))) {
-      int fixed = 0;
-      int used_at_start = 0;
-      for (UseIterator it(instr); !it.Done(); it.Advance()) {
-        LUnallocated* operand = LUnallocated::cast(it.Current());
-        if (operand->IsUsedAtStart()) ++used_at_start;
-      }
-      if (instr->Output() != NULL) {
-        if (LUnallocated::cast(instr->Output())->HasFixedPolicy()) ++fixed;
-      }
-      for (TempIterator it(instr); !it.Done(); it.Advance()) {
-        LUnallocated* operand = LUnallocated::cast(it.Current());
-        if (operand->HasFixedPolicy()) ++fixed;
-      }
-      ASSERT(fixed == 0 || used_at_start == 0);
+  // Make sure that the lithium instruction has either no fixed register
+  // constraints in temps or the result OR no uses that are only used at
+  // start. If this invariant doesn't hold, the register allocator can decide
+  // to insert a split of a range immediately before the instruction due to an
+  // already allocated register needing to be used for the instruction's fixed
+  // register constraint. In this case, the register allocator won't see an
+  // interference between the split child and the use-at-start (it would if
+  // the it was just a plain use), so it is free to move the split child into
+  // the same register that is used for the use-at-start.
+  // See https://code.google.com/p/chromium/issues/detail?id=201590
+  if (!(instr->ClobbersRegisters() &&
+        instr->ClobbersDoubleRegisters(isolate()))) {
+    int fixed = 0;
+    int used_at_start = 0;
+    for (UseIterator it(instr); !it.Done(); it.Advance()) {
+      LUnallocated* operand = LUnallocated::cast(it.Current());
+      if (operand->IsUsedAtStart()) ++used_at_start;
     }
+    if (instr->Output() != NULL) {
+      if (LUnallocated::cast(instr->Output())->HasFixedPolicy()) ++fixed;
+    }
+    for (TempIterator it(instr); !it.Done(); it.Advance()) {
+      LUnallocated* operand = LUnallocated::cast(it.Current());
+      if (operand->HasFixedPolicy()) ++fixed;
+    }
+    ASSERT(fixed == 0 || used_at_start == 0);
+  }
 #endif
 
-    if (FLAG_stress_pointer_maps && !instr->HasPointerMap()) {
-      instr = AssignPointerMap(instr);
-    }
-    if (FLAG_stress_environments && !instr->HasEnvironment()) {
-      instr = AssignEnvironment(instr);
-    }
-    chunk_->AddInstruction(instr, current_block_);
+  if (FLAG_stress_pointer_maps && !instr->HasPointerMap()) {
+    instr = AssignPointerMap(instr);
+  }
+  if (FLAG_stress_environments && !instr->HasEnvironment()) {
+    instr = AssignEnvironment(instr);
+  }
+  chunk_->AddInstruction(instr, current_block_);
 
-    if (instr->IsCall()) {
-      HValue* hydrogen_value_for_lazy_bailout = current;
-      LInstruction* instruction_needing_environment = NULL;
-      if (current->HasObservableSideEffects()) {
-        HSimulate* sim = HSimulate::cast(current->next());
-        instruction_needing_environment = instr;
-        sim->ReplayEnvironment(current_block_->last_environment());
-        hydrogen_value_for_lazy_bailout = sim;
-      }
-      LInstruction* bailout = AssignEnvironment(new(zone()) LLazyBailout());
-      bailout->set_hydrogen_value(hydrogen_value_for_lazy_bailout);
-      chunk_->AddInstruction(bailout, current_block_);
-      if (instruction_needing_environment != NULL) {
-        // Store the lazy deopt environment with the instruction if needed.
-        // Right now it is only used for LInstanceOfKnownGlobal.
-        instruction_needing_environment->
-            SetDeferredLazyDeoptimizationEnvironment(bailout->environment());
-      }
+  if (instr->IsCall()) {
+    HValue* hydrogen_value_for_lazy_bailout = hydrogen_val;
+    LInstruction* instruction_needing_environment = NULL;
+    if (hydrogen_val->HasObservableSideEffects()) {
+      HSimulate* sim = HSimulate::cast(hydrogen_val->next());
+      instruction_needing_environment = instr;
+      sim->ReplayEnvironment(current_block_->last_environment());
+      hydrogen_value_for_lazy_bailout = sim;
+    }
+    LInstruction* bailout = AssignEnvironment(new(zone()) LLazyBailout());
+    bailout->set_hydrogen_value(hydrogen_value_for_lazy_bailout);
+    chunk_->AddInstruction(bailout, current_block_);
+    if (instruction_needing_environment != NULL) {
+      // Store the lazy deopt environment with the instruction if needed.
+      // Right now it is only used for LInstanceOfKnownGlobal.
+      instruction_needing_environment->
+          SetDeferredLazyDeoptimizationEnvironment(bailout->environment());
     }
   }
-  current_instruction_ = old_current;
 }
 
 
@@ -826,6 +846,12 @@ LInstruction* LChunkBuilder::DoAdd(HAdd* instr) {
   if (instr->representation().IsSmiOrInteger32()) {
     ASSERT(instr->left()->representation().Equals(instr->representation()));
     ASSERT(instr->right()->representation().Equals(instr->representation()));
+
+    LInstruction* shifted_operation = TryDoOpWithShiftedRightOperand(instr);
+    if (shifted_operation != NULL) {
+      return shifted_operation;
+    }
+
     LOperand* left = UseRegisterAtStart(instr->BetterLeftOperand());
     LOperand* right =
         UseRegisterOrConstantAtStart(instr->BetterRightOperand());
@@ -905,6 +931,11 @@ LInstruction* LChunkBuilder::DoBitwise(HBitwise* instr) {
     ASSERT(instr->left()->representation().Equals(instr->representation()));
     ASSERT(instr->right()->representation().Equals(instr->representation()));
     ASSERT(instr->CheckFlag(HValue::kTruncatingToInt32));
+
+    LInstruction* shifted_operation = TryDoOpWithShiftedRightOperand(instr);
+    if (shifted_operation != NULL) {
+      return shifted_operation;
+    }
 
     LOperand* left = UseRegisterAtStart(instr->BetterLeftOperand());
     LOperand* right =
@@ -1091,7 +1122,8 @@ LInstruction* LChunkBuilder::DoChange(HChange* instr) {
       } else {
         LOperand* value = UseRegister(val);
         LOperand* temp1 = TempRegister();
-        LOperand* temp2 = instr->CanTruncateToInt32() ? NULL : FixedTemp(d24);
+        LOperand* temp2 = instr->CanTruncateToInt32()
+            ? NULL : TempDoubleRegister();
         LInstruction* result =
             DefineAsRegister(new(zone()) LTaggedToI(value, temp1, temp2));
         if (!val->representation().IsSmi()) result = AssignEnvironment(result);
@@ -1208,7 +1240,7 @@ LInstruction* LChunkBuilder::DoClampToUint8(HClampToUint8* instr) {
     return AssignEnvironment(
         DefineAsRegister(new(zone()) LClampTToUint8(reg,
                                                     TempRegister(),
-                                                    FixedTemp(d24))));
+                                                    TempDoubleRegister())));
   }
 }
 
@@ -1641,10 +1673,9 @@ LInstruction* LChunkBuilder::DoLoadKeyed(HLoadKeyed* instr) {
   ASSERT(instr->key()->representation().IsSmiOrInteger32());
   ElementsKind elements_kind = instr->elements_kind();
   LOperand* elements = UseRegister(instr->elements());
+  LOperand* key = UseRegisterOrConstant(instr->key());
 
   if (!instr->is_typed_elements()) {
-    LOperand* key = UseRegisterOrConstantAtStart(instr->key());
-
     if (instr->representation().IsDouble()) {
       LOperand* temp = (!instr->key()->IsConstant() ||
                         instr->RequiresHoleCheck())
@@ -1672,7 +1703,6 @@ LInstruction* LChunkBuilder::DoLoadKeyed(HLoadKeyed* instr) {
            (instr->representation().IsDouble() &&
             IsDoubleOrFloatElementsKind(instr->elements_kind())));
 
-    LOperand* key = UseRegisterOrConstant(instr->key());
     LOperand* temp = instr->key()->IsConstant() ? NULL : TempRegister();
     LInstruction* result = DefineAsRegister(
         new(zone()) LLoadKeyedExternal(elements, key, temp));
@@ -1965,9 +1995,21 @@ LInstruction* LChunkBuilder::DoPower(HPower* instr) {
 }
 
 
-LInstruction* LChunkBuilder::DoPushArgument(HPushArgument* instr) {
-  LOperand* argument = UseRegister(instr->argument());
-  return new(zone()) LPushArgument(argument);
+LInstruction* LChunkBuilder::DoPushArguments(HPushArguments* instr) {
+  int argc = instr->OperandCount();
+  AddInstruction(new(zone()) LPreparePushArguments(argc), instr);
+
+  LPushArguments* push_args = new(zone()) LPushArguments(zone());
+
+  for (int i = 0; i < argc; ++i) {
+    if (push_args->ShouldSplitPush()) {
+      AddInstruction(push_args, instr);
+      push_args = new(zone()) LPushArguments(zone());
+    }
+    push_args->AddArgument(UseRegister(instr->argument(i)));
+  }
+
+  return push_args;
 }
 
 
@@ -1986,10 +2028,9 @@ LInstruction* LChunkBuilder::DoDoubleBits(HDoubleBits* instr) {
 
 
 LInstruction* LChunkBuilder::DoConstructDouble(HConstructDouble* instr) {
-  LOperand* lo = UseRegister(instr->lo());
+  LOperand* lo = UseRegisterAndClobber(instr->lo());
   LOperand* hi = UseRegister(instr->hi());
-  LOperand* temp = TempRegister();
-  return DefineAsRegister(new(zone()) LConstructDouble(hi, lo, temp));
+  return DefineAsRegister(new(zone()) LConstructDouble(hi, lo));
 }
 
 
@@ -2027,6 +2068,117 @@ LInstruction* LChunkBuilder::DoSeqStringSetChar(HSeqStringSetChar* instr) {
 }
 
 
+HBitwiseBinaryOperation* LChunkBuilder::CanTransformToShiftedOp(HValue* val,
+                                                                HValue** left) {
+  if (!val->representation().IsInteger32()) return NULL;
+  if (!(val->IsBitwise() || val->IsAdd() || val->IsSub())) return NULL;
+
+  HBinaryOperation* hinstr = HBinaryOperation::cast(val);
+  HValue* hleft = hinstr->left();
+  HValue* hright = hinstr->right();
+  ASSERT(hleft->representation().Equals(hinstr->representation()));
+  ASSERT(hright->representation().Equals(hinstr->representation()));
+
+  if ((hright->IsConstant() &&
+       LikelyFitsImmField(hinstr, HConstant::cast(hright)->Integer32Value())) ||
+      (hinstr->IsCommutative() && hleft->IsConstant() &&
+       LikelyFitsImmField(hinstr, HConstant::cast(hleft)->Integer32Value()))) {
+    // The constant operand will likely fit in the immediate field. We are
+    // better off with
+    //     lsl x8, x9, #imm
+    //     add x0, x8, #imm2
+    // than with
+    //     mov x16, #imm2
+    //     add x0, x16, x9 LSL #imm
+    return NULL;
+  }
+
+  HBitwiseBinaryOperation* shift = NULL;
+  // TODO(aleram): We will miss situations where a shift operation is used by
+  // different instructions both as a left and right operands.
+  if (hright->IsBitwiseBinaryShift() &&
+      HBitwiseBinaryOperation::cast(hright)->right()->IsConstant()) {
+    shift = HBitwiseBinaryOperation::cast(hright);
+    if (left != NULL) {
+      *left = hleft;
+    }
+  } else if (hinstr->IsCommutative() &&
+             hleft->IsBitwiseBinaryShift() &&
+             HBitwiseBinaryOperation::cast(hleft)->right()->IsConstant()) {
+    shift = HBitwiseBinaryOperation::cast(hleft);
+    if (left != NULL) {
+      *left = hright;
+    }
+  } else {
+    return NULL;
+  }
+
+  if ((JSShiftAmountFromHConstant(shift->right()) == 0) && shift->IsShr()) {
+    // Shifts right by zero can deoptimize.
+    return NULL;
+  }
+
+  return shift;
+}
+
+
+bool LChunkBuilder::ShiftCanBeOptimizedAway(HBitwiseBinaryOperation* shift) {
+  if (!shift->representation().IsInteger32()) {
+    return false;
+  }
+  for (HUseIterator it(shift->uses()); !it.Done(); it.Advance()) {
+    if (shift != CanTransformToShiftedOp(it.value())) {
+      return false;
+    }
+  }
+  return true;
+}
+
+
+LInstruction* LChunkBuilder::TryDoOpWithShiftedRightOperand(
+    HBinaryOperation* instr) {
+  HValue* left;
+  HBitwiseBinaryOperation* shift = CanTransformToShiftedOp(instr, &left);
+
+  if ((shift != NULL) && ShiftCanBeOptimizedAway(shift)) {
+    return DoShiftedBinaryOp(instr, left, shift);
+  }
+  return NULL;
+}
+
+
+LInstruction* LChunkBuilder::DoShiftedBinaryOp(
+    HBinaryOperation* hinstr, HValue* hleft, HBitwiseBinaryOperation* hshift) {
+  ASSERT(hshift->IsBitwiseBinaryShift());
+  ASSERT(!hshift->IsShr() || (JSShiftAmountFromHConstant(hshift->right()) > 0));
+
+  LTemplateResultInstruction<1>* res;
+  LOperand* left = UseRegisterAtStart(hleft);
+  LOperand* right = UseRegisterAtStart(hshift->left());
+  LOperand* shift_amount = UseConstant(hshift->right());
+  Shift shift_op;
+  switch (hshift->opcode()) {
+    case HValue::kShl: shift_op = LSL; break;
+    case HValue::kShr: shift_op = LSR; break;
+    case HValue::kSar: shift_op = ASR; break;
+    default: UNREACHABLE(); shift_op = NO_SHIFT;
+  }
+
+  if (hinstr->IsBitwise()) {
+    res = new(zone()) LBitI(left, right, shift_op, shift_amount);
+  } else if (hinstr->IsAdd()) {
+    res = new(zone()) LAddI(left, right, shift_op, shift_amount);
+  } else {
+    ASSERT(hinstr->IsSub());
+    res = new(zone()) LSubI(left, right, shift_op, shift_amount);
+  }
+  if (hinstr->CheckFlag(HValue::kCanOverflow)) {
+    AssignEnvironment(res);
+  }
+  return DefineAsRegister(res);
+}
+
+
 LInstruction* LChunkBuilder::DoShift(Token::Value op,
                                      HBitwiseBinaryOperation* instr) {
   if (instr->representation().IsTagged()) {
@@ -2038,6 +2190,10 @@ LInstruction* LChunkBuilder::DoShift(Token::Value op,
   ASSERT(instr->left()->representation().Equals(instr->representation()));
   ASSERT(instr->right()->representation().Equals(instr->representation()));
 
+  if (ShiftCanBeOptimizedAway(instr)) {
+    return NULL;
+  }
+
   LOperand* left = instr->representation().IsSmi()
       ? UseRegister(instr->left())
       : UseRegisterAtStart(instr->left());
@@ -2048,8 +2204,7 @@ LInstruction* LChunkBuilder::DoShift(Token::Value op,
   int constant_value = 0;
   if (right_value->IsConstant()) {
     right = UseConstant(right_value);
-    HConstant* constant = HConstant::cast(right_value);
-    constant_value = constant->Integer32Value() & 0x1f;
+    constant_value = JSShiftAmountFromHConstant(right_value);
   } else {
     right = UseRegisterAtStart(right_value);
     if (op == Token::ROR) {
@@ -2162,6 +2317,7 @@ LInstruction* LChunkBuilder::DoStoreGlobalCell(HStoreGlobalCell* instr) {
 
 
 LInstruction* LChunkBuilder::DoStoreKeyed(HStoreKeyed* instr) {
+  LOperand* key = UseRegisterOrConstant(instr->key());
   LOperand* temp = NULL;
   LOperand* elements = NULL;
   LOperand* val = NULL;
@@ -2188,19 +2344,16 @@ LInstruction* LChunkBuilder::DoStoreKeyed(HStoreKeyed* instr) {
             instr->elements()->representation().IsTagged()) ||
            (instr->is_external() &&
             instr->elements()->representation().IsExternal()));
-    LOperand* key = UseRegisterOrConstant(instr->key());
     return new(zone()) LStoreKeyedExternal(elements, key, val, temp);
 
   } else if (instr->value()->representation().IsDouble()) {
     ASSERT(instr->elements()->representation().IsTagged());
-    LOperand* key = UseRegisterOrConstantAtStart(instr->key());
     return new(zone()) LStoreKeyedFixedDouble(elements, key, val, temp);
 
   } else {
     ASSERT(instr->elements()->representation().IsTagged());
     ASSERT(instr->value()->representation().IsSmiOrTagged() ||
            instr->value()->representation().IsInteger32());
-    LOperand* key = UseRegisterOrConstantAtStart(instr->key());
     return new(zone()) LStoreKeyedFixed(elements, key, val, temp);
   }
 }
@@ -2246,13 +2399,7 @@ LInstruction* LChunkBuilder::DoStoreNamedField(HStoreNamedField* instr) {
     temp0 = TempRegister();
   }
 
-  LStoreNamedField* result =
-      new(zone()) LStoreNamedField(object, value, temp0, temp1);
-  if (instr->field_representation().IsHeapObject() &&
-      !instr->value()->type().IsHeapObject()) {
-    return AssignEnvironment(result);
-  }
-  return result;
+  return new(zone()) LStoreNamedField(object, value, temp0, temp1);
 }
 
 
@@ -2311,6 +2458,12 @@ LInstruction* LChunkBuilder::DoSub(HSub* instr) {
   if (instr->representation().IsSmiOrInteger32()) {
     ASSERT(instr->left()->representation().Equals(instr->representation()));
     ASSERT(instr->right()->representation().Equals(instr->representation()));
+
+    LInstruction* shifted_operation = TryDoOpWithShiftedRightOperand(instr);
+    if (shifted_operation != NULL) {
+      return shifted_operation;
+    }
+
     LOperand *left;
     if (instr->left()->IsConstant() &&
         (HConstant::cast(instr->left())->Integer32Value() == 0)) {
@@ -2365,6 +2518,14 @@ LInstruction* LChunkBuilder::DoTransitionElementsKind(
         new(zone()) LTransitionElementsKind(object, context, NULL, NULL);
     return MarkAsCall(result, instr);
   }
+}
+
+
+LInstruction* LChunkBuilder::DoArrayShift(HArrayShift* instr) {
+  LOperand* object = UseFixed(instr->object(), x0);
+  LOperand* context = UseFixed(instr->context(), cp);
+  LArrayShift* result = new(zone()) LArrayShift(context, object);
+  return MarkAsCall(DefineFixed(result, x0), instr, CANNOT_DEOPTIMIZE_EAGERLY);
 }
 
 
@@ -2431,8 +2592,7 @@ LInstruction* LChunkBuilder::DoUnaryMathOperation(HUnaryMathOperation* instr) {
       ASSERT(instr->representation().IsDouble());
       ASSERT(instr->value()->representation().IsDouble());
       LOperand* input = UseRegister(instr->value());
-      // TODO(all): Implement TempFPRegister.
-      LOperand* double_temp1 = FixedTemp(d24);   // This was chosen arbitrarily.
+      LOperand* double_temp1 = TempDoubleRegister();
       LOperand* temp1 = TempRegister();
       LOperand* temp2 = TempRegister();
       LOperand* temp3 = TempRegister();
@@ -2469,7 +2629,8 @@ LInstruction* LChunkBuilder::DoUnaryMathOperation(HUnaryMathOperation* instr) {
       ASSERT(instr->value()->representation().IsDouble());
       LOperand* input = UseRegister(instr->value());
       if (instr->representation().IsInteger32()) {
-        LMathRoundI* result = new(zone()) LMathRoundI(input, FixedTemp(d24));
+        LOperand* temp = TempDoubleRegister();
+        LMathRoundI* result = new(zone()) LMathRoundI(input, temp);
         return AssignEnvironment(DefineAsRegister(result));
       } else {
         ASSERT(instr->representation().IsDouble());
@@ -2545,7 +2706,7 @@ LInstruction* LChunkBuilder::DoCheckMapValue(HCheckMapValue* instr) {
 
 LInstruction* LChunkBuilder::DoLoadFieldByIndex(HLoadFieldByIndex* instr) {
   LOperand* object = UseRegisterAtStart(instr->object());
-  LOperand* index = UseRegister(instr->index());
+  LOperand* index = UseRegisterAndClobber(instr->index());
   LLoadFieldByIndex* load = new(zone()) LLoadFieldByIndex(object, index);
   LInstruction* result = DefineSameAsFirst(load);
   return AssignPointerMap(result);

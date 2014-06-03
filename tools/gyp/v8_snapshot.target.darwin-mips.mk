@@ -12,7 +12,7 @@ gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_V
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
-	$(gyp_shared_intermediate_dir)/mksnapshot.mipsel \
+	$(gyp_shared_intermediate_dir)/mksnapshot \
 	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/js2c.stamp \
 	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/generate_trig_table.stamp
 
@@ -22,9 +22,9 @@ $(gyp_intermediate_dir)/snapshot.cc: gyp_var_prefix := $(GYP_VAR_PREFIX)
 $(gyp_intermediate_dir)/snapshot.cc: gyp_intermediate_dir := $(abspath $(gyp_intermediate_dir))
 $(gyp_intermediate_dir)/snapshot.cc: gyp_shared_intermediate_dir := $(abspath $(gyp_shared_intermediate_dir))
 $(gyp_intermediate_dir)/snapshot.cc: export PATH := $(subst $(ANDROID_BUILD_PATHS),,$(PATH))
-$(gyp_intermediate_dir)/snapshot.cc: $(gyp_shared_intermediate_dir)/mksnapshot.mipsel $(GYP_TARGET_DEPENDENCIES)
+$(gyp_intermediate_dir)/snapshot.cc: $(gyp_shared_intermediate_dir)/mksnapshot $(GYP_TARGET_DEPENDENCIES)
 	@echo "Gyp action: v8_tools_gyp_v8_gyp_v8_snapshot_target_run_mksnapshot ($@)"
-	$(hide)cd $(gyp_local_path)/v8/tools/gyp; mkdir -p $(gyp_intermediate_dir); "$(gyp_shared_intermediate_dir)/mksnapshot.mipsel" --log-snapshot-positions --logfile "$(gyp_intermediate_dir)/snapshot.log" --random-seed 314159265 "$(gyp_intermediate_dir)/snapshot.cc"
+	$(hide)cd $(gyp_local_path)/v8/tools/gyp; mkdir -p $(gyp_intermediate_dir); "$(gyp_shared_intermediate_dir)/mksnapshot" --log-snapshot-positions --logfile "$(gyp_intermediate_dir)/snapshot.log" --random-seed 314159265 "$(gyp_intermediate_dir)/snapshot.cc"
 
 
 
@@ -65,6 +65,7 @@ MY_CFLAGS_Debug := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-EL \
 	-mhard-float \
@@ -102,12 +103,17 @@ MY_DEFS_Debug := \
 	'-DENABLE_WEBRTC=1' \
 	'-DUSE_PROPRIETARY_CODECS' \
 	'-DENABLE_CONFIGURATION_POLICY' \
+	'-DENABLE_NEW_GAMEPAD_API=1' \
 	'-DDISCARDABLE_MEMORY_ALWAYS_SUPPORTED_NATIVELY' \
 	'-DSYSTEM_NATIVELY_SIGNALS_MEMORY_PRESSURE' \
 	'-DENABLE_EGLIMAGE=1' \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
+	'-DDATA_REDUCTION_FALLBACK_HOST="http://compress.googlezip.net:80/"' \
+	'-DDATA_REDUCTION_DEV_HOST="http://proxy-dev.googlezip.net:80/"' \
+	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
+	'-DDATA_REDUCTION_PROXY_PROBE_URL="http://check.googlezip.net/connect"' \
 	'-DVIDEO_HOLE=1' \
 	'-DV8_TARGET_ARCH_MIPS' \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \
@@ -166,6 +172,7 @@ MY_CFLAGS_Release := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-EL \
 	-mhard-float \
@@ -205,12 +212,17 @@ MY_DEFS_Release := \
 	'-DENABLE_WEBRTC=1' \
 	'-DUSE_PROPRIETARY_CODECS' \
 	'-DENABLE_CONFIGURATION_POLICY' \
+	'-DENABLE_NEW_GAMEPAD_API=1' \
 	'-DDISCARDABLE_MEMORY_ALWAYS_SUPPORTED_NATIVELY' \
 	'-DSYSTEM_NATIVELY_SIGNALS_MEMORY_PRESSURE' \
 	'-DENABLE_EGLIMAGE=1' \
 	'-DCLD_VERSION=1' \
 	'-DENABLE_PRINTING=1' \
 	'-DENABLE_MANAGED_USERS=1' \
+	'-DDATA_REDUCTION_FALLBACK_HOST="http://compress.googlezip.net:80/"' \
+	'-DDATA_REDUCTION_DEV_HOST="http://proxy-dev.googlezip.net:80/"' \
+	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
+	'-DDATA_REDUCTION_PROXY_PROBE_URL="http://check.googlezip.net/connect"' \
 	'-DVIDEO_HOLE=1' \
 	'-DV8_TARGET_ARCH_MIPS' \
 	'-DCAN_USE_FPU_INSTRUCTIONS' \

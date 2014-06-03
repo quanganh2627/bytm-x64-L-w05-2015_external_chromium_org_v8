@@ -31,7 +31,7 @@ void Deoptimizer::PatchCodeForDeoptimization(Isolate* isolate, Code* code) {
     // Fail hard and early if we enter this code object again.
     byte* pointer = code->FindCodeAgeSequence();
     if (pointer != NULL) {
-      pointer += kNoCodeAgeSequenceLength * Assembler::kInstrSize;
+      pointer += kNoCodeAgeSequenceLength;
     } else {
       pointer = code->instruction_start();
     }
@@ -125,11 +125,6 @@ void Deoptimizer::CopyDoubleRegisters(FrameDescription* output_frame) {
 bool Deoptimizer::HasAlignmentPadding(JSFunction* function) {
   // There is no dynamic alignment padding on ARM in the input frame.
   return false;
-}
-
-
-Code* Deoptimizer::NotifyStubFailureBuiltin() {
-  return isolate_->builtins()->builtin(Builtins::kNotifyStubFailureSaveDoubles);
 }
 
 

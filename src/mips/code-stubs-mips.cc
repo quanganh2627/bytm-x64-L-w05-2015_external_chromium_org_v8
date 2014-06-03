@@ -59,6 +59,11 @@ void FastCloneShallowArrayStub::InitializeInterfaceDescriptor(
   static Register registers[] = { a3, a2, a1 };
   descriptor->register_param_count_ = 3;
   descriptor->register_params_ = registers;
+  static Representation representations[] = {
+    Representation::Tagged(),
+    Representation::Smi(),
+    Representation::Tagged() };
+  descriptor->register_param_representations_ = representations;
   descriptor->deoptimization_handler_ =
       Runtime::FunctionForId(
           Runtime::kHiddenCreateArrayLiteralStubBailout)->entry;
@@ -202,6 +207,11 @@ static void InitializeArrayConstructorDescriptor(
     descriptor->stack_parameter_count_ = a0;
     descriptor->register_param_count_ = 3;
     descriptor->register_params_ = registers_variable_args;
+    static Representation representations[] = {
+        Representation::Tagged(),
+        Representation::Tagged(),
+        Representation::Integer32() };
+    descriptor->register_param_representations_ = representations;
   }
 
   descriptor->hint_stack_parameter_count_ = constant_stack_parameter_count;
@@ -229,6 +239,10 @@ static void InitializeInternalArrayConstructorDescriptor(
     descriptor->stack_parameter_count_ = a0;
     descriptor->register_param_count_ = 2;
     descriptor->register_params_ = registers_variable_args;
+    static Representation representations[] = {
+        Representation::Tagged(),
+        Representation::Integer32() };
+    descriptor->register_param_representations_ = representations;
   }
 
   descriptor->hint_stack_parameter_count_ = constant_stack_parameter_count;
@@ -303,6 +317,16 @@ void ElementsTransitionAndStoreStub::InitializeInterfaceDescriptor(
   descriptor->register_params_ = registers;
   descriptor->deoptimization_handler_ =
       FUNCTION_ADDR(ElementsTransitionAndStoreIC_Miss);
+}
+
+
+void ArrayShiftStub::InitializeInterfaceDescriptor(
+    CodeStubInterfaceDescriptor* descriptor) {
+  static Register registers[] = { a0 };
+  descriptor->register_param_count_ = 1;
+  descriptor->register_params_ = registers;
+  descriptor->deoptimization_handler_ =
+      Builtins::c_function_address(Builtins::c_ArrayShift);
 }
 
 
@@ -2618,8 +2642,8 @@ void RegExpExecStub::Generate(MacroAssembler* masm) {
   STATIC_ASSERT(kSeqStringTag == 0);
   __ And(at, a0, Operand(kStringRepresentationMask));
   // The underlying external string is never a short external string.
-  STATIC_CHECK(ExternalString::kMaxShortLength < ConsString::kMinLength);
-  STATIC_CHECK(ExternalString::kMaxShortLength < SlicedString::kMinLength);
+  STATIC_ASSERT(ExternalString::kMaxShortLength < ConsString::kMinLength);
+  STATIC_ASSERT(ExternalString::kMaxShortLength < SlicedString::kMinLength);
   __ Branch(&external_string, ne, at, Operand(zero_reg));  // Go to (7).
 
   // (5) Sequential string.  Load regexp code according to encoding.
@@ -3070,11 +3094,13 @@ static void EmitWrapCase(MacroAssembler* masm, int argc, Label* cont) {
 }
 
 
-void CallFunctionStub::Generate(MacroAssembler* masm) {
+static void CallFunctionNoFeedback(MacroAssembler* masm,
+                                   int argc, bool needs_checks,
+                                   bool call_as_method) {
   // a1 : the function to call
   Label slow, non_function, wrap, cont;
 
-  if (NeedsChecks()) {
+  if (needs_checks) {
     // Check that the function is really a JavaScript function.
     // a1: pushed function (to be verified)
     __ JumpIfSmi(a1, &non_function);
@@ -3086,18 +3112,17 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
 
   // Fast-case: Invoke the function now.
   // a1: pushed function
-  int argc = argc_;
   ParameterCount actual(argc);
 
-  if (CallAsMethod()) {
-    if (NeedsChecks()) {
+  if (call_as_method) {
+    if (needs_checks) {
       EmitContinueIfStrictOrNative(masm, &cont);
     }
 
     // Compute the receiver in sloppy mode.
     __ lw(a3, MemOperand(sp, argc * kPointerSize));
 
-    if (NeedsChecks()) {
+    if (needs_checks) {
       __ JumpIfSmi(a3, &wrap);
       __ GetObjectType(a3, t0, t0);
       __ Branch(&wrap, lt, t0, Operand(FIRST_SPEC_OBJECT_TYPE));
@@ -3110,17 +3135,22 @@ void CallFunctionStub::Generate(MacroAssembler* masm) {
 
   __ InvokeFunction(a1, actual, JUMP_FUNCTION, NullCallWrapper());
 
-  if (NeedsChecks()) {
+  if (needs_checks) {
     // Slow-case: Non-function called.
     __ bind(&slow);
     EmitSlowCase(masm, argc, &non_function);
   }
 
-  if (CallAsMethod()) {
+  if (call_as_method) {
     __ bind(&wrap);
     // Wrap the receiver and patch it back onto the stack.
     EmitWrapCase(masm, argc, &cont);
   }
+}
+
+
+void CallFunctionStub::Generate(MacroAssembler* masm) {
+  CallFunctionNoFeedback(masm, argc_, NeedsChecks(), CallAsMethod());
 }
 
 
@@ -3183,8 +3213,8 @@ void CallConstructStub::Generate(MacroAssembler* masm) {
   __ bind(&do_call);
   // Set expected number of arguments to zero (not changing r0).
   __ li(a2, Operand(0, RelocInfo::NONE32));
-  __ Jump(isolate()->builtins()->ArgumentsAdaptorTrampoline(),
-          RelocInfo::CODE_TARGET);
+  __ Jump(masm->isolate()->builtins()->ArgumentsAdaptorTrampoline(),
+           RelocInfo::CODE_TARGET);
 }
 
 
@@ -3194,6 +3224,51 @@ static void EmitLoadTypeFeedbackVector(MacroAssembler* masm, Register vector) {
                                 JSFunction::kSharedFunctionInfoOffset));
   __ lw(vector, FieldMemOperand(vector,
                                 SharedFunctionInfo::kFeedbackVectorOffset));
+}
+
+
+void CallICStub::Generate_MonomorphicArray(MacroAssembler* masm, Label* miss) {
+  // a1 - function
+  // a2 - feedback vector
+  // a3 - slot id
+  __ LoadGlobalFunction(Context::ARRAY_FUNCTION_INDEX, at);
+  __ Branch(miss, ne, a1, Operand(at));
+
+  __ li(a0, Operand(arg_count()));
+  __ sll(at, a3, kPointerSizeLog2 - kSmiTagSize);
+  __ Addu(at, a2, Operand(at));
+  __ lw(a2, FieldMemOperand(at, FixedArray::kHeaderSize));
+  // Verify that a2 contains an AllocationSite
+  __ AssertUndefinedOrAllocationSite(a2, at);
+  ArrayConstructorStub stub(masm->isolate(), arg_count());
+  __ TailCallStub(&stub);
+}
+
+
+void CallICStub::Generate_CustomFeedbackCall(MacroAssembler* masm) {
+  // a1 - function
+  // a2 - feedback vector
+  // a3 - slot id
+  Label miss;
+
+  if (state_.stub_type() == CallIC::MONOMORPHIC_ARRAY) {
+    Generate_MonomorphicArray(masm, &miss);
+  } else {
+    // So far there is only one customer for our custom feedback scheme.
+    UNREACHABLE();
+  }
+
+  __ bind(&miss);
+  GenerateMiss(masm);
+
+  // The slow case, we need this no matter what to complete a call after a miss.
+  CallFunctionNoFeedback(masm,
+                         arg_count(),
+                         true,
+                         CallAsMethod());
+
+  // Unreachable.
+  __ stop("Unexpected code address");
 }
 
 
@@ -3207,6 +3282,11 @@ void CallICStub::Generate(MacroAssembler* masm) {
   ParameterCount actual(argc);
 
   EmitLoadTypeFeedbackVector(masm, a2);
+
+  if (state_.stub_type() != CallIC::DEFAULT) {
+    Generate_CustomFeedbackCall(masm);
+    return;
+  }
 
   // The checks. First, does r1 match the recorded monomorphic target?
   __ sll(t0, a3, kPointerSizeLog2 - kSmiTagSize);
@@ -3759,7 +3839,7 @@ void SubStringStub::Generate(MacroAssembler* masm) {
 
   // Handle external string.
   // Rule out short external strings.
-  STATIC_CHECK(kShortExternalStringTag != 0);
+  STATIC_ASSERT(kShortExternalStringTag != 0);
   __ And(t0, a1, Operand(kShortExternalStringTag));
   __ Branch(&runtime, ne, t0, Operand(zero_reg));
   __ lw(t1, FieldMemOperand(t1, ExternalString::kResourceDataOffset));
@@ -4660,11 +4740,6 @@ void StoreBufferOverflowStub::GenerateFixedRegStubsAheadOfTime(
 }
 
 
-bool CodeStub::CanUseFPRegisters() {
-  return true;  // FPU is a base requirement for V8.
-}
-
-
 // Takes the input in 3 registers: address_ value_ and object_.  A pointer to
 // the value has just been written into the object, now this stub makes sure
 // we keep the GC informed.  The word in the object where the value has been
@@ -4922,7 +4997,7 @@ void StoreArrayLiteralElementStub::Generate(MacroAssembler* masm) {
 
 
 void StubFailureTrampolineStub::Generate(MacroAssembler* masm) {
-  CEntryStub ces(isolate(), 1, fp_registers_ ? kSaveFPRegs : kDontSaveFPRegs);
+  CEntryStub ces(isolate(), 1, kSaveFPRegs);
   __ Call(ces.GetCode(), RelocInfo::CODE_TARGET);
   int parameter_count_offset =
       StubFailureTrampolineFrame::kCallerStackParameterCountFrameOffset;
@@ -5274,7 +5349,7 @@ void InternalArrayConstructorStub::Generate(MacroAssembler* masm) {
   // but the following bit field extraction takes care of that anyway.
   __ lbu(a3, FieldMemOperand(a3, Map::kBitField2Offset));
   // Retrieve elements_kind from bit field 2.
-  __ Ext(a3, a3, Map::kElementsKindShift, Map::kElementsKindBitCount);
+  __ DecodeField<Map::ElementsKindBits>(a3);
 
   if (FLAG_debug_code) {
     Label done;
