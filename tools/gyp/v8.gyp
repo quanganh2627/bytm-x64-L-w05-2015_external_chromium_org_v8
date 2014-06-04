@@ -61,6 +61,9 @@
             # has some sources to link into the component.
             '../../src/v8dll-main.cc',
           ],
+          'include_dirs': [
+            '../..',
+          ],
           'defines': [
             'V8_SHARED',
             'BUILDING_V8_SHARED',
@@ -138,7 +141,7 @@
         'v8_base',
       ],
       'include_dirs+': [
-        '../../src',
+        '../..',
       ],
       'sources': [
         '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
@@ -181,7 +184,7 @@
         'v8_base',
       ],
       'include_dirs+': [
-        '../../src',
+        '../..',
       ],
       'sources': [
         '<(SHARED_INTERMEDIATE_DIR)/libraries.cc',
@@ -241,7 +244,7 @@
         'optimize': 'max',
       },
       'include_dirs+': [
-        '../../src',
+        '../..',
       ],
       'sources': [  ### gcmole(all) ###
         '../../src/accessors.cc',
@@ -1060,7 +1063,7 @@
         'optimize': 'max',
       },
       'include_dirs+': [
-        '../../src',
+        '../..',
       ],
       'sources': [
         '../../src/base/build_config.h',
@@ -1129,6 +1132,7 @@
           '../../src/symbol.js',
           '../../src/proxy.js',
           '../../src/collection.js',
+          '../../src/collection-iterator.js',
           '../../src/generator.js',
           '../../src/array-iterator.js',
           '../../src/harmony-string.js',
@@ -1210,7 +1214,7 @@
       'type': 'executable',
       'dependencies': ['v8_base', 'v8_nosnapshot'],
       'include_dirs+': [
-        '../../src',
+        '../..',
       ],
       'sources': [
         '../../src/mksnapshot.cc',
