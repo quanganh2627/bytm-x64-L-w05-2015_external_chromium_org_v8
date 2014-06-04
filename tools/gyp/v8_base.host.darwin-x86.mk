@@ -260,7 +260,7 @@ MY_DEFS_Debug := \
 
 # Include paths placed before CFLAGS/CPPFLAGS
 LOCAL_C_INCLUDES_Debug := \
-	$(LOCAL_PATH)/v8/src \
+	$(LOCAL_PATH)/v8 \
 	$(LOCAL_PATH)/third_party/icu/source/i18n \
 	$(LOCAL_PATH)/third_party/icu/source/common
 
@@ -334,7 +334,7 @@ MY_DEFS_Release := \
 
 # Include paths placed before CFLAGS/CPPFLAGS
 LOCAL_C_INCLUDES_Release := \
-	$(LOCAL_PATH)/v8/src \
+	$(LOCAL_PATH)/v8 \
 	$(LOCAL_PATH)/third_party/icu/source/i18n \
 	$(LOCAL_PATH)/third_party/icu/source/common
 
