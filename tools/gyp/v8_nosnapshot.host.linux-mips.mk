@@ -7,13 +7,14 @@ LOCAL_MODULE := v8_tools_gyp_v8_nosnapshot_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_
 LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
-gyp_intermediate_dir := $(call local-intermediates-dir)
+LOCAL_MULTILIB := $(GYP_HOST_MULTILIB)
+gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_HOST_VAR_PREFIX))
 gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/js2c.stamp \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true)/generate_trig_table.stamp
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true,,$(GYP_HOST_VAR_PREFIX))/js2c.stamp \
+	$(call intermediates-dir-for,GYP,v8_tools_gyp_generate_trig_table_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp,true,,$(GYP_HOST_VAR_PREFIX))/generate_trig_table.stamp
 
 GYP_GENERATED_OUTPUTS :=
 
