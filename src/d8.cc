@@ -26,24 +26,24 @@
 #endif  // !V8_SHARED
 
 #ifdef V8_SHARED
-#include "../include/v8-testing.h"
+#include "include/v8-testing.h"
 #endif  // V8_SHARED
 
 #ifdef ENABLE_VTUNE_JIT_INTERFACE
-#include "third_party/vtune/v8-vtune.h"
+#include "src/third_party/vtune/v8-vtune.h"
 #endif
 
-#include "d8.h"
+#include "src/d8.h"
 
 #ifndef V8_SHARED
-#include "api.h"
-#include "checks.h"
-#include "cpu.h"
-#include "d8-debug.h"
-#include "debug.h"
-#include "natives.h"
-#include "platform.h"
-#include "v8.h"
+#include "src/api.h"
+#include "src/checks.h"
+#include "src/cpu.h"
+#include "src/d8-debug.h"
+#include "src/debug.h"
+#include "src/natives.h"
+#include "src/platform.h"
+#include "src/v8.h"
 #endif  // !V8_SHARED
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -1471,7 +1471,8 @@ class MockArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
   virtual void* AllocateUninitialized(size_t length) V8_OVERRIDE {
     return malloc(0);
   }
-  virtual void Free(void*, size_t) V8_OVERRIDE {
+  virtual void Free(void* p, size_t) V8_OVERRIDE {
+    free(p);
   }
 };
 

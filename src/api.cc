@@ -2,51 +2,51 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "api.h"
+#include "src/api.h"
 
 #include <string.h>  // For memcpy, strlen.
 #ifdef V8_USE_ADDRESS_SANITIZER
 #include <sanitizer/asan_interface.h>
 #endif  // V8_USE_ADDRESS_SANITIZER
 #include <cmath>  // For isnan.
-#include "../include/v8-debug.h"
-#include "../include/v8-profiler.h"
-#include "../include/v8-testing.h"
-#include "assert-scope.h"
-#include "bootstrapper.h"
-#include "code-stubs.h"
-#include "compiler.h"
-#include "conversions-inl.h"
-#include "counters.h"
-#include "cpu-profiler.h"
-#include "debug.h"
-#include "deoptimizer.h"
-#include "execution.h"
-#include "global-handles.h"
-#include "heap-profiler.h"
-#include "heap-snapshot-generator-inl.h"
-#include "icu_util.h"
-#include "json-parser.h"
-#include "messages.h"
+#include "include/v8-debug.h"
+#include "include/v8-profiler.h"
+#include "include/v8-testing.h"
+#include "src/assert-scope.h"
+#include "src/bootstrapper.h"
+#include "src/code-stubs.h"
+#include "src/compiler.h"
+#include "src/conversions-inl.h"
+#include "src/counters.h"
+#include "src/cpu-profiler.h"
+#include "src/debug.h"
+#include "src/deoptimizer.h"
+#include "src/execution.h"
+#include "src/global-handles.h"
+#include "src/heap-profiler.h"
+#include "src/heap-snapshot-generator-inl.h"
+#include "src/icu_util.h"
+#include "src/json-parser.h"
+#include "src/messages.h"
 #ifdef COMPRESS_STARTUP_DATA_BZ2
-#include "natives.h"
+#include "src/natives.h"
 #endif
-#include "parser.h"
-#include "platform.h"
-#include "platform/time.h"
-#include "profile-generator-inl.h"
-#include "property-details.h"
-#include "property.h"
-#include "runtime.h"
-#include "runtime-profiler.h"
-#include "scanner-character-streams.h"
-#include "simulator.h"
-#include "snapshot.h"
-#include "unicode-inl.h"
-#include "utils/random-number-generator.h"
-#include "v8threads.h"
-#include "version.h"
-#include "vm-state-inl.h"
+#include "src/parser.h"
+#include "src/platform.h"
+#include "src/platform/time.h"
+#include "src/profile-generator-inl.h"
+#include "src/property-details.h"
+#include "src/property.h"
+#include "src/runtime.h"
+#include "src/runtime-profiler.h"
+#include "src/scanner-character-streams.h"
+#include "src/simulator.h"
+#include "src/snapshot.h"
+#include "src/unicode-inl.h"
+#include "src/utils/random-number-generator.h"
+#include "src/v8threads.h"
+#include "src/version.h"
+#include "src/vm-state-inl.h"
 
 
 #define LOG_API(isolate, expr) LOG(isolate, ApiEntryCall(expr))
@@ -1144,7 +1144,6 @@ static i::Handle<i::AccessorInfo> SetAccessorInfoProperties(
   obj->set_name(*Utils::OpenHandle(*name));
   if (settings & ALL_CAN_READ) obj->set_all_can_read(true);
   if (settings & ALL_CAN_WRITE) obj->set_all_can_write(true);
-  if (settings & PROHIBITS_OVERWRITING) obj->set_prohibits_overwriting(true);
   obj->set_property_attributes(static_cast<PropertyAttributes>(attributes));
   if (!signature.IsEmpty()) {
     obj->set_expected_receiver_type(*Utils::OpenHandle(*signature));
@@ -6664,6 +6663,18 @@ void Isolate::EnqueueMicrotask(Handle<Function> microtask) {
 }
 
 
+void Isolate::EnqueueMicrotask(MicrotaskCallback microtask, void* data) {
+  i::Isolate* isolate = reinterpret_cast<i::Isolate*>(this);
+  i::HandleScope scope(isolate);
+  i::Handle<i::CallHandlerInfo> callback_info =
+      i::Handle<i::CallHandlerInfo>::cast(
+          isolate->factory()->NewStruct(i::CALL_HANDLER_INFO_TYPE));
+  SET_FIELD_WRAPPED(callback_info, set_callback, microtask);
+  SET_FIELD_WRAPPED(callback_info, set_data, data);
+  isolate->EnqueueMicrotask(callback_info);
+}
+
+
 void Isolate::SetAutorunMicrotasks(bool autorun) {
   reinterpret_cast<i::Isolate*>(this)->set_autorun_microtasks(autorun);
 }
@@ -6906,7 +6917,7 @@ Local<Value> Debug::GetMirror(v8::Handle<v8::Value> obj) {
 
 
 void Debug::ProcessDebugMessages() {
-  i::Execution::ProcessDebugMessages(i::Isolate::Current(), true);
+  i::Isolate::Current()->debug()->ProcessDebugMessages(true);
 }
 
 

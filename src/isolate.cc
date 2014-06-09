@@ -4,34 +4,34 @@
 
 #include <stdlib.h>
 
-#include "v8.h"
+#include "src/v8.h"
 
-#include "ast.h"
-#include "bootstrapper.h"
-#include "codegen.h"
-#include "compilation-cache.h"
-#include "cpu-profiler.h"
-#include "debug.h"
-#include "deoptimizer.h"
-#include "heap-profiler.h"
-#include "hydrogen.h"
-#include "isolate-inl.h"
-#include "lithium-allocator.h"
-#include "log.h"
-#include "messages.h"
-#include "platform.h"
-#include "regexp-stack.h"
-#include "runtime-profiler.h"
-#include "sampler.h"
-#include "scopeinfo.h"
-#include "serialize.h"
-#include "simulator.h"
-#include "spaces.h"
-#include "stub-cache.h"
-#include "sweeper-thread.h"
-#include "utils/random-number-generator.h"
-#include "version.h"
-#include "vm-state-inl.h"
+#include "src/ast.h"
+#include "src/bootstrapper.h"
+#include "src/codegen.h"
+#include "src/compilation-cache.h"
+#include "src/cpu-profiler.h"
+#include "src/debug.h"
+#include "src/deoptimizer.h"
+#include "src/heap-profiler.h"
+#include "src/hydrogen.h"
+#include "src/isolate-inl.h"
+#include "src/lithium-allocator.h"
+#include "src/log.h"
+#include "src/messages.h"
+#include "src/platform.h"
+#include "src/regexp-stack.h"
+#include "src/runtime-profiler.h"
+#include "src/sampler.h"
+#include "src/scopeinfo.h"
+#include "src/serialize.h"
+#include "src/simulator.h"
+#include "src/spaces.h"
+#include "src/stub-cache.h"
+#include "src/sweeper-thread.h"
+#include "src/utils/random-number-generator.h"
+#include "src/version.h"
+#include "src/vm-state-inl.h"
 
 
 namespace v8 {
@@ -1324,7 +1324,7 @@ Handle<Context> Isolate::global_context() {
 
 Handle<Context> Isolate::GetCallingNativeContext() {
   JavaScriptFrameIterator it(this);
-  if (debug_->InDebugger()) {
+  if (debug_->in_debug_scope()) {
     while (!it.done()) {
       JavaScriptFrame* frame = it.frame();
       Context* context = Context::cast(frame->context());
@@ -2254,15 +2254,16 @@ void Isolate::FireCallCompletedCallback() {
   if (!handle_scope_implementer()->CallDepthIsZero()) return;
   if (run_microtasks) RunMicrotasks();
   // Fire callbacks.  Increase call depth to prevent recursive callbacks.
-  handle_scope_implementer()->IncrementCallDepth();
+  v8::Isolate::SuppressMicrotaskExecutionScope suppress(
+      reinterpret_cast<v8::Isolate*>(this));
   for (int i = 0; i < call_completed_callbacks_.length(); i++) {
     call_completed_callbacks_.at(i)();
   }
-  handle_scope_implementer()->DecrementCallDepth();
 }
 
 
-void Isolate::EnqueueMicrotask(Handle<JSFunction> microtask) {
+void Isolate::EnqueueMicrotask(Handle<Object> microtask) {
+  ASSERT(microtask->IsJSFunction() || microtask->IsCallHandlerInfo());
   Handle<FixedArray> queue(heap()->microtask_queue(), this);
   int num_tasks = pending_microtask_count();
   ASSERT(num_tasks <= queue->length());
@@ -2288,7 +2289,8 @@ void Isolate::RunMicrotasks() {
   // ASSERT(handle_scope_implementer()->CallDepthIsZero());
 
   // Increase call depth to prevent recursive callbacks.
-  handle_scope_implementer()->IncrementCallDepth();
+  v8::Isolate::SuppressMicrotaskExecutionScope suppress(
+      reinterpret_cast<v8::Isolate*>(this));
 
   while (pending_microtask_count() > 0) {
     HandleScope scope(this);
@@ -2300,14 +2302,33 @@ void Isolate::RunMicrotasks() {
 
     for (int i = 0; i < num_tasks; i++) {
       HandleScope scope(this);
-      Handle<JSFunction> microtask(JSFunction::cast(queue->get(i)), this);
-      // TODO(adamk): This should ignore/clear exceptions instead of Checking.
-      Execution::Call(this, microtask, factory()->undefined_value(),
-                      0, NULL).Check();
+      Handle<Object> microtask(queue->get(i), this);
+      if (microtask->IsJSFunction()) {
+        Handle<JSFunction> microtask_function =
+            Handle<JSFunction>::cast(microtask);
+        Handle<Object> exception;
+        MaybeHandle<Object> result = Execution::TryCall(
+            microtask_function, factory()->undefined_value(),
+            0, NULL, &exception);
+        // If execution is terminating, just bail out.
+        if (result.is_null() &&
+            !exception.is_null() &&
+            *exception == heap()->termination_exception()) {
+          // Clear out any remaining callbacks in the queue.
+          heap()->set_microtask_queue(heap()->empty_fixed_array());
+          set_pending_microtask_count(0);
+          return;
+        }
+      } else {
+        Handle<CallHandlerInfo> callback_info =
+            Handle<CallHandlerInfo>::cast(microtask);
+        v8::MicrotaskCallback callback =
+            v8::ToCData<v8::MicrotaskCallback>(callback_info->callback());
+        void* data = v8::ToCData<void*>(callback_info->data());
+        callback(data);
+      }
     }
   }
-
-  handle_scope_implementer()->DecrementCallDepth();
 }
 
 

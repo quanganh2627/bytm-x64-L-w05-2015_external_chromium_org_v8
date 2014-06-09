@@ -5,18 +5,17 @@
 #ifndef V8_CODE_STUBS_H_
 #define V8_CODE_STUBS_H_
 
-#include "allocation.h"
-#include "assembler.h"
-#include "codegen.h"
-#include "globals.h"
-#include "macro-assembler.h"
+#include "src/allocation.h"
+#include "src/assembler.h"
+#include "src/codegen.h"
+#include "src/globals.h"
+#include "src/macro-assembler.h"
 
 namespace v8 {
 namespace internal {
 
 // List of code stubs used on all platforms.
 #define CODE_STUB_LIST_ALL_PLATFORMS(V)  \
-  V(ArrayShift)                          \
   V(CallFunction)                        \
   V(CallConstruct)                       \
   V(BinaryOpIC)                          \
@@ -30,6 +29,7 @@ namespace internal {
   V(CompareNilIC)                        \
   V(MathPow)                             \
   V(CallIC)                              \
+  V(CallIC_Array)                        \
   V(FunctionPrototype)                   \
   V(RecordWrite)                         \
   V(StoreBufferOverflow)                 \
@@ -437,17 +437,17 @@ class RuntimeCallHelper {
 } }  // namespace v8::internal
 
 #if V8_TARGET_ARCH_IA32
-#include "ia32/code-stubs-ia32.h"
+#include "src/ia32/code-stubs-ia32.h"
 #elif V8_TARGET_ARCH_X64
-#include "x64/code-stubs-x64.h"
+#include "src/x64/code-stubs-x64.h"
 #elif V8_TARGET_ARCH_ARM64
-#include "arm64/code-stubs-arm64.h"
+#include "src/arm64/code-stubs-arm64.h"
 #elif V8_TARGET_ARCH_ARM
-#include "arm/code-stubs-arm.h"
+#include "src/arm/code-stubs-arm.h"
 #elif V8_TARGET_ARCH_MIPS
-#include "mips/code-stubs-mips.h"
+#include "src/mips/code-stubs-mips.h"
 #elif V8_TARGET_ARCH_X87
-#include "x87/code-stubs-x87.h"
+#include "src/x87/code-stubs-x87.h"
 #else
 #error Unsupported target architecture.
 #endif
@@ -585,9 +585,6 @@ class FastNewContextStub V8_FINAL : public HydrogenCodeStub {
 
 class FastCloneShallowArrayStub : public HydrogenCodeStub {
  public:
-  // Maximum length of copied elements array.
-  static const int kMaximumInlinedCloneLength = 8;
-
   FastCloneShallowArrayStub(Isolate* isolate,
                             AllocationSiteMode allocation_site_mode)
       : HydrogenCodeStub(isolate),
@@ -817,17 +814,28 @@ class CallICStub: public PlatformCodeStub {
 
  protected:
   virtual int MinorKey() { return GetExtraICState(); }
-  virtual void PrintState(StringStream* stream) V8_FINAL V8_OVERRIDE;
+  virtual void PrintState(StringStream* stream) V8_OVERRIDE;
 
- private:
   virtual CodeStub::Major MajorKey() { return CallIC; }
 
   // Code generation helpers.
-  void GenerateMiss(MacroAssembler* masm);
-  void Generate_CustomFeedbackCall(MacroAssembler* masm);
-  void Generate_MonomorphicArray(MacroAssembler* masm, Label* miss);
+  void GenerateMiss(MacroAssembler* masm, IC::UtilityId id);
 
-  CallIC::State state_;
+  const CallIC::State state_;
+};
+
+
+class CallIC_ArrayStub: public CallICStub {
+ public:
+  CallIC_ArrayStub(Isolate* isolate, const CallIC::State& state_in)
+      : CallICStub(isolate, state_in) {}
+
+  virtual void Generate(MacroAssembler* masm);
+
+ protected:
+  virtual void PrintState(StringStream* stream) V8_OVERRIDE;
+
+  virtual CodeStub::Major MajorKey() { return CallIC_Array; }
 };
 
 
@@ -2400,36 +2408,6 @@ class ElementsTransitionAndStoreStub : public HydrogenCodeStub {
   KeyedAccessStoreMode store_mode_;
 
   DISALLOW_COPY_AND_ASSIGN(ElementsTransitionAndStoreStub);
-};
-
-
-class ArrayShiftStub V8_FINAL : public HydrogenCodeStub {
- public:
-  ArrayShiftStub(Isolate* isolate, ElementsKind kind)
-      : HydrogenCodeStub(isolate), kind_(kind) { }
-
-  ElementsKind kind() const { return kind_; }
-
-  virtual Handle<Code> GenerateCode() V8_OVERRIDE;
-
-  virtual void InitializeInterfaceDescriptor(
-      CodeStubInterfaceDescriptor* descriptor) V8_OVERRIDE;
-
-  // Inline Array.shift() for arrays up to this length.
-  static const int kInlineThreshold = 16;
-
-  // Parameters accessed via CodeStubGraphBuilder::GetParameter()
-  static const int kReceiver = 0;
-
- private:
-  Major MajorKey() { return ArrayShift; }
-  int NotMissMinorKey() {
-    return kind_;
-  }
-
-  ElementsKind kind_;
-
-  DISALLOW_COPY_AND_ASSIGN(ArrayShiftStub);
 };
 
 

@@ -5,9 +5,10 @@
 #ifndef V8_PLATFORM_MUTEX_H_
 #define V8_PLATFORM_MUTEX_H_
 
-#include "../lazy-instance.h"
+#include "src/checks.h"
+#include "src/lazy-instance.h"
 #if V8_OS_WIN
-#include "../win32-headers.h"
+#include "src/win32-headers.h"
 #endif
 
 #if V8_OS_POSIX

@@ -8,7 +8,8 @@ LOCAL_MODULE_STEM := js2c
 LOCAL_MODULE_SUFFIX := .stamp
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
-gyp_intermediate_dir := $(call local-intermediates-dir)
+LOCAL_MULTILIB := $(GYP_HOST_MULTILIB)
+gyp_intermediate_dir := $(call local-intermediates-dir,,$(GYP_HOST_VAR_PREFIX))
 gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_VAR_PREFIX))
 
 # Make sure our deps are built first.
@@ -31,9 +32,9 @@ $(gyp_shared_intermediate_dir)/experimental-libraries.cc: gyp_var_prefix := $(GY
 $(gyp_shared_intermediate_dir)/experimental-libraries.cc: gyp_intermediate_dir := $(abspath $(gyp_intermediate_dir))
 $(gyp_shared_intermediate_dir)/experimental-libraries.cc: gyp_shared_intermediate_dir := $(abspath $(gyp_shared_intermediate_dir))
 $(gyp_shared_intermediate_dir)/experimental-libraries.cc: export PATH := $(subst $(ANDROID_BUILD_PATHS),,$(PATH))
-$(gyp_shared_intermediate_dir)/experimental-libraries.cc: $(LOCAL_PATH)/v8/tools/js2c.py $(LOCAL_PATH)/v8/src/macros.py $(LOCAL_PATH)/v8/src/symbol.js $(LOCAL_PATH)/v8/src/proxy.js $(LOCAL_PATH)/v8/src/collection.js $(LOCAL_PATH)/v8/src/generator.js $(LOCAL_PATH)/v8/src/array-iterator.js $(LOCAL_PATH)/v8/src/harmony-string.js $(LOCAL_PATH)/v8/src/harmony-array.js $(LOCAL_PATH)/v8/src/harmony-math.js $(GYP_TARGET_DEPENDENCIES)
+$(gyp_shared_intermediate_dir)/experimental-libraries.cc: $(LOCAL_PATH)/v8/tools/js2c.py $(LOCAL_PATH)/v8/src/macros.py $(LOCAL_PATH)/v8/src/symbol.js $(LOCAL_PATH)/v8/src/proxy.js $(LOCAL_PATH)/v8/src/collection.js $(LOCAL_PATH)/v8/src/collection-iterator.js $(LOCAL_PATH)/v8/src/generator.js $(LOCAL_PATH)/v8/src/array-iterator.js $(LOCAL_PATH)/v8/src/harmony-string.js $(LOCAL_PATH)/v8/src/harmony-array.js $(LOCAL_PATH)/v8/src/harmony-math.js $(GYP_TARGET_DEPENDENCIES)
 	@echo "Gyp action: v8_tools_gyp_v8_gyp_js2c_host_js2c_experimental ($@)"
-	$(hide)cd $(gyp_local_path)/v8/tools/gyp; mkdir -p $(gyp_shared_intermediate_dir); python ../../tools/js2c.py "$(gyp_shared_intermediate_dir)/experimental-libraries.cc" EXPERIMENTAL off ../../src/macros.py ../../src/symbol.js ../../src/proxy.js ../../src/collection.js ../../src/generator.js ../../src/array-iterator.js ../../src/harmony-string.js ../../src/harmony-array.js ../../src/harmony-math.js
+	$(hide)cd $(gyp_local_path)/v8/tools/gyp; mkdir -p $(gyp_shared_intermediate_dir); python ../../tools/js2c.py "$(gyp_shared_intermediate_dir)/experimental-libraries.cc" EXPERIMENTAL off ../../src/macros.py ../../src/symbol.js ../../src/proxy.js ../../src/collection.js ../../src/collection-iterator.js ../../src/generator.js ../../src/array-iterator.js ../../src/harmony-string.js ../../src/harmony-array.js ../../src/harmony-math.js
 
 
 
@@ -55,6 +56,7 @@ js2c: v8_tools_gyp_js2c_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 LOCAL_MODULE_PATH := $(PRODUCT_OUT)/gyp_stamp
 LOCAL_UNINSTALLABLE_MODULE := true
+LOCAL_2ND_ARCH_VAR_PREFIX := $(GYP_HOST_VAR_PREFIX)
 
 include $(BUILD_SYSTEM)/base_rules.mk
 
@@ -62,3 +64,5 @@ $(LOCAL_BUILT_MODULE): $(LOCAL_ADDITIONAL_DEPENDENCIES)
 	$(hide) echo "Gyp timestamp: $@"
 	$(hide) mkdir -p $(dir $@)
 	$(hide) touch $@
+
+LOCAL_2ND_ARCH_VAR_PREFIX :=

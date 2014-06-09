@@ -28,15 +28,15 @@
 #include <stdlib.h>
 #include <utility>
 
-#include "v8.h"
+#include "src/v8.h"
 
-#include "compilation-cache.h"
-#include "execution.h"
-#include "factory.h"
-#include "macro-assembler.h"
-#include "global-handles.h"
-#include "stub-cache.h"
-#include "cctest.h"
+#include "src/compilation-cache.h"
+#include "src/execution.h"
+#include "src/factory.h"
+#include "src/global-handles.h"
+#include "src/macro-assembler.h"
+#include "src/stub-cache.h"
+#include "test/cctest/cctest.h"
 
 using namespace v8::internal;
 
@@ -2200,6 +2200,11 @@ TEST(OptimizedPretenuringAllocationFolding) {
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
 
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
       source,
@@ -2244,6 +2249,11 @@ TEST(OptimizedPretenuringObjectArrayLiterals) {
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
 
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
       source,
@@ -2278,6 +2288,12 @@ TEST(OptimizedPretenuringMixedInObjectProperties) {
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
+
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
 
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
@@ -2320,6 +2336,11 @@ TEST(OptimizedPretenuringDoubleArrayProperties) {
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
 
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
       source,
@@ -2355,6 +2376,11 @@ TEST(OptimizedPretenuringdoubleArrayLiterals) {
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
 
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
       source,
@@ -2389,6 +2415,11 @@ TEST(OptimizedPretenuringNestedMixedArrayLiterals) {
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
+
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
 
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
@@ -2434,6 +2465,11 @@ TEST(OptimizedPretenuringNestedObjectLiterals) {
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
 
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
       source,
@@ -2477,6 +2513,11 @@ TEST(OptimizedPretenuringNestedDoubleLiterals) {
   if (!CcTest::i_isolate()->use_crankshaft() || i::FLAG_always_opt) return;
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
+
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
 
   i::ScopedVector<char> source(1024);
   i::OS::SNPrintF(
@@ -2530,7 +2571,15 @@ TEST(OptimizedPretenuringConstructorCalls) {
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
 
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
   i::ScopedVector<char> source(1024);
+  // Call new is doing slack tracking for the first
+  // JSFunction::kGenerousAllocationCount allocations, and we can't find
+  // mementos during that time.
   i::OS::SNPrintF(
       source,
       "var number_elements = %d;"
@@ -2549,7 +2598,8 @@ TEST(OptimizedPretenuringConstructorCalls) {
       "f(); f();"
       "%%OptimizeFunctionOnNextCall(f);"
       "f();",
-      AllocationSite::kPretenureMinimumCreated);
+      AllocationSite::kPretenureMinimumCreated +
+      JSFunction::kGenerousAllocationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -2572,10 +2622,18 @@ TEST(OptimizedPretenuringCallNew) {
   if (i::FLAG_gc_global || i::FLAG_stress_compaction) return;
   v8::HandleScope scope(CcTest::isolate());
 
+  // Grow new space unitl maximum capacity reached.
+  while (!CcTest::heap()->new_space()->IsAtMaximumCapacity()) {
+    CcTest::heap()->new_space()->Grow();
+  }
+
   i::ScopedVector<char> source(1024);
+  // Call new is doing slack tracking for the first
+  // JSFunction::kGenerousAllocationCount allocations, and we can't find
+  // mementos during that time.
   i::OS::SNPrintF(
       source,
-      "var number_elements = 100;"
+      "var number_elements = %d;"
       "var elements = new Array(number_elements);"
       "function g() { this.a = 0; }"
       "function f() {"
@@ -2588,7 +2646,8 @@ TEST(OptimizedPretenuringCallNew) {
       "f(); f();"
       "%%OptimizeFunctionOnNextCall(f);"
       "f();",
-      AllocationSite::kPretenureMinimumCreated);
+      AllocationSite::kPretenureMinimumCreated +
+      JSFunction::kGenerousAllocationCount);
 
   v8::Local<v8::Value> res = CompileRun(source.start());
 
@@ -3803,7 +3862,7 @@ TEST(EnsureAllocationSiteDependentCodesProcessed) {
   // Now make sure that a gc should get rid of the function, even though we
   // still have the allocation site alive.
   for (int i = 0; i < 4; i++) {
-    heap->CollectAllGarbage(false);
+    heap->CollectAllGarbage(Heap::kNoGCFlags);
   }
 
   // The site still exists because of our global handle, but the code is no

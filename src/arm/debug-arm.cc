@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "v8.h"
+#include "src/v8.h"
 
 #if V8_TARGET_ARCH_ARM
 
-#include "codegen.h"
-#include "debug.h"
+#include "src/codegen.h"
+#include "src/debug.h"
 
 namespace v8 {
 namespace internal {
@@ -82,8 +82,6 @@ void BreakLocationIterator::ClearDebugBreakAtSlot() {
   rinfo()->PatchCode(original_rinfo()->pc(),
                      Assembler::kDebugBreakSlotInstructions);
 }
-
-const bool Debug::FramePaddingLayout::kIsSupported = false;
 
 
 #define __ ACCESS_MASM(masm)
@@ -292,7 +290,8 @@ void DebugCodegen::GenerateFrameDropperLiveEdit(MacroAssembler* masm) {
   masm->Abort(kLiveEditFrameDroppingIsNotSupportedOnArm);
 }
 
-const bool Debug::kFrameDropperSupported = false;
+
+const bool LiveEdit::kFrameDropperSupported = false;
 
 #undef __
 
