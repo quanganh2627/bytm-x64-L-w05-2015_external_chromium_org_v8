@@ -7013,6 +7013,7 @@ class Script: public Struct {
   V(Array.prototype, pop, ArrayPop)                   \
   V(Array.prototype, shift, ArrayShift)               \
   V(Function.prototype, apply, FunctionApply)         \
+  V(Function.prototype, call, FunctionCall)           \
   V(String.prototype, charCodeAt, StringCharCodeAt)   \
   V(String.prototype, charAt, StringCharAt)           \
   V(String, fromCharCode, StringFromCharCode)         \
@@ -8927,8 +8928,6 @@ class Name: public HeapObject {
 
   // Casting.
   static inline Name* cast(Object* obj);
-
-  bool IsCacheable(Isolate* isolate);
 
   DECLARE_PRINTER(Name)
 
