@@ -3,7 +3,7 @@
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-LOCAL_MODULE := v8_tools_gyp_v8_libbase_arm_gyp
+LOCAL_MODULE := v8_tools_gyp_v8_libbase_gyp
 LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_TARGET_ARCH := $(TARGET_$(GYP_VAR_PREFIX)ARCH)
@@ -41,14 +41,8 @@ MY_CFLAGS_Debug := \
 	-fPIC \
 	-Wno-unused-local-typedefs \
 	-Wno-format \
-	-fno-tree-sra \
-	-fno-partial-inlining \
-	-fno-early-inlining \
-	-fno-tree-copy-prop \
-	-fno-tree-loop-optimize \
-	-fno-move-loop-invariants \
-	-fno-caller-saves \
-	-Wno-psabi \
+	-m64 \
+	-march=x86-64 \
 	-ffunction-sections \
 	-funwind-tables \
 	-g \
@@ -95,7 +89,7 @@ MY_DEFS_Debug := \
 	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
 	'-DDATA_REDUCTION_PROXY_PROBE_URL="http://check.googlezip.net/connect"' \
 	'-DVIDEO_HOLE=1' \
-	'-DV8_TARGET_ARCH_ARM' \
+	'-DV8_TARGET_ARCH_X64' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
@@ -104,8 +98,6 @@ MY_DEFS_Debug := \
 	'-DUSE_STLPORT=1' \
 	'-D_STLP_USE_PTR_SPECIALIZATIONS=1' \
 	'-DCHROME_BUILD_ID=""' \
-	'-DARM_TEST' \
-	'-DCAN_USE_ARMV7_INSTRUCTIONS=1' \
 	'-DDYNAMIC_ANNOTATIONS_ENABLED=1' \
 	'-DWTF_USE_DYNAMIC_ANNOTATIONS=1' \
 	'-D_DEBUG' \
@@ -132,7 +124,6 @@ LOCAL_CPPFLAGS_Debug := \
 	-fno-threadsafe-statics \
 	-fvisibility-inlines-hidden \
 	-Wno-deprecated \
-	-Wno-abi \
 	-Wno-non-virtual-dtor \
 	-Wno-sign-promo \
 	-Wno-non-virtual-dtor
@@ -151,14 +142,8 @@ MY_CFLAGS_Release := \
 	-fPIC \
 	-Wno-unused-local-typedefs \
 	-Wno-format \
-	-fno-tree-sra \
-	-fno-partial-inlining \
-	-fno-early-inlining \
-	-fno-tree-copy-prop \
-	-fno-tree-loop-optimize \
-	-fno-move-loop-invariants \
-	-fno-caller-saves \
-	-Wno-psabi \
+	-m64 \
+	-march=x86-64 \
 	-ffunction-sections \
 	-funwind-tables \
 	-g \
@@ -207,7 +192,7 @@ MY_DEFS_Release := \
 	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
 	'-DDATA_REDUCTION_PROXY_PROBE_URL="http://check.googlezip.net/connect"' \
 	'-DVIDEO_HOLE=1' \
-	'-DV8_TARGET_ARCH_ARM' \
+	'-DV8_TARGET_ARCH_X64' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
@@ -216,8 +201,6 @@ MY_DEFS_Release := \
 	'-DUSE_STLPORT=1' \
 	'-D_STLP_USE_PTR_SPECIALIZATIONS=1' \
 	'-DCHROME_BUILD_ID=""' \
-	'-DARM_TEST' \
-	'-DCAN_USE_ARMV7_INSTRUCTIONS=1' \
 	'-DNDEBUG' \
 	'-DNVALGRIND' \
 	'-DDYNAMIC_ANNOTATIONS_ENABLED=0' \
@@ -239,7 +222,6 @@ LOCAL_CPPFLAGS_Release := \
 	-fno-threadsafe-statics \
 	-fvisibility-inlines-hidden \
 	-Wno-deprecated \
-	-Wno-abi \
 	-Wno-non-virtual-dtor \
 	-Wno-sign-promo \
 	-Wno-non-virtual-dtor
@@ -257,13 +239,11 @@ LOCAL_LDFLAGS_Debug := \
 	-Wl,--fatal-warnings \
 	-Wl,-z,noexecstack \
 	-fPIC \
-	-Wl,-z,relro \
-	-Wl,-z,now \
+	-m64 \
 	-fuse-ld=gold \
 	-nostdlib \
 	-Wl,--no-undefined \
 	-Wl,--exclude-libs=ALL \
-	-Wl,--icf=safe \
 	-Wl,--warn-shared-textrel \
 	-Wl,-O1 \
 	-Wl,--as-needed
@@ -275,13 +255,11 @@ LOCAL_LDFLAGS_Release := \
 	-Wl,--fatal-warnings \
 	-Wl,-z,noexecstack \
 	-fPIC \
-	-Wl,-z,relro \
-	-Wl,-z,now \
+	-m64 \
 	-fuse-ld=gold \
 	-nostdlib \
 	-Wl,--no-undefined \
 	-Wl,--exclude-libs=ALL \
-	-Wl,--icf=safe \
 	-Wl,-O1 \
 	-Wl,--as-needed \
 	-Wl,--gc-sections \
@@ -301,10 +279,10 @@ LOCAL_SHARED_LIBRARIES := \
 
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
-gyp_all_modules: v8_tools_gyp_v8_libbase_arm_gyp
+gyp_all_modules: v8_tools_gyp_v8_libbase_gyp
 
 # Alias gyp target name.
-.PHONY: v8_libbase.arm
-v8_libbase.arm: v8_tools_gyp_v8_libbase_arm_gyp
+.PHONY: v8_libbase
+v8_libbase: v8_tools_gyp_v8_libbase_gyp
 
 include $(BUILD_STATIC_LIBRARY)

@@ -3,7 +3,7 @@
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-LOCAL_MODULE := v8_tools_gyp_v8_libbase_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+LOCAL_MODULE := v8_tools_gyp_v8_libbase_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
@@ -43,7 +43,7 @@ MY_CFLAGS_Debug := \
 	-fPIC \
 	-Wno-unused-local-typedefs \
 	-Wno-format \
-	-m64 \
+	-m32 \
 	-Os \
 	-g \
 	-fomit-frame-pointer \
@@ -74,7 +74,7 @@ MY_DEFS_Debug := \
 	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
 	'-DDATA_REDUCTION_PROXY_PROBE_URL="http://check.googlezip.net/connect"' \
 	'-DVIDEO_HOLE=1' \
-	'-DV8_TARGET_ARCH_X64' \
+	'-DV8_TARGET_ARCH_IA32' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
@@ -117,7 +117,7 @@ MY_CFLAGS_Release := \
 	-fPIC \
 	-Wno-unused-local-typedefs \
 	-Wno-format \
-	-m64 \
+	-m32 \
 	-fno-ident \
 	-fdata-sections \
 	-ffunction-sections \
@@ -150,7 +150,7 @@ MY_DEFS_Release := \
 	'-DSPDY_PROXY_AUTH_ORIGIN="https://proxy.googlezip.net:443/"' \
 	'-DDATA_REDUCTION_PROXY_PROBE_URL="http://check.googlezip.net/connect"' \
 	'-DVIDEO_HOLE=1' \
-	'-DV8_TARGET_ARCH_X64' \
+	'-DV8_TARGET_ARCH_IA32' \
 	'-DV8_I18N_SUPPORT' \
 	'-DUSE_OPENSSL=1' \
 	'-DUSE_OPENSSL_CERTS=1' \
@@ -187,7 +187,7 @@ LOCAL_LDFLAGS_Debug := \
 	-Wl,-z,relro \
 	-pthread \
 	-fPIC \
-	-m64
+	-m32
 
 
 LOCAL_LDFLAGS_Release := \
@@ -195,7 +195,7 @@ LOCAL_LDFLAGS_Release := \
 	-Wl,-z,relro \
 	-pthread \
 	-fPIC \
-	-m64
+	-m32
 
 
 LOCAL_LDFLAGS := $(LOCAL_LDFLAGS_$(GYP_CONFIGURATION))
@@ -209,10 +209,10 @@ LOCAL_SHARED_LIBRARIES :=
 
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
-gyp_all_modules: v8_tools_gyp_v8_libbase_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+gyp_all_modules: v8_tools_gyp_v8_libbase_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 # Alias gyp target name.
-.PHONY: v8_libbase.x64
-v8_libbase.x64: v8_tools_gyp_v8_libbase_x64_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+.PHONY: v8_libbase
+v8_libbase: v8_tools_gyp_v8_libbase_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 include $(BUILD_HOST_STATIC_LIBRARY)

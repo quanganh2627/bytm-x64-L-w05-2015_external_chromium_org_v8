@@ -3,7 +3,7 @@
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-LOCAL_MODULE := v8_tools_gyp_v8_libbase_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+LOCAL_MODULE := v8_tools_gyp_v8_libbase_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
@@ -42,6 +42,7 @@ MY_CFLAGS_Debug := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-m32 \
 	-Os \
@@ -119,6 +120,7 @@ MY_CFLAGS_Release := \
 	-fvisibility=hidden \
 	-pipe \
 	-fPIC \
+	-Wno-unused-local-typedefs \
 	-Wno-format \
 	-m32 \
 	-fno-ident \
@@ -189,12 +191,16 @@ LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
 ### Rules for final target.
 
 LOCAL_LDFLAGS_Debug := \
+	-Wl,-z,now \
+	-Wl,-z,relro \
 	-pthread \
 	-fPIC \
 	-m32
 
 
 LOCAL_LDFLAGS_Release := \
+	-Wl,-z,now \
+	-Wl,-z,relro \
 	-pthread \
 	-fPIC \
 	-m32
@@ -211,10 +217,10 @@ LOCAL_SHARED_LIBRARIES :=
 
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
-gyp_all_modules: v8_tools_gyp_v8_libbase_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+gyp_all_modules: v8_tools_gyp_v8_libbase_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 # Alias gyp target name.
-.PHONY: v8_libbase.mipsel
-v8_libbase.mipsel: v8_tools_gyp_v8_libbase_mipsel_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
+.PHONY: v8_libbase
+v8_libbase: v8_tools_gyp_v8_libbase_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
 include $(BUILD_HOST_STATIC_LIBRARY)
