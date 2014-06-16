@@ -12,7 +12,6 @@ gyp_shared_intermediate_dir := $(call intermediates-dir-for,GYP,shared,,,$(GYP_V
 
 # Make sure our deps are built first.
 GYP_TARGET_DEPENDENCIES := \
-	$(call intermediates-dir-for,GYP,v8_tools_gyp_v8_libbase_x64_gyp,,,$(GYP_VAR_PREFIX))/v8_libbase.x64.stamp \
 	$(call intermediates-dir-for,GYP,third_party_icu_icui18n_gyp,,,$(GYP_VAR_PREFIX))/icui18n.stamp \
 	$(call intermediates-dir-for,GYP,third_party_icu_icuuc_gyp,,,$(GYP_VAR_PREFIX))/icuuc.stamp
 
@@ -36,7 +35,6 @@ LOCAL_SRC_FILES := \
 	v8/src/assembler.cc \
 	v8/src/assert-scope.cc \
 	v8/src/ast.cc \
-	v8/src/atomicops_internals_x86_gcc.cc \
 	v8/src/bignum-dtoa.cc \
 	v8/src/bignum.cc \
 	v8/src/bootstrapper.cc \
@@ -71,6 +69,7 @@ LOCAL_SRC_FILES := \
 	v8/src/extensions/trigger-failure-extension.cc \
 	v8/src/factory.cc \
 	v8/src/fast-dtoa.cc \
+	v8/src/field-index.cc \
 	v8/src/fixed-dtoa.cc \
 	v8/src/flags.cc \
 	v8/src/frames.cc \
@@ -124,13 +123,13 @@ LOCAL_SRC_FILES := \
 	v8/src/liveedit.cc \
 	v8/src/log-utils.cc \
 	v8/src/log.cc \
+	v8/src/lookup.cc \
 	v8/src/mark-compact.cc \
 	v8/src/messages.cc \
 	v8/src/objects-debug.cc \
 	v8/src/objects-printer.cc \
 	v8/src/objects-visiting.cc \
 	v8/src/objects.cc \
-	v8/src/once.cc \
 	v8/src/optimizing-compiler-thread.cc \
 	v8/src/parser.cc \
 	v8/src/platform/time.cc \
@@ -287,6 +286,7 @@ LOCAL_C_INCLUDES_Debug := \
 	$(gyp_shared_intermediate_dir)/shim_headers/icuuc/target \
 	$(gyp_shared_intermediate_dir)/shim_headers/icui18n/target \
 	$(LOCAL_PATH)/v8 \
+	$(gyp_shared_intermediate_dir) \
 	$(PWD)/external/icu4c/common \
 	$(PWD)/external/icu4c/i18n \
 	$(PWD)/frameworks/wilhelm/include \
@@ -391,6 +391,7 @@ LOCAL_C_INCLUDES_Release := \
 	$(gyp_shared_intermediate_dir)/shim_headers/icuuc/target \
 	$(gyp_shared_intermediate_dir)/shim_headers/icui18n/target \
 	$(LOCAL_PATH)/v8 \
+	$(gyp_shared_intermediate_dir) \
 	$(PWD)/external/icu4c/common \
 	$(PWD)/external/icu4c/i18n \
 	$(PWD)/frameworks/wilhelm/include \

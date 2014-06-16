@@ -2,10 +2,9 @@
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE_CLASS := GYP
+LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 LOCAL_MODULE := v8_tools_gyp_v8_libbase_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
-LOCAL_MODULE_STEM := v8_libbase.ia32
-LOCAL_MODULE_SUFFIX := .stamp
+LOCAL_MODULE_SUFFIX := .a
 LOCAL_MODULE_TAGS := optional
 LOCAL_IS_HOST_MODULE := true
 LOCAL_MULTILIB := $(GYP_HOST_MULTILIB)
@@ -20,11 +19,14 @@ GYP_GENERATED_OUTPUTS :=
 # Make sure our deps and generated files are built first.
 LOCAL_ADDITIONAL_DEPENDENCIES := $(GYP_TARGET_DEPENDENCIES) $(GYP_GENERATED_OUTPUTS)
 
+LOCAL_CPP_EXTENSION := .cc
 LOCAL_GENERATED_SOURCES :=
 
 GYP_COPIED_SOURCE_ORIGIN_DIRS :=
 
-LOCAL_SRC_FILES :=
+LOCAL_SRC_FILES := \
+	v8/src/base/atomicops_internals_x86_gcc.cc \
+	v8/src/base/once.cc
 
 
 # Flags passed to both C and C++ files.
@@ -89,7 +91,8 @@ MY_DEFS_Debug := \
 
 # Include paths placed before CFLAGS/CPPFLAGS
 LOCAL_C_INCLUDES_Debug := \
-	$(LOCAL_PATH)/v8
+	$(LOCAL_PATH)/v8 \
+	$(gyp_shared_intermediate_dir)
 
 
 # Flags passed to only C++ (and not C) files.
@@ -159,7 +162,8 @@ MY_DEFS_Release := \
 
 # Include paths placed before CFLAGS/CPPFLAGS
 LOCAL_C_INCLUDES_Release := \
-	$(LOCAL_PATH)/v8
+	$(LOCAL_PATH)/v8 \
+	$(gyp_shared_intermediate_dir)
 
 
 # Flags passed to only C++ (and not C) files.
@@ -177,6 +181,32 @@ LOCAL_C_INCLUDES := $(GYP_COPIED_SOURCE_ORIGIN_DIRS) $(LOCAL_C_INCLUDES_$(GYP_CO
 LOCAL_CPPFLAGS := $(LOCAL_CPPFLAGS_$(GYP_CONFIGURATION))
 LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
 ### Rules for final target.
+
+LOCAL_LDFLAGS_Debug := \
+	-Wl,-z,now \
+	-Wl,-z,relro \
+	-pthread \
+	-fPIC \
+	-m32
+
+
+LOCAL_LDFLAGS_Release := \
+	-Wl,-z,now \
+	-Wl,-z,relro \
+	-pthread \
+	-fPIC \
+	-m32
+
+
+LOCAL_LDFLAGS := $(LOCAL_LDFLAGS_$(GYP_CONFIGURATION))
+
+LOCAL_STATIC_LIBRARIES :=
+
+# Enable grouping to fix circular references
+LOCAL_GROUP_STATIC_LIBRARIES := true
+
+LOCAL_SHARED_LIBRARIES :=
+
 # Add target alias to "gyp_all_modules" target.
 .PHONY: gyp_all_modules
 gyp_all_modules: v8_tools_gyp_v8_libbase_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
@@ -185,15 +215,4 @@ gyp_all_modules: v8_tools_gyp_v8_libbase_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_ho
 .PHONY: v8_libbase.ia32
 v8_libbase.ia32: v8_tools_gyp_v8_libbase_ia32_$(TARGET_$(GYP_VAR_PREFIX)ARCH)_host_gyp
 
-LOCAL_MODULE_PATH := $(PRODUCT_OUT)/gyp_stamp
-LOCAL_UNINSTALLABLE_MODULE := true
-LOCAL_2ND_ARCH_VAR_PREFIX := $(GYP_HOST_VAR_PREFIX)
-
-include $(BUILD_SYSTEM)/base_rules.mk
-
-$(LOCAL_BUILT_MODULE): $(LOCAL_ADDITIONAL_DEPENDENCIES)
-	$(hide) echo "Gyp timestamp: $@"
-	$(hide) mkdir -p $(dir $@)
-	$(hide) touch $@
-
-LOCAL_2ND_ARCH_VAR_PREFIX :=
+include $(BUILD_HOST_STATIC_LIBRARY)
