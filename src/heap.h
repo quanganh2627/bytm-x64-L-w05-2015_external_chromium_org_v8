@@ -277,6 +277,7 @@ namespace internal {
   V(constructor_string, "constructor")                                   \
   V(dot_result_string, ".result")                                        \
   V(dot_for_string, ".for.")                                             \
+  V(dot_iterable_string, ".iterable")                                    \
   V(dot_iterator_string, ".iterator")                                    \
   V(dot_generator_object_string, ".generator_object")                    \
   V(eval_string, "eval")                                                 \
@@ -764,10 +765,6 @@ class Heap {
   // Check whether the heap is currently iterable.
   bool IsHeapIterable();
 
-  // Ensure that we have swept all spaces in such a way that we can iterate
-  // over all objects.  May cause a GC.
-  void MakeHeapIterable();
-
   // Notify the heap that a context has been disposed.
   int NotifyContextDisposed();
 
@@ -1036,11 +1033,6 @@ class Heap {
 
   void CreateApiObjects();
 
-  // Adjusts the amount of registered external memory.
-  // Returns the adjusted value.
-  inline int64_t AdjustAmountOfExternalAllocatedMemory(
-      int64_t change_in_bytes);
-
   inline intptr_t PromotedTotalSize() {
     int64_t total = PromotedSpaceSizeOfObjects() + PromotedExternalMemorySize();
     if (total > kMaxInt) return static_cast<intptr_t>(kMaxInt);
@@ -1094,9 +1086,23 @@ class Heap {
       700 * kPointerMultiplier;
 
   intptr_t OldGenerationAllocationLimit(intptr_t old_gen_size) {
-    intptr_t limit = FLAG_stress_compaction
-        ? old_gen_size + old_gen_size / 10
-        : old_gen_size * old_space_growing_factor_;
+    intptr_t limit;
+    if (FLAG_stress_compaction) {
+      limit = old_gen_size + old_gen_size / 10;
+    } else if (old_gen_size < max_old_generation_size_ / 8) {
+      if (max_old_generation_size_ <= kMaxOldSpaceSizeMediumMemoryDevice) {
+        limit = old_gen_size * 2;
+      } else {
+        limit = old_gen_size * 4;
+      }
+    } else if (old_gen_size < max_old_generation_size_ / 4) {
+      limit = static_cast<intptr_t>(old_gen_size * 1.5);
+    } else if (old_gen_size < max_old_generation_size_ / 2) {
+      limit = static_cast<intptr_t>(old_gen_size * 1.2);
+    } else {
+      limit = static_cast<intptr_t>(old_gen_size * 1.1);
+    }
+
     limit = Max(limit, kMinimumOldGenerationAllocationLimit);
     limit += new_space_.Capacity();
     intptr_t halfway_to_the_max = (old_gen_size + max_old_generation_size_) / 2;
@@ -1500,6 +1506,13 @@ class Heap {
  private:
   Heap();
 
+  // The amount of external memory registered through the API kept alive
+  // by global handles
+  int64_t amount_of_external_allocated_memory_;
+
+  // Caches the amount of external memory registered at the last global gc.
+  int64_t amount_of_external_allocated_memory_at_last_global_gc_;
+
   // This can be calculated directly from a pointer to the heap; however, it is
   // more expedient to get at the isolate directly from within Heap methods.
   Isolate* isolate_;
@@ -1513,11 +1526,6 @@ class Heap {
   intptr_t max_old_generation_size_;
   intptr_t max_executable_size_;
   intptr_t maximum_committed_;
-
-  // The old space growing factor is used in the old space heap growing
-  // strategy. The new old space size is the current old space size times
-  // old_space_growing_factor_.
-  int old_space_growing_factor_;
 
   // For keeping track of how much data has survived
   // scavenge since last new space expansion.
@@ -1589,17 +1597,6 @@ class Heap {
 
   // Used to adjust the limits that control the timing of the next GC.
   intptr_t size_of_old_gen_at_last_old_space_gc_;
-
-  // Limit on the amount of externally allocated memory allowed
-  // between global GCs. If reached a global GC is forced.
-  intptr_t external_allocation_limit_;
-
-  // The amount of external memory registered through the API kept alive
-  // by global handles
-  int64_t amount_of_external_allocated_memory_;
-
-  // Caches the amount of external memory registered at the last global gc.
-  int64_t amount_of_external_allocated_memory_at_last_global_gc_;
 
   // Indicates that an allocation has failed in the old generation since the
   // last GC.
@@ -1715,6 +1712,10 @@ class Heap {
   // so that the GC does not confuse some unintialized/stale memory
   // with the allocation memento of the object at the top
   void EnsureFillerObjectAtTop();
+
+  // Ensure that we have swept all spaces in such a way that we can iterate
+  // over all objects.  May cause a GC.
+  void MakeHeapIterable();
 
   // Performs garbage collection operation.
   // Returns whether there is a chance that another major GC could
@@ -2180,10 +2181,11 @@ class Heap {
 
   int gc_callbacks_depth_;
 
-  friend class Factory;
-  friend class GCTracer;
   friend class AlwaysAllocateScope;
-  friend class Page;
+  friend class Factory;
+  friend class GCCallbacksScope;
+  friend class GCTracer;
+  friend class HeapIterator;
   friend class Isolate;
   friend class MarkCompactCollector;
   friend class MarkCompactMarkingVisitor;
@@ -2191,7 +2193,7 @@ class Heap {
 #ifdef VERIFY_HEAP
   friend class NoWeakObjectVerificationScope;
 #endif
-  friend class GCCallbacksScope;
+  friend class Page;
 
   DISALLOW_COPY_AND_ASSIGN(Heap);
 };
@@ -2412,6 +2414,9 @@ class KeyedLookupCache {
   static const int kMapHashShift = 5;
   static const int kHashMask = -4;  // Zero the last two bits.
   static const int kEntriesPerBucket = 4;
+  static const int kEntryLength = 2;
+  static const int kMapIndex = 0;
+  static const int kKeyIndex = 1;
   static const int kNotFound = -1;
 
   // kEntriesPerBucket should be a power of 2.

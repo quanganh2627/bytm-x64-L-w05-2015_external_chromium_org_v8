@@ -12,10 +12,12 @@
 #ifndef V8_OBJECTS_INL_H_
 #define V8_OBJECTS_INL_H_
 
+#include "src/base/atomicops.h"
 #include "src/elements.h"
 #include "src/objects.h"
 #include "src/contexts.h"
 #include "src/conversions-inl.h"
+#include "src/field-index-inl.h"
 #include "src/heap.h"
 #include "src/isolate.h"
 #include "src/heap-inl.h"
@@ -27,6 +29,7 @@
 #include "src/incremental-marking.h"
 #include "src/transitions-inl.h"
 #include "src/objects-visiting.h"
+#include "src/lookup.h"
 
 namespace v8 {
 namespace internal {
@@ -662,8 +665,7 @@ bool Object::IsJSObject() {
 
 bool Object::IsJSProxy() {
   if (!Object::IsHeapObject()) return false;
-  InstanceType type = HeapObject::cast(this)->map()->instance_type();
-  return FIRST_JS_PROXY_TYPE <= type && type <= LAST_JS_PROXY_TYPE;
+  return  HeapObject::cast(this)->map()->IsJSProxyMap();
 }
 
 
@@ -1051,8 +1053,8 @@ bool Object::HasSpecificClassOf(String* name) {
 
 MaybeHandle<Object> Object::GetProperty(Handle<Object> object,
                                         Handle<Name> name) {
-  PropertyAttributes attributes;
-  return GetPropertyWithReceiver(object, object, name, &attributes);
+  LookupIterator it(object, name);
+  return GetProperty(&it);
 }
 
 
@@ -1122,24 +1124,26 @@ bool JSProxy::HasElementWithHandler(Handle<JSProxy> proxy, uint32_t index) {
 #define READ_FIELD(p, offset) \
   (*reinterpret_cast<Object**>(FIELD_ADDR(p, offset)))
 
-#define ACQUIRE_READ_FIELD(p, offset)                                    \
-  reinterpret_cast<Object*>(                                             \
-      Acquire_Load(reinterpret_cast<AtomicWord*>(FIELD_ADDR(p, offset))))
+#define ACQUIRE_READ_FIELD(p, offset)           \
+  reinterpret_cast<Object*>(base::Acquire_Load( \
+      reinterpret_cast<base::AtomicWord*>(FIELD_ADDR(p, offset))))
 
-#define NOBARRIER_READ_FIELD(p, offset)                                     \
-  reinterpret_cast<Object*>(                                                \
-      NoBarrier_Load(reinterpret_cast<AtomicWord*>(FIELD_ADDR(p, offset))))
+#define NOBARRIER_READ_FIELD(p, offset)           \
+  reinterpret_cast<Object*>(base::NoBarrier_Load( \
+      reinterpret_cast<base::AtomicWord*>(FIELD_ADDR(p, offset))))
 
 #define WRITE_FIELD(p, offset, value) \
   (*reinterpret_cast<Object**>(FIELD_ADDR(p, offset)) = value)
 
-#define RELEASE_WRITE_FIELD(p, offset, value)                           \
-  Release_Store(reinterpret_cast<AtomicWord*>(FIELD_ADDR(p, offset)),   \
-                reinterpret_cast<AtomicWord>(value));
+#define RELEASE_WRITE_FIELD(p, offset, value)                     \
+  base::Release_Store(                                            \
+      reinterpret_cast<base::AtomicWord*>(FIELD_ADDR(p, offset)), \
+      reinterpret_cast<base::AtomicWord>(value));
 
-#define NOBARRIER_WRITE_FIELD(p, offset, value)                            \
-  NoBarrier_Store(reinterpret_cast<AtomicWord*>(FIELD_ADDR(p, offset)),    \
-                  reinterpret_cast<AtomicWord>(value));
+#define NOBARRIER_WRITE_FIELD(p, offset, value)                   \
+  base::NoBarrier_Store(                                          \
+      reinterpret_cast<base::AtomicWord*>(FIELD_ADDR(p, offset)), \
+      reinterpret_cast<base::AtomicWord>(value));
 
 #define WRITE_BARRIER(heap, object, offset, value)                      \
   heap->incremental_marking()->RecordWrite(                             \
@@ -1235,16 +1239,17 @@ bool JSProxy::HasElementWithHandler(Handle<JSProxy> proxy, uint32_t index) {
 #define READ_BYTE_FIELD(p, offset) \
   (*reinterpret_cast<byte*>(FIELD_ADDR(p, offset)))
 
-#define NOBARRIER_READ_BYTE_FIELD(p, offset)               \
-  static_cast<byte>(NoBarrier_Load(                        \
-      reinterpret_cast<Atomic8*>(FIELD_ADDR(p, offset))) )
+#define NOBARRIER_READ_BYTE_FIELD(p, offset) \
+  static_cast<byte>(base::NoBarrier_Load(    \
+      reinterpret_cast<base::Atomic8*>(FIELD_ADDR(p, offset))))
 
 #define WRITE_BYTE_FIELD(p, offset, value) \
   (*reinterpret_cast<byte*>(FIELD_ADDR(p, offset)) = value)
 
-#define NOBARRIER_WRITE_BYTE_FIELD(p, offset, value)                 \
-  NoBarrier_Store(reinterpret_cast<Atomic8*>(FIELD_ADDR(p, offset)), \
-                  static_cast<Atomic8>(value));
+#define NOBARRIER_WRITE_BYTE_FIELD(p, offset, value)           \
+  base::NoBarrier_Store(                                       \
+      reinterpret_cast<base::Atomic8*>(FIELD_ADDR(p, offset)), \
+      static_cast<base::Atomic8>(value));
 
 Object** HeapObject::RawField(HeapObject* obj, int byte_offset) {
   return &READ_FIELD(obj, byte_offset);
@@ -1941,29 +1946,22 @@ void JSObject::SetInternalField(int index, Smi* value) {
 // Access fast-case object properties at index. The use of these routines
 // is needed to correctly distinguish between properties stored in-object and
 // properties stored in the properties array.
-Object* JSObject::RawFastPropertyAt(int index) {
-  // Adjust for the number of properties stored in the object.
-  index -= map()->inobject_properties();
-  if (index < 0) {
-    int offset = map()->instance_size() + (index * kPointerSize);
-    return READ_FIELD(this, offset);
+Object* JSObject::RawFastPropertyAt(FieldIndex index) {
+  if (index.is_inobject()) {
+    return READ_FIELD(this, index.offset());
   } else {
-    ASSERT(index < properties()->length());
-    return properties()->get(index);
+    return properties()->get(index.outobject_array_index());
   }
 }
 
 
-void JSObject::FastPropertyAtPut(int index, Object* value) {
-  // Adjust for the number of properties stored in the object.
-  index -= map()->inobject_properties();
-  if (index < 0) {
-    int offset = map()->instance_size() + (index * kPointerSize);
+void JSObject::FastPropertyAtPut(FieldIndex index, Object* value) {
+  if (index.is_inobject()) {
+    int offset = index.offset();
     WRITE_FIELD(this, offset, value);
     WRITE_BARRIER(GetHeap(), this, offset, value);
   } else {
-    ASSERT(index < properties()->length());
-    properties()->set(index, value);
+    properties()->set(index.outobject_array_index(), value);
   }
 }
 
@@ -4072,7 +4070,7 @@ int Map::pre_allocated_property_fields() {
 int Map::GetInObjectPropertyOffset(int index) {
   // Adjust for the number of properties stored in the object.
   index -= inobject_properties();
-  ASSERT(index < 0);
+  ASSERT(index <= 0);
   return instance_size() + (index * kPointerSize);
 }
 
@@ -6420,7 +6418,7 @@ bool JSReceiver::HasProperty(Handle<JSReceiver> object,
     Handle<JSProxy> proxy = Handle<JSProxy>::cast(object);
     return JSProxy::HasPropertyWithHandler(proxy, name);
   }
-  return GetPropertyAttribute(object, name) != ABSENT;
+  return GetPropertyAttributes(object, name) != ABSENT;
 }
 
 
@@ -6429,17 +6427,18 @@ bool JSReceiver::HasOwnProperty(Handle<JSReceiver> object, Handle<Name> name) {
     Handle<JSProxy> proxy = Handle<JSProxy>::cast(object);
     return JSProxy::HasPropertyWithHandler(proxy, name);
   }
-  return GetOwnPropertyAttribute(object, name) != ABSENT;
+  return GetOwnPropertyAttributes(object, name) != ABSENT;
 }
 
 
-PropertyAttributes JSReceiver::GetPropertyAttribute(Handle<JSReceiver> object,
-                                                    Handle<Name> key) {
+PropertyAttributes JSReceiver::GetPropertyAttributes(Handle<JSReceiver> object,
+                                                     Handle<Name> key) {
   uint32_t index;
   if (object->IsJSObject() && key->AsArrayIndex(&index)) {
     return GetElementAttribute(object, index);
   }
-  return GetPropertyAttributeWithReceiver(object, object, key);
+  LookupIterator it(object, key);
+  return GetPropertyAttributes(&it);
 }
 
 

@@ -8362,6 +8362,41 @@ TEST(TryCatchFinallyUsingTryCatchHandler) {
 }
 
 
+void CEvaluate(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  v8::HandleScope scope(args.GetIsolate());
+  CompileRun(args[0]->ToString());
+}
+
+
+TEST(TryCatchFinallyStoresMessageUsingTryCatchHandler) {
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+  Local<ObjectTemplate> templ = ObjectTemplate::New(isolate);
+  templ->Set(v8_str("CEvaluate"),
+             v8::FunctionTemplate::New(isolate, CEvaluate));
+  LocalContext context(0, templ);
+  v8::TryCatch try_catch;
+  CompileRun("try {"
+             "  CEvaluate('throw 1;');"
+             "} finally {"
+             "}");
+  CHECK(try_catch.HasCaught());
+  CHECK(!try_catch.Message().IsEmpty());
+  String::Utf8Value exception_value(try_catch.Exception());
+  CHECK_EQ(*exception_value, "1");
+  try_catch.Reset();
+  CompileRun("try {"
+             "  CEvaluate('throw 1;');"
+             "} finally {"
+             "  throw 2;"
+             "}");
+  CHECK(try_catch.HasCaught());
+  CHECK(!try_catch.Message().IsEmpty());
+  String::Utf8Value finally_exception_value(try_catch.Exception());
+  CHECK_EQ(*finally_exception_value, "2");
+}
+
+
 // For use within the TestSecurityHandler() test.
 static bool g_security_callback_result = false;
 static bool NamedSecurityTestCallback(Local<v8::Object> global,
@@ -17545,7 +17580,7 @@ TEST(ScriptIdInStackTrace) {
   script->Run();
   for (int i = 0; i < 2; i++) {
     CHECK(scriptIdInStack[i] != v8::Message::kNoScriptIdInfo);
-    CHECK_EQ(scriptIdInStack[i], script->GetId());
+    CHECK_EQ(scriptIdInStack[i], script->GetUnboundScript()->GetId());
   }
 }
 
@@ -18476,8 +18511,8 @@ THREADED_TEST(FunctionGetScriptId) {
       env->Global()->Get(v8::String::NewFromUtf8(isolate, "foo")));
   v8::Local<v8::Function> bar = v8::Local<v8::Function>::Cast(
       env->Global()->Get(v8::String::NewFromUtf8(isolate, "bar")));
-  CHECK_EQ(script->GetId(), foo->ScriptId());
-  CHECK_EQ(script->GetId(), bar->ScriptId());
+  CHECK_EQ(script->GetUnboundScript()->GetId(), foo->ScriptId());
+  CHECK_EQ(script->GetUnboundScript()->GetId(), bar->ScriptId());
 }
 
 
@@ -22568,6 +22603,72 @@ TEST(Promises) {
 }
 
 
+TEST(PromiseThen) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+  Handle<Object> global = context->Global();
+
+  // Creation.
+  Handle<v8::Promise::Resolver> pr = v8::Promise::Resolver::New(isolate);
+  Handle<v8::Promise::Resolver> qr = v8::Promise::Resolver::New(isolate);
+  Handle<v8::Promise> p = pr->GetPromise();
+  Handle<v8::Promise> q = qr->GetPromise();
+
+  CHECK(p->IsPromise());
+  CHECK(q->IsPromise());
+
+  pr->Resolve(v8::Integer::New(isolate, 1));
+  qr->Resolve(p);
+
+  // Chaining non-pending promises.
+  CompileRun(
+      "var x1 = 0;\n"
+      "var x2 = 0;\n"
+      "function f1(x) { x1 = x; return x+1 };\n"
+      "function f2(x) { x2 = x; return x+1 };\n");
+  Handle<Function> f1 = Handle<Function>::Cast(global->Get(v8_str("f1")));
+  Handle<Function> f2 = Handle<Function>::Cast(global->Get(v8_str("f2")));
+
+  // Chain
+  q->Chain(f1);
+  CHECK(global->Get(v8_str("x1"))->IsNumber());
+  CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
+  isolate->RunMicrotasks();
+  CHECK(!global->Get(v8_str("x1"))->IsNumber());
+  CHECK_EQ(p, global->Get(v8_str("x1")));
+
+  // Then
+  CompileRun("x1 = x2 = 0;");
+  q->Then(f1);
+  CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
+  isolate->RunMicrotasks();
+  CHECK_EQ(1, global->Get(v8_str("x1"))->Int32Value());
+
+  // Then
+  CompileRun("x1 = x2 = 0;");
+  pr = v8::Promise::Resolver::New(isolate);
+  qr = v8::Promise::Resolver::New(isolate);
+
+  qr->Resolve(pr);
+  qr->GetPromise()->Then(f1)->Then(f2);
+
+  CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
+  CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
+  isolate->RunMicrotasks();
+  CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
+  CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
+
+  pr->Resolve(v8::Integer::New(isolate, 3));
+
+  CHECK_EQ(0, global->Get(v8_str("x1"))->Int32Value());
+  CHECK_EQ(0, global->Get(v8_str("x2"))->Int32Value());
+  isolate->RunMicrotasks();
+  CHECK_EQ(3, global->Get(v8_str("x1"))->Int32Value());
+  CHECK_EQ(4, global->Get(v8_str("x2"))->Int32Value());
+}
+
+
 TEST(DisallowJavascriptExecutionScope) {
   LocalContext context;
   v8::Isolate* isolate = context->GetIsolate();
@@ -22678,4 +22779,30 @@ TEST(ScriptNameAndLineNumber) {
   CHECK_EQ(url, *utf8_name);
   int line_number = script->GetUnboundScript()->GetLineNumber(0);
   CHECK_EQ(13, line_number);
+}
+
+
+Local<v8::Context> call_eval_context;
+Local<v8::Function> call_eval_bound_function;
+static void CallEval(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  v8::Context::Scope scope(call_eval_context);
+  args.GetReturnValue().Set(
+      call_eval_bound_function->Call(call_eval_context->Global(), 0, NULL));
+}
+
+
+TEST(CrossActivationEval) {
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  {
+    call_eval_context = v8::Context::New(isolate);
+    v8::Context::Scope scope(call_eval_context);
+    call_eval_bound_function =
+        Local<Function>::Cast(CompileRun("eval.bind(this, '1')"));
+  }
+  env->Global()->Set(v8_str("CallEval"),
+      v8::FunctionTemplate::New(isolate, CallEval)->GetFunction());
+  Local<Value> result = CompileRun("CallEval();");
+  CHECK_EQ(result, v8::Integer::New(isolate, 1));
 }

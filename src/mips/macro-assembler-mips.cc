@@ -867,7 +867,7 @@ void MacroAssembler::Pref(int32_t hint, const MemOperand& rs) {
 }
 
 
-//------------Pseudo-instructions-------------
+// ------------Pseudo-instructions-------------
 
 void MacroAssembler::Ulw(Register rd, const MemOperand& rs) {
   lwr(rd, rs);
@@ -2114,7 +2114,7 @@ void MacroAssembler::BranchShort(Label* L, Condition cond, Register rs,
       case Ugreater:
         if (rt.imm32_ == 0) {
           offset = shifted_branch_offset(L, false);
-          bgtz(rs, offset);
+          bne(rs, zero_reg, offset);
         } else {
           ASSERT(!scratch.is(rs));
           r2 = scratch;
