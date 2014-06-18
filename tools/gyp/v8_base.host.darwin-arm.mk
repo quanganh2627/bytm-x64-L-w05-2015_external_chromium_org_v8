@@ -33,7 +33,6 @@ LOCAL_SRC_FILES := \
 	v8/src/arguments.cc \
 	v8/src/assembler.cc \
 	v8/src/assert-scope.cc \
-	v8/src/ast-value-factory.cc \
 	v8/src/ast.cc \
 	v8/src/bignum-dtoa.cc \
 	v8/src/bignum.cc \
