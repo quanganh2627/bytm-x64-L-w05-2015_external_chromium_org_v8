@@ -97,28 +97,6 @@ class JumpPatchSite BASE_EMBEDDED {
 };
 
 
-static void EmitStackCheck(MacroAssembler* masm_,
-                           Register stack_limit_scratch,
-                           int pointers = 0,
-                           Register scratch = sp) {
-  Isolate* isolate = masm_->isolate();
-  Label ok;
-  ASSERT(scratch.is(sp) == (pointers == 0));
-  Heap::RootListIndex index;
-  if (pointers != 0) {
-    __ Subu(scratch, sp, Operand(pointers * kPointerSize));
-    index = Heap::kRealStackLimitRootIndex;
-  } else {
-    index = Heap::kStackLimitRootIndex;
-  }
-  __ LoadRoot(stack_limit_scratch, index);
-  __ Branch(&ok, hs, scratch, Operand(stack_limit_scratch));
-  PredictableCodeSizeScope predictable(masm_, 4 * Assembler::kInstrSize);
-  __ Call(isolate->builtins()->StackCheck(), RelocInfo::CODE_TARGET);
-  __ bind(&ok);
-}
-
-
 // Generate code for a JS function.  On entry to the function the receiver
 // and arguments have been pushed on the stack left to right.  The actual
 // argument count matches the formal parameter count expected by the
@@ -185,7 +163,12 @@ void FullCodeGenerator::Generate() {
     ASSERT(!info->function()->is_generator() || locals_count == 0);
     if (locals_count > 0) {
       if (locals_count >= 128) {
-        EmitStackCheck(masm_, a2, locals_count, t5);
+        Label ok;
+        __ Subu(t5, sp, Operand(locals_count * kPointerSize));
+        __ LoadRoot(a2, Heap::kRealStackLimitRootIndex);
+        __ Branch(&ok, hs, t5, Operand(a2));
+        __ InvokeBuiltin(Builtins::STACK_OVERFLOW, CALL_FUNCTION);
+        __ bind(&ok);
       }
       __ LoadRoot(t5, Heap::kUndefinedValueRootIndex);
       int kMaxPushes = FLAG_optimize_for_size ? 4 : 32;
@@ -328,7 +311,14 @@ void FullCodeGenerator::Generate() {
 
     { Comment cmnt(masm_, "[ Stack check");
       PrepareForBailoutForId(BailoutId::Declarations(), NO_REGISTERS);
-      EmitStackCheck(masm_, at);
+      Label ok;
+      __ LoadRoot(at, Heap::kStackLimitRootIndex);
+      __ Branch(&ok, hs, sp, Operand(at));
+      Handle<Code> stack_check = isolate()->builtins()->StackCheck();
+      PredictableCodeSizeScope predictable(masm_,
+          masm_->CallSize(stack_check, RelocInfo::CODE_TARGET));
+      __ Call(stack_check, RelocInfo::CODE_TARGET);
+      __ bind(&ok);
     }
 
     { Comment cmnt(masm_, "[ Body");
@@ -1282,8 +1272,8 @@ void FullCodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
   Iteration loop_statement(this, stmt);
   increment_loop_depth();
 
-  // var iterator = iterable[@@iterator]()
-  VisitForAccumulatorValue(stmt->assign_iterator());
+  // var iterable = subject
+  VisitForAccumulatorValue(stmt->assign_iterable());
   __ mov(a0, v0);
 
   // As with for-in, skip the loop if the iterator is null or undefined.
@@ -1292,17 +1282,8 @@ void FullCodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
   __ LoadRoot(at, Heap::kNullValueRootIndex);
   __ Branch(loop_statement.break_label(), eq, a0, Operand(at));
 
-  // Convert the iterator to a JS object.
-  Label convert, done_convert;
-  __ JumpIfSmi(a0, &convert);
-  __ GetObjectType(a0, a1, a1);
-  __ Branch(&done_convert, ge, a1, Operand(FIRST_SPEC_OBJECT_TYPE));
-  __ bind(&convert);
-  __ push(a0);
-  __ InvokeBuiltin(Builtins::TO_OBJECT, CALL_FUNCTION);
-  __ mov(a0, v0);
-  __ bind(&done_convert);
-  __ push(a0);
+  // var iterator = iterable[Symbol.iterator]();
+  VisitForEffect(stmt->assign_iterator());
 
   // Loop entry.
   __ bind(loop_statement.continue_label());

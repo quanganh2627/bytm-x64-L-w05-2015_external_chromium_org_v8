@@ -179,16 +179,21 @@ DEFINE_implication(harmony, harmony_strings)
 DEFINE_implication(harmony, harmony_arrays)
 DEFINE_implication(harmony_modules, harmony_scoping)
 DEFINE_implication(harmony_collections, harmony_symbols)
+DEFINE_implication(harmony_generators, harmony_symbols)
+DEFINE_implication(harmony_iteration, harmony_symbols)
 
 DEFINE_implication(harmony, es_staging)
 DEFINE_implication(es_staging, harmony_maths)
 DEFINE_implication(es_staging, harmony_symbols)
+DEFINE_implication(es_staging, harmony_collections)
 
 // Flags for experimental implementation features.
 DEFINE_bool(packed_arrays, true, "optimizes arrays that have no holes")
 DEFINE_bool(smi_only_arrays, true, "tracks arrays with only smi values")
 DEFINE_bool(compiled_keyed_dictionary_loads, true,
             "use optimizing compiler to generate keyed dictionary load stubs")
+DEFINE_bool(compiled_keyed_generic_loads, false,
+            "use optimizing compiler to generate keyed generic load stubs")
 DEFINE_bool(clever_optimizations, true,
             "Optimize object size, Array shift, DOM strings and string +")
 // TODO(hpayer): We will remove this flag as soon as we have pretenuring
@@ -327,7 +332,7 @@ DEFINE_int(concurrent_recompilation_delay, 0,
            "artificial compilation delay in ms")
 DEFINE_bool(block_concurrent_recompilation, false,
             "block queued jobs until released")
-DEFINE_bool(concurrent_osr, false,
+DEFINE_bool(concurrent_osr, true,
             "concurrent on-stack replacement")
 DEFINE_implication(concurrent_osr, concurrent_recompilation)
 
@@ -368,6 +373,8 @@ DEFINE_bool(enable_neon, ENABLE_NEON_DEFAULT,
             "enable use of NEON instructions if available (ARM only)")
 DEFINE_bool(enable_sudiv, true,
             "enable use of SDIV and UDIV instructions if available (ARM only)")
+DEFINE_bool(enable_mls, true,
+            "enable use of MLS instructions if available (ARM only)")
 DEFINE_bool(enable_movw_movt, false,
             "enable loading 32-bit constant by means of movw/movt "
             "instruction pairs (ARM only)")
@@ -494,9 +501,6 @@ DEFINE_bool(trace_gc_verbose, false,
             "print more details following each garbage collection")
 DEFINE_bool(trace_fragmentation, false,
             "report fragmentation for old pointer and data pages")
-DEFINE_bool(trace_external_memory, false,
-            "print amount of external allocated memory after each time "
-            "it is adjusted.")
 DEFINE_bool(collect_maps, true,
             "garbage collect maps from which no objects can be reached")
 DEFINE_bool(weak_embedded_maps_in_ic, true,

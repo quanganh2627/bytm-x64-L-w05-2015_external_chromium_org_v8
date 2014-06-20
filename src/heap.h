@@ -277,6 +277,7 @@ namespace internal {
   V(constructor_string, "constructor")                                   \
   V(dot_result_string, ".result")                                        \
   V(dot_for_string, ".for.")                                             \
+  V(dot_iterable_string, ".iterable")                                    \
   V(dot_iterator_string, ".iterator")                                    \
   V(dot_generator_object_string, ".generator_object")                    \
   V(eval_string, "eval")                                                 \
@@ -550,7 +551,7 @@ class Heap {
   bool ConfigureHeap(int max_semi_space_size,
                      int max_old_space_size,
                      int max_executable_size,
-                     int code_range_size);
+                     size_t code_range_size);
   bool ConfigureHeapDefault();
 
   // Prepares the heap, setting up memory areas that are needed in the isolate
@@ -763,10 +764,6 @@ class Heap {
 
   // Check whether the heap is currently iterable.
   bool IsHeapIterable();
-
-  // Ensure that we have swept all spaces in such a way that we can iterate
-  // over all objects.  May cause a GC.
-  void MakeHeapIterable();
 
   // Notify the heap that a context has been disposed.
   int NotifyContextDisposed();
@@ -1035,11 +1032,6 @@ class Heap {
   //
 
   void CreateApiObjects();
-
-  // Adjusts the amount of registered external memory.
-  // Returns the adjusted value.
-  inline int64_t AdjustAmountOfExternalAllocatedMemory(
-      int64_t change_in_bytes);
 
   inline intptr_t PromotedTotalSize() {
     int64_t total = PromotedSpaceSizeOfObjects() + PromotedExternalMemorySize();
@@ -1500,13 +1492,20 @@ class Heap {
  private:
   Heap();
 
+  // The amount of external memory registered through the API kept alive
+  // by global handles
+  int64_t amount_of_external_allocated_memory_;
+
+  // Caches the amount of external memory registered at the last global gc.
+  int64_t amount_of_external_allocated_memory_at_last_global_gc_;
+
   // This can be calculated directly from a pointer to the heap; however, it is
   // more expedient to get at the isolate directly from within Heap methods.
   Isolate* isolate_;
 
   Object* roots_[kRootListLength];
 
-  intptr_t code_range_size_;
+  size_t code_range_size_;
   int reserved_semispace_size_;
   int max_semi_space_size_;
   int initial_semispace_size_;
@@ -1589,17 +1588,6 @@ class Heap {
 
   // Used to adjust the limits that control the timing of the next GC.
   intptr_t size_of_old_gen_at_last_old_space_gc_;
-
-  // Limit on the amount of externally allocated memory allowed
-  // between global GCs. If reached a global GC is forced.
-  intptr_t external_allocation_limit_;
-
-  // The amount of external memory registered through the API kept alive
-  // by global handles
-  int64_t amount_of_external_allocated_memory_;
-
-  // Caches the amount of external memory registered at the last global gc.
-  int64_t amount_of_external_allocated_memory_at_last_global_gc_;
 
   // Indicates that an allocation has failed in the old generation since the
   // last GC.
@@ -1716,6 +1704,10 @@ class Heap {
   // with the allocation memento of the object at the top
   void EnsureFillerObjectAtTop();
 
+  // Ensure that we have swept all spaces in such a way that we can iterate
+  // over all objects.  May cause a GC.
+  void MakeHeapIterable();
+
   // Performs garbage collection operation.
   // Returns whether there is a chance that another major GC could
   // collect more garbage.
@@ -1799,29 +1791,6 @@ class Heap {
       int length, PretenureFlag pretenure);
   MUST_USE_RESULT AllocationResult AllocateRawTwoByteString(
       int length, PretenureFlag pretenure);
-
-  // Allocates and fully initializes a String.  There are two String
-  // encodings: ASCII and two byte. One should choose between the three string
-  // allocation functions based on the encoding of the string buffer used to
-  // initialized the string.
-  //   - ...FromAscii initializes the string from a buffer that is ASCII
-  //     encoded (it does not check that the buffer is ASCII encoded) and the
-  //     result will be ASCII encoded.
-  //   - ...FromUTF8 initializes the string from a buffer that is UTF-8
-  //     encoded.  If the characters are all single-byte characters, the
-  //     result will be ASCII encoded, otherwise it will converted to two
-  //     byte.
-  //   - ...FromTwoByte initializes the string from a buffer that is two-byte
-  //     encoded.  If the characters are all single-byte characters, the
-  //     result will be converted to ASCII, otherwise it will be left as
-  //     two-byte.
-  MUST_USE_RESULT AllocationResult AllocateStringFromUtf8Slow(
-      Vector<const char> str,
-      int non_ascii_start,
-      PretenureFlag pretenure = NOT_TENURED);
-  MUST_USE_RESULT AllocationResult AllocateStringFromTwoByte(
-      Vector<const uc16> str,
-      PretenureFlag pretenure = NOT_TENURED);
 
   bool CreateInitialMaps();
   void CreateInitialObjects();
@@ -2180,10 +2149,11 @@ class Heap {
 
   int gc_callbacks_depth_;
 
-  friend class Factory;
-  friend class GCTracer;
   friend class AlwaysAllocateScope;
-  friend class Page;
+  friend class Factory;
+  friend class GCCallbacksScope;
+  friend class GCTracer;
+  friend class HeapIterator;
   friend class Isolate;
   friend class MarkCompactCollector;
   friend class MarkCompactMarkingVisitor;
@@ -2191,7 +2161,7 @@ class Heap {
 #ifdef VERIFY_HEAP
   friend class NoWeakObjectVerificationScope;
 #endif
-  friend class GCCallbacksScope;
+  friend class Page;
 
   DISALLOW_COPY_AND_ASSIGN(Heap);
 };
@@ -2412,6 +2382,9 @@ class KeyedLookupCache {
   static const int kMapHashShift = 5;
   static const int kHashMask = -4;  // Zero the last two bits.
   static const int kEntriesPerBucket = 4;
+  static const int kEntryLength = 2;
+  static const int kMapIndex = 0;
+  static const int kKeyIndex = 1;
   static const int kNotFound = -1;
 
   // kEntriesPerBucket should be a power of 2.

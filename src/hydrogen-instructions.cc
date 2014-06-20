@@ -846,6 +846,7 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kReturn:
     case HValue::kSeqStringGetChar:
     case HValue::kStoreCodeEntry:
+    case HValue::kStoreFrameContext:
     case HValue::kStoreKeyed:
     case HValue::kStoreNamedField:
     case HValue::kStoreNamedGeneric:
@@ -858,6 +859,7 @@ bool HInstruction::CanDeoptimize() {
       return false;
 
     case HValue::kAdd:
+    case HValue::kAllocateBlockContext:
     case HValue::kApplyArguments:
     case HValue::kBitwise:
     case HValue::kBoundsCheck:
@@ -1133,6 +1135,13 @@ void HAccessArgumentsAt::PrintDataTo(StringStream* stream) {
   index()->PrintNameTo(stream);
   stream->Add("], length ");
   length()->PrintNameTo(stream);
+}
+
+
+void HAllocateBlockContext::PrintDataTo(StringStream* stream) {
+  context()->PrintNameTo(stream);
+  stream->Add(" ");
+  function()->PrintNameTo(stream);
 }
 
 
@@ -1531,7 +1540,10 @@ HInstruction* HForceRepresentation::New(Zone* zone, HValue* context,
     HConstant* c = HConstant::cast(value);
     if (c->HasNumberValue()) {
       double double_res = c->DoubleValue();
-      if (representation.CanContainDouble(double_res)) {
+      if (representation.IsDouble()) {
+        return HConstant::New(zone, context, double_res);
+
+      } else if (representation.CanContainDouble(double_res)) {
         return HConstant::New(zone, context,
                               static_cast<int32_t>(double_res),
                               representation);

@@ -112,7 +112,7 @@ void HeapEntry::Print(
         edge_name = edge.name();
         break;
       case HeapGraphEdge::kElement:
-        OS::SNPrintF(index, "%d", edge.index());
+        SNPrintF(index, "%d", edge.index());
         break;
       case HeapGraphEdge::kInternal:
         edge_prefix = "$";
@@ -123,7 +123,7 @@ void HeapEntry::Print(
         break;
       case HeapGraphEdge::kHidden:
         edge_prefix = "$";
-        OS::SNPrintF(index, "%d", edge.index());
+        SNPrintF(index, "%d", edge.index());
         break;
       case HeapGraphEdge::kShortcut:
         edge_prefix = "^";
@@ -134,7 +134,7 @@ void HeapEntry::Print(
         edge_name = edge.name();
         break;
       default:
-        OS::SNPrintF(index, "!!! unknown edge type: %d ", edge.type());
+        SNPrintF(index, "!!! unknown edge type: %d ", edge.type());
     }
     edge.to()->Print(edge_prefix, edge_name, max_depth, indent + 2);
   }
@@ -1660,7 +1660,9 @@ void V8HeapExplorer::ExtractPropertyReferences(JSObject* js_obj, int entry) {
                   js_obj->GetInObjectPropertyOffset(index));
             }
           } else {
-            Object* value = js_obj->RawFastPropertyAt(index);
+            FieldIndex field_index =
+                FieldIndex::ForDescriptor(js_obj->map(), i);
+            Object* value = js_obj->RawFastPropertyAt(field_index);
             if (k != heap_->hidden_string()) {
               SetPropertyReference(js_obj, entry, k, value);
             } else {
@@ -2711,14 +2713,14 @@ class OutputStreamWriter {
     static const int kMaxNumberSize =
         MaxDecimalDigitsIn<sizeof(T)>::kUnsigned + 1;
     if (chunk_size_ - chunk_pos_ >= kMaxNumberSize) {
-      int result = OS::SNPrintF(
+      int result = SNPrintF(
           chunk_.SubVector(chunk_pos_, chunk_size_), format, n);
       ASSERT(result != -1);
       chunk_pos_ += result;
       MaybeWriteChunk();
     } else {
       EmbeddedVector<char, kMaxNumberSize> buffer;
-      int result = OS::SNPrintF(buffer, format, n);
+      int result = SNPrintF(buffer, format, n);
       USE(result);
       ASSERT(result != -1);
       AddString(buffer.start());

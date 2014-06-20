@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "src/allocation.h"
+#include "src/base/macros.h"
 #include "src/checks.h"
 #include "src/globals.h"
 #include "src/list.h"
@@ -21,8 +22,6 @@ namespace internal {
 
 // ----------------------------------------------------------------------------
 // General helper functions
-
-#define IS_POWER_OF_TWO(x) ((x) != 0 && (((x) & ((x) - 1)) == 0))
 
 // Returns true iff x is a power of 2. Cannot be used with the maximally
 // negative value of the type T (the -1 overflows).
@@ -234,6 +233,25 @@ inline int32_t WhichPowerOf2Abs(int32_t x) {
 }
 
 
+// Obtains the unsigned type corresponding to T
+// available in C++11 as std::make_unsigned
+template<typename T>
+struct make_unsigned {
+  typedef T type;
+};
+
+
+// Template specializations necessary to have make_unsigned work
+template<> struct make_unsigned<int32_t> {
+  typedef uint32_t type;
+};
+
+
+template<> struct make_unsigned<int64_t> {
+  typedef uint64_t type;
+};
+
+
 // ----------------------------------------------------------------------------
 // BitField is a help template for encoding and decode bitfield with
 // unsigned content.
@@ -248,6 +266,7 @@ class BitFieldBase {
   static const U kMask = ((kOne << shift) << size) - (kOne << shift);
   static const U kShift = shift;
   static const U kSize = size;
+  static const U kNext = kShift + kSize;
 
   // Value for the field with all bits set.
   static const T kMax = static_cast<T>((1U << size) - 1);
@@ -1143,6 +1162,13 @@ void FPRINTF_CHECKING PrintF(FILE* out, const char* format, ...);
 
 // Prepends the current process ID to the output.
 void PRINTF_CHECKING PrintPID(const char* format, ...);
+
+// Safe formatting print. Ensures that str is always null-terminated.
+// Returns the number of chars written, or -1 if output was truncated.
+int FPRINTF_CHECKING SNPrintF(Vector<char> str, const char* format, ...);
+int VSNPrintF(Vector<char> str, const char* format, va_list args);
+
+void StrNCpy(Vector<char> dest, const char* src, size_t n);
 
 // Our version of fflush.
 void Flush(FILE* out);

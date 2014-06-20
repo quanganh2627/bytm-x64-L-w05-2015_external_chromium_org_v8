@@ -1309,8 +1309,8 @@ void LCodeGen::DoFlooringDivByPowerOf2I(LFlooringDivByPowerOf2I* instr) {
   Register dividend = ToRegister(instr->dividend());
   Register result = ToRegister(instr->result());
   int32_t divisor = instr->divisor();
-  Register scratch = scratch0();
-  ASSERT(!scratch.is(dividend));
+  Register scratch = result.is(dividend) ? scratch0() : dividend;
+  ASSERT(!result.is(dividend) || !scratch.is(dividend));
 
   // If the divisor is 1, return the dividend.
   if (divisor == 1) {
@@ -1327,33 +1327,37 @@ void LCodeGen::DoFlooringDivByPowerOf2I(LFlooringDivByPowerOf2I* instr) {
   }
 
   // If the divisor is negative, we have to negate and handle edge cases.
-  if (instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
-    __ Move(scratch, dividend);
-  }
+
+  // dividend can be the same register as result so save the value of it
+  // for checking overflow.
+  __ Move(scratch, dividend);
+
   __ Subu(result, zero_reg, dividend);
   if (instr->hydrogen()->CheckFlag(HValue::kBailoutOnMinusZero)) {
     DeoptimizeIf(eq, instr->environment(), result, Operand(zero_reg));
   }
 
-  // If the negation could not overflow, simply shifting is OK.
-  if (!instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
-    __ sra(result, dividend, shift);
+  // Dividing by -1 is basically negation, unless we overflow.
+  __ Xor(scratch, scratch, result);
+  if (divisor == -1) {
+    if (instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
+      DeoptimizeIf(ge, instr->environment(), scratch, Operand(zero_reg));
+    }
     return;
   }
 
-  // Dividing by -1 is basically negation, unless we overflow.
-  __ Xor(at, scratch, result);
-  if (divisor == -1) {
-    DeoptimizeIf(ge, instr->environment(), at, Operand(zero_reg));
+  // If the negation could not overflow, simply shifting is OK.
+  if (!instr->hydrogen()->CheckFlag(HValue::kLeftCanBeMinInt)) {
+    __ sra(result, result, shift);
     return;
   }
 
   Label no_overflow, done;
-  __ Branch(&no_overflow, lt, at, Operand(zero_reg));
+  __ Branch(&no_overflow, lt, scratch, Operand(zero_reg));
   __ li(result, Operand(kMinInt / divisor));
   __ Branch(&done);
   __ bind(&no_overflow);
-  __ sra(result, dividend, shift);
+  __ sra(result, result, shift);
   __ bind(&done);
 }
 
@@ -2279,7 +2283,9 @@ Condition LCodeGen::TokenToCondition(Token::Value op, bool is_unsigned) {
 void LCodeGen::DoCompareNumericAndBranch(LCompareNumericAndBranch* instr) {
   LOperand* left = instr->left();
   LOperand* right = instr->right();
-  bool is_unsigned = instr->hydrogen()->CheckFlag(HInstruction::kUint32);
+  bool is_unsigned =
+      instr->hydrogen()->left()->CheckFlag(HInstruction::kUint32) ||
+      instr->hydrogen()->right()->CheckFlag(HInstruction::kUint32);
   Condition cond = TokenToCondition(instr->op(), is_unsigned);
 
   if (left->IsConstantOperand() && right->IsConstantOperand()) {
@@ -5871,6 +5877,21 @@ void LCodeGen::DoLoadFieldByIndex(LLoadFieldByIndex* instr) {
                                 FixedArray::kHeaderSize - kPointerSize));
   __ bind(deferred->exit());
   __ bind(&done);
+}
+
+
+void LCodeGen::DoStoreFrameContext(LStoreFrameContext* instr) {
+  Register context = ToRegister(instr->context());
+  __ sw(context, MemOperand(fp, StandardFrameConstants::kContextOffset));
+}
+
+
+void LCodeGen::DoAllocateBlockContext(LAllocateBlockContext* instr) {
+  Handle<ScopeInfo> scope_info = instr->scope_info();
+  __ li(at, scope_info);
+  __ Push(at, ToRegister(instr->function()));
+  CallRuntime(Runtime::kHiddenPushBlockContext, 2, instr);
+  RecordSafepoint(Safepoint::kNoLazyDeopt);
 }
 
 

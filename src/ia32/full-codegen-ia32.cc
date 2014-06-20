@@ -78,27 +78,6 @@ class JumpPatchSite BASE_EMBEDDED {
 };
 
 
-static void EmitStackCheck(MacroAssembler* masm_,
-                           int pointers = 0,
-                           Register scratch = esp) {
-    Label ok;
-    Isolate* isolate = masm_->isolate();
-    ASSERT(scratch.is(esp) == (pointers == 0));
-    ExternalReference stack_limit;
-    if (pointers != 0) {
-      __ mov(scratch, esp);
-      __ sub(scratch, Immediate(pointers * kPointerSize));
-      stack_limit = ExternalReference::address_of_real_stack_limit(isolate);
-    } else {
-      stack_limit = ExternalReference::address_of_stack_limit(isolate);
-    }
-    __ cmp(scratch, Operand::StaticVariable(stack_limit));
-    __ j(above_equal, &ok, Label::kNear);
-    __ call(isolate->builtins()->StackCheck(), RelocInfo::CODE_TARGET);
-    __ bind(&ok);
-}
-
-
 // Generate code for a JS function.  On entry to the function the receiver
 // and arguments have been pushed on the stack left to right, with the
 // return address on top of them.  The actual argument count matches the
@@ -168,7 +147,15 @@ void FullCodeGenerator::Generate() {
       __ push(Immediate(isolate()->factory()->undefined_value()));
     } else if (locals_count > 1) {
       if (locals_count >= 128) {
-        EmitStackCheck(masm_, locals_count, ecx);
+        Label ok;
+        __ mov(ecx, esp);
+        __ sub(ecx, Immediate(locals_count * kPointerSize));
+        ExternalReference stack_limit =
+            ExternalReference::address_of_real_stack_limit(isolate());
+        __ cmp(ecx, Operand::StaticVariable(stack_limit));
+        __ j(above_equal, &ok, Label::kNear);
+        __ InvokeBuiltin(Builtins::STACK_OVERFLOW, CALL_FUNCTION);
+        __ bind(&ok);
       }
       __ mov(eax, Immediate(isolate()->factory()->undefined_value()));
       const int kMaxPushes = 32;
@@ -309,7 +296,13 @@ void FullCodeGenerator::Generate() {
 
     { Comment cmnt(masm_, "[ Stack check");
       PrepareForBailoutForId(BailoutId::Declarations(), NO_REGISTERS);
-      EmitStackCheck(masm_);
+      Label ok;
+      ExternalReference stack_limit
+          = ExternalReference::address_of_stack_limit(isolate());
+      __ cmp(esp, Operand::StaticVariable(stack_limit));
+      __ j(above_equal, &ok, Label::kNear);
+      __ call(isolate()->builtins()->StackCheck(), RelocInfo::CODE_TARGET);
+      __ bind(&ok);
     }
 
     { Comment cmnt(masm_, "[ Body");
@@ -1214,8 +1207,8 @@ void FullCodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
   Iteration loop_statement(this, stmt);
   increment_loop_depth();
 
-  // var iterator = iterable[@@iterator]()
-  VisitForAccumulatorValue(stmt->assign_iterator());
+  // var iterable = subject
+  VisitForAccumulatorValue(stmt->assign_iterable());
 
   // As with for-in, skip the loop if the iterator is null or undefined.
   __ CompareRoot(eax, Heap::kUndefinedValueRootIndex);
@@ -1223,15 +1216,8 @@ void FullCodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
   __ CompareRoot(eax, Heap::kNullValueRootIndex);
   __ j(equal, loop_statement.break_label());
 
-  // Convert the iterator to a JS object.
-  Label convert, done_convert;
-  __ JumpIfSmi(eax, &convert);
-  __ CmpObjectType(eax, FIRST_SPEC_OBJECT_TYPE, ecx);
-  __ j(above_equal, &done_convert);
-  __ bind(&convert);
-  __ push(eax);
-  __ InvokeBuiltin(Builtins::TO_OBJECT, CALL_FUNCTION);
-  __ bind(&done_convert);
+  // var iterator = iterable[Symbol.iterator]();
+  VisitForEffect(stmt->assign_iterator());
 
   // Loop entry.
   __ bind(loop_statement.continue_label());

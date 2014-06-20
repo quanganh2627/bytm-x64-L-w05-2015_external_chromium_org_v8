@@ -6,6 +6,7 @@
 
 #include "src/accessors.h"
 #include "src/api.h"
+#include "src/base/once.h"
 #include "src/bootstrapper.h"
 #include "src/codegen.h"
 #include "src/compilation-cache.h"
@@ -21,7 +22,6 @@
 #include "src/natives.h"
 #include "src/objects-visiting.h"
 #include "src/objects-visiting-inl.h"
-#include "src/once.h"
 #include "src/runtime-profiler.h"
 #include "src/scopeinfo.h"
 #include "src/snapshot.h"
@@ -44,7 +44,9 @@ namespace internal {
 
 
 Heap::Heap()
-    : isolate_(NULL),
+    : amount_of_external_allocated_memory_(0),
+      amount_of_external_allocated_memory_at_last_global_gc_(0),
+      isolate_(NULL),
       code_range_size_(0),
 // semispace_size_ should be a power of 2 and old_generation_size_ should be
 // a multiple of Page::kPageSize.
@@ -54,7 +56,7 @@ Heap::Heap()
       max_old_generation_size_(700ul * (kPointerSize / 4) * MB),
       max_executable_size_(256ul * (kPointerSize / 4) * MB),
 // Variables set based on semispace_size_ and old_generation_size_ in
-// ConfigureHeap (survived_since_last_expansion_, external_allocation_limit_)
+// ConfigureHeap.
 // Will be 4 * reserved_semispace_size_ to ensure that young
 // generation can be aligned to its size.
       maximum_committed_(0),
@@ -86,9 +88,6 @@ Heap::Heap()
 #endif  // DEBUG
       old_generation_allocation_limit_(kMinimumOldGenerationAllocationLimit),
       size_of_old_gen_at_last_old_space_gc_(0),
-      external_allocation_limit_(0),
-      amount_of_external_allocated_memory_(0),
-      amount_of_external_allocated_memory_at_last_global_gc_(0),
       old_gen_exhausted_(false),
       inline_allocation_disabled_(false),
       store_buffer_rebuilder_(store_buffer()),
@@ -2382,7 +2381,7 @@ bool Heap::CreateInitialMaps() {
   set_meta_map(new_meta_map);
   new_meta_map->set_map(new_meta_map);
 
-  { // Partial map allocation
+  {  // Partial map allocation
 #define ALLOCATE_PARTIAL_MAP(instance_type, size, field_name)                  \
     { Map* map;                                                                \
       if (!AllocatePartialMap((instance_type), (size)).To(&map)) return false; \
@@ -2476,7 +2475,7 @@ bool Heap::CreateInitialMaps() {
   constant_pool_array_map()->set_prototype(null_value());
   constant_pool_array_map()->set_constructor(null_value());
 
-  { // Map allocation
+  {  // Map allocation
 #define ALLOCATE_MAP(instance_type, size, field_name)                          \
     { Map* map;                                                                \
       if (!AllocateMap((instance_type), size).To(&map)) return false;          \
@@ -3366,8 +3365,9 @@ AllocationResult Heap::AllocateCode(int object_size,
 
   result->set_map_no_write_barrier(code_map());
   Code* code = Code::cast(result);
-  ASSERT(!isolate_->code_range()->exists() ||
-      isolate_->code_range()->contains(code->address()));
+  ASSERT(isolate_->code_range() == NULL ||
+         !isolate_->code_range()->valid() ||
+         isolate_->code_range()->contains(code->address()));
   code->set_gc_metadata(Smi::FromInt(0));
   code->set_ic_age(global_ic_age_);
   return code;
@@ -3408,8 +3408,9 @@ AllocationResult Heap::CopyCode(Code* code) {
   new_code->set_constant_pool(new_constant_pool);
 
   // Relocate the copy.
-  ASSERT(!isolate_->code_range()->exists() ||
-      isolate_->code_range()->contains(code->address()));
+  ASSERT(isolate_->code_range() == NULL ||
+         !isolate_->code_range()->valid() ||
+         isolate_->code_range()->contains(code->address()));
   new_code->Relocate(new_addr - old_addr);
   return new_code;
 }
@@ -3472,8 +3473,9 @@ AllocationResult Heap::CopyCode(Code* code, Vector<byte> reloc_info) {
             static_cast<size_t>(reloc_info.length()));
 
   // Relocate the copy.
-  ASSERT(!isolate_->code_range()->exists() ||
-      isolate_->code_range()->contains(code->address()));
+  ASSERT(isolate_->code_range() == NULL ||
+         !isolate_->code_range()->valid() ||
+         isolate_->code_range()->contains(code->address()));
   new_code->Relocate(new_addr - old_addr);
 
 #ifdef VERIFY_HEAP
@@ -3748,64 +3750,6 @@ AllocationResult Heap::CopyJSObject(JSObject* source, AllocationSite* site) {
 }
 
 
-AllocationResult Heap::AllocateStringFromUtf8Slow(Vector<const char> string,
-                                                  int non_ascii_start,
-                                                  PretenureFlag pretenure) {
-  // Continue counting the number of characters in the UTF-8 string, starting
-  // from the first non-ascii character or word.
-  Access<UnicodeCache::Utf8Decoder>
-      decoder(isolate_->unicode_cache()->utf8_decoder());
-  decoder->Reset(string.start() + non_ascii_start,
-                 string.length() - non_ascii_start);
-  int utf16_length = decoder->Utf16Length();
-  ASSERT(utf16_length > 0);
-  // Allocate string.
-  HeapObject* result;
-  {
-    int chars = non_ascii_start + utf16_length;
-    AllocationResult allocation = AllocateRawTwoByteString(chars, pretenure);
-    if (!allocation.To(&result) || result->IsException()) {
-      return allocation;
-    }
-  }
-  // Copy ascii portion.
-  uint16_t* data = SeqTwoByteString::cast(result)->GetChars();
-  if (non_ascii_start != 0) {
-    const char* ascii_data = string.start();
-    for (int i = 0; i < non_ascii_start; i++) {
-      *data++ = *ascii_data++;
-    }
-  }
-  // Now write the remainder.
-  decoder->WriteUtf16(data, utf16_length);
-  return result;
-}
-
-
-AllocationResult Heap::AllocateStringFromTwoByte(Vector<const uc16> string,
-                                                 PretenureFlag pretenure) {
-  // Check if the string is an ASCII string.
-  HeapObject* result;
-  int length = string.length();
-  const uc16* start = string.start();
-
-  if (String::IsOneByte(start, length)) {
-    AllocationResult allocation = AllocateRawOneByteString(length, pretenure);
-    if (!allocation.To(&result) || result->IsException()) {
-      return allocation;
-    }
-    CopyChars(SeqOneByteString::cast(result)->GetChars(), start, length);
-  } else {  // It's not a one byte string.
-    AllocationResult allocation = AllocateRawTwoByteString(length, pretenure);
-    if (!allocation.To(&result) || result->IsException()) {
-      return allocation;
-    }
-    CopyChars(SeqTwoByteString::cast(result)->GetChars(), start, length);
-  }
-  return result;
-}
-
-
 static inline void WriteOneByteData(Vector<const char> vector,
                                     uint8_t* chars,
                                     int len) {
@@ -3862,9 +3806,8 @@ AllocationResult Heap::AllocateInternalizedStringImpl(
   int size;
   Map* map;
 
-  if (chars < 0 || chars > String::kMaxLength) {
-    return isolate()->ThrowInvalidStringLength();
-  }
+  ASSERT_LE(0, chars);
+  ASSERT_GE(String::kMaxLength, chars);
   if (is_one_byte) {
     map = ascii_internalized_string_map();
     size = SeqOneByteString::SizeFor(chars);
@@ -3911,9 +3854,8 @@ AllocationResult Heap::AllocateInternalizedStringImpl<false>(
 
 AllocationResult Heap::AllocateRawOneByteString(int length,
                                                 PretenureFlag pretenure) {
-  if (length < 0 || length > String::kMaxLength) {
-    return isolate()->ThrowInvalidStringLength();
-  }
+  ASSERT_LE(0, length);
+  ASSERT_GE(String::kMaxLength, length);
   int size = SeqOneByteString::SizeFor(length);
   ASSERT(size <= SeqOneByteString::kMaxSize);
   AllocationSpace space = SelectSpace(size, OLD_DATA_SPACE, pretenure);
@@ -3935,9 +3877,8 @@ AllocationResult Heap::AllocateRawOneByteString(int length,
 
 AllocationResult Heap::AllocateRawTwoByteString(int length,
                                                 PretenureFlag pretenure) {
-  if (length < 0 || length > String::kMaxLength) {
-    return isolate()->ThrowInvalidStringLength();
-  }
+  ASSERT_LE(0, length);
+  ASSERT_GE(String::kMaxLength, length);
   int size = SeqTwoByteString::SizeFor(length);
   ASSERT(size <= SeqTwoByteString::kMaxSize);
   AllocationSpace space = SelectSpace(size, OLD_DATA_SPACE, pretenure);
@@ -4935,7 +4876,7 @@ void Heap::IterateStrongRoots(ObjectVisitor* v, VisitMode mode) {
 bool Heap::ConfigureHeap(int max_semi_space_size,
                          int max_old_space_size,
                          int max_executable_size,
-                         int code_range_size) {
+                         size_t code_range_size) {
   if (HasBeenSetUp()) return false;
 
   // Overwrite default configuration.
@@ -5009,11 +4950,6 @@ bool Heap::ConfigureHeap(int max_semi_space_size,
   }
 
   initial_semispace_size_ = Min(initial_semispace_size_, max_semi_space_size_);
-
-  // The external allocation limit should be below 256 MB on all architectures
-  // to avoid that resource-constrained embedders run low on memory.
-  external_allocation_limit_ = 192 * MB;
-  ASSERT(external_allocation_limit_ <= 256 * MB);
 
   // The old generation is paged and needs at least one page for each space.
   int paged_space_count = LAST_PAGED_SPACE - FIRST_PAGED_SPACE + 1;
@@ -5155,7 +5091,7 @@ bool Heap::SetUp() {
     if (!ConfigureHeapDefault()) return false;
   }
 
-  CallOnce(&initialize_gc_once, &InitializeGCOnce);
+  base::CallOnce(&initialize_gc_once, &InitializeGCOnce);
 
   MarkMapPointersAsEncoded(false);
 

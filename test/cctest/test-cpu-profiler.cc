@@ -105,9 +105,9 @@ i::Code* CreateCode(LocalContext* env) {
   i::EmbeddedVector<char, 256> script;
   i::EmbeddedVector<char, 32> name;
 
-  i::OS::SNPrintF(name, "function_%d", ++counter);
+  i::SNPrintF(name, "function_%d", ++counter);
   const char* name_start = name.start();
-  i::OS::SNPrintF(script,
+  i::SNPrintF(script,
       "function %s() {\n"
            "var counter = 0;\n"
            "for (var i = 0; i < %d; ++i) counter += i;\n"
@@ -470,8 +470,8 @@ static const v8::CpuProfileNode* GetChild(v8::Isolate* isolate,
   const v8::CpuProfileNode* result = FindChild(isolate, node, name);
   if (!result) {
     char buffer[100];
-    i::OS::SNPrintF(Vector<char>(buffer, ARRAY_SIZE(buffer)),
-                    "Failed to GetChild: %s", name);
+    i::SNPrintF(Vector<char>(buffer, ARRAY_SIZE(buffer)),
+                "Failed to GetChild: %s", name);
     FATAL(buffer);
   }
   return result;
@@ -1623,16 +1623,16 @@ TEST(FunctionDetails) {
       ProfileGenerator::kAnonymousFunctionName);
   CheckFunctionDetails(env->GetIsolate(), script,
                        ProfileGenerator::kAnonymousFunctionName, "script_b",
-                       script_b->GetId(), 1, 1);
+                       script_b->GetUnboundScript()->GetId(), 1, 1);
   const v8::CpuProfileNode* baz = GetChild(env->GetIsolate(), script, "baz");
   CheckFunctionDetails(env->GetIsolate(), baz, "baz", "script_b",
-                       script_b->GetId(), 3, 16);
+                       script_b->GetUnboundScript()->GetId(), 3, 16);
   const v8::CpuProfileNode* foo = GetChild(env->GetIsolate(), baz, "foo");
   CheckFunctionDetails(env->GetIsolate(), foo, "foo", "script_a",
-                       script_a->GetId(), 2, 1);
+                       script_a->GetUnboundScript()->GetId(), 2, 1);
   const v8::CpuProfileNode* bar = GetChild(env->GetIsolate(), foo, "bar");
   CheckFunctionDetails(env->GetIsolate(), bar, "bar", "script_a",
-                       script_a->GetId(), 3, 14);
+                       script_a->GetUnboundScript()->GetId(), 3, 14);
 }
 
 

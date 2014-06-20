@@ -98,9 +98,7 @@ AllocationResult Heap::AllocateInternalizedStringImpl(
 AllocationResult Heap::AllocateOneByteInternalizedString(
     Vector<const uint8_t> str,
     uint32_t hash_field) {
-  if (str.length() > String::kMaxLength) {
-    return isolate()->ThrowInvalidStringLength();
-  }
+  CHECK_GE(String::kMaxLength, str.length());
   // Compute map and object size.
   Map* map = ascii_internalized_string_map();
   int size = SeqOneByteString::SizeFor(str.length());
@@ -131,9 +129,7 @@ AllocationResult Heap::AllocateOneByteInternalizedString(
 
 AllocationResult Heap::AllocateTwoByteInternalizedString(Vector<const uc16> str,
                                                          uint32_t hash_field) {
-  if (str.length() > String::kMaxLength) {
-    return isolate()->ThrowInvalidStringLength();
-  }
+  CHECK_GE(String::kMaxLength, str.length());
   // Compute map and object size.
   Map* map = internalized_string_map();
   int size = SeqTwoByteString::SizeFor(str.length());
@@ -527,48 +523,6 @@ bool Heap::CollectGarbage(AllocationSpace space,
 }
 
 
-int64_t Heap::AdjustAmountOfExternalAllocatedMemory(
-    int64_t change_in_bytes) {
-  ASSERT(HasBeenSetUp());
-  int64_t amount = amount_of_external_allocated_memory_ + change_in_bytes;
-  if (change_in_bytes > 0) {
-    // Avoid overflow.
-    if (amount > amount_of_external_allocated_memory_) {
-      amount_of_external_allocated_memory_ = amount;
-    } else {
-      // Give up and reset the counters in case of an overflow.
-      amount_of_external_allocated_memory_ = 0;
-      amount_of_external_allocated_memory_at_last_global_gc_ = 0;
-    }
-    int64_t amount_since_last_global_gc = PromotedExternalMemorySize();
-    if (amount_since_last_global_gc > external_allocation_limit_) {
-      CollectAllGarbage(kNoGCFlags, "external memory allocation limit reached");
-    }
-  } else {
-    // Avoid underflow.
-    if (amount >= 0) {
-      amount_of_external_allocated_memory_ = amount;
-    } else {
-      // Give up and reset the counters in case of an underflow.
-      amount_of_external_allocated_memory_ = 0;
-      amount_of_external_allocated_memory_at_last_global_gc_ = 0;
-    }
-  }
-  if (FLAG_trace_external_memory) {
-    PrintPID("%8.0f ms: ", isolate()->time_millis_since_init());
-    PrintF("Adjust amount of external memory: delta=%6" V8_PTR_PREFIX "d KB, "
-           "amount=%6" V8_PTR_PREFIX "d KB, since_gc=%6" V8_PTR_PREFIX "d KB, "
-           "isolate=0x%08" V8PRIxPTR ".\n",
-           static_cast<intptr_t>(change_in_bytes / KB),
-           static_cast<intptr_t>(amount_of_external_allocated_memory_ / KB),
-           static_cast<intptr_t>(PromotedExternalMemorySize() / KB),
-           reinterpret_cast<intptr_t>(isolate()));
-  }
-  ASSERT(amount_of_external_allocated_memory_ >= 0);
-  return amount_of_external_allocated_memory_;
-}
-
-
 Isolate* Heap::isolate() {
   return reinterpret_cast<Isolate*>(reinterpret_cast<intptr_t>(this) -
       reinterpret_cast<size_t>(reinterpret_cast<Isolate*>(4)->heap()) + 4);
@@ -582,10 +536,9 @@ Isolate* Heap::isolate() {
 // Warning: Do not use the identifiers __object__, __maybe_object__ or
 // __scope__ in a call to this macro.
 
-#define RETURN_OBJECT_UNLESS_EXCEPTION(ISOLATE, RETURN_VALUE, RETURN_EMPTY)    \
-  if (!__allocation__.IsRetry()) {                                             \
-    __object__ = __allocation__.ToObjectChecked();                             \
-    if (__object__ == (ISOLATE)->heap()->exception()) { RETURN_EMPTY; }        \
+#define RETURN_OBJECT_UNLESS_RETRY(ISOLATE, RETURN_VALUE)                      \
+  if (__allocation__.To(&__object__)) {                                        \
+    ASSERT(__object__ != (ISOLATE)->heap()->exception());                      \
     RETURN_VALUE;                                                              \
   }
 
@@ -593,18 +546,18 @@ Isolate* Heap::isolate() {
   do {                                                                         \
     AllocationResult __allocation__ = FUNCTION_CALL;                           \
     Object* __object__ = NULL;                                                 \
-    RETURN_OBJECT_UNLESS_EXCEPTION(ISOLATE, RETURN_VALUE, RETURN_EMPTY)        \
+    RETURN_OBJECT_UNLESS_RETRY(ISOLATE, RETURN_VALUE)                          \
     (ISOLATE)->heap()->CollectGarbage(__allocation__.RetrySpace(),             \
                                       "allocation failure");                   \
     __allocation__ = FUNCTION_CALL;                                            \
-    RETURN_OBJECT_UNLESS_EXCEPTION(ISOLATE, RETURN_VALUE, RETURN_EMPTY)        \
+    RETURN_OBJECT_UNLESS_RETRY(ISOLATE, RETURN_VALUE)                          \
     (ISOLATE)->counters()->gc_last_resort_from_handles()->Increment();         \
     (ISOLATE)->heap()->CollectAllAvailableGarbage("last resort gc");           \
     {                                                                          \
       AlwaysAllocateScope __scope__(ISOLATE);                                  \
       __allocation__ = FUNCTION_CALL;                                          \
     }                                                                          \
-    RETURN_OBJECT_UNLESS_EXCEPTION(ISOLATE, RETURN_VALUE, RETURN_EMPTY)        \
+    RETURN_OBJECT_UNLESS_RETRY(ISOLATE, RETURN_VALUE)                          \
       /* TODO(1181417): Fix this. */                                           \
     v8::internal::Heap::FatalProcessOutOfMemory("CALL_AND_RETRY_LAST", true);  \
     RETURN_EMPTY;                                                              \

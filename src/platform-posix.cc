@@ -45,16 +45,15 @@
 #include "src/isolate-inl.h"
 #include "src/platform.h"
 
+#ifdef V8_FAST_TLS_SUPPORTED
+#include "src/base/atomicops.h"
+#endif
+
 namespace v8 {
 namespace internal {
 
 // 0 is never a valid thread id.
 static const pthread_t kNoThread = (pthread_t) 0;
-
-
-unsigned OS::CpuFeaturesImpliedByPlatform() {
-  return 0;  // Nothing special.
-}
 
 
 int OS::NumberOfProcessorsOnline() {
@@ -423,23 +422,24 @@ void OS::VPrintError(const char* format, va_list args) {
 }
 
 
-int OS::SNPrintF(Vector<char> str, const char* format, ...) {
+int OS::SNPrintF(char* str, int length, const char* format, ...) {
   va_list args;
   va_start(args, format);
-  int result = VSNPrintF(str, format, args);
+  int result = VSNPrintF(str, length, format, args);
   va_end(args);
   return result;
 }
 
 
-int OS::VSNPrintF(Vector<char> str,
+int OS::VSNPrintF(char* str,
+                  int length,
                   const char* format,
                   va_list args) {
-  int n = vsnprintf(str.start(), str.length(), format, args);
-  if (n < 0 || n >= str.length()) {
+  int n = vsnprintf(str, length, format, args);
+  if (n < 0 || n >= length) {
     // If the length is zero, the assignment fails.
-    if (str.length() > 0)
-      str[str.length() - 1] = '\0';
+    if (length > 0)
+      str[length - 1] = '\0';
     return -1;
   } else {
     return n;
@@ -456,8 +456,8 @@ char* OS::StrChr(char* str, int c) {
 }
 
 
-void OS::StrNCpy(Vector<char> dest, const char* src, size_t n) {
-  strncpy(dest.start(), src, n);
+void OS::StrNCpy(char* dest, int length, const char* src, size_t n) {
+  strncpy(dest, src, n);
 }
 
 
@@ -599,7 +599,7 @@ static pthread_key_t LocalKeyToPthreadKey(Thread::LocalStorageKey local_key) {
 
 #ifdef V8_FAST_TLS_SUPPORTED
 
-static Atomic32 tls_base_offset_initialized = 0;
+static base::Atomic32 tls_base_offset_initialized = 0;
 intptr_t kMacTlsBaseOffset = 0;
 
 // It's safe to do the initialization more that once, but it has to be
@@ -635,7 +635,7 @@ static void InitializeTlsBaseOffset() {
     kMacTlsBaseOffset = 0;
   }
 
-  Release_Store(&tls_base_offset_initialized, 1);
+  base::Release_Store(&tls_base_offset_initialized, 1);
 }
 
 

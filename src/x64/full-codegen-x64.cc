@@ -78,27 +78,6 @@ class JumpPatchSite BASE_EMBEDDED {
 };
 
 
-static void EmitStackCheck(MacroAssembler* masm_,
-                             int pointers = 0,
-                             Register scratch = rsp) {
-    Isolate* isolate = masm_->isolate();
-    Label ok;
-    ASSERT(scratch.is(rsp) == (pointers == 0));
-    Heap::RootListIndex index;
-    if (pointers != 0) {
-      __ movp(scratch, rsp);
-      __ subp(scratch, Immediate(pointers * kPointerSize));
-      index = Heap::kRealStackLimitRootIndex;
-    } else {
-      index = Heap::kStackLimitRootIndex;
-    }
-    __ CompareRoot(scratch, index);
-    __ j(above_equal, &ok, Label::kNear);
-    __ call(isolate->builtins()->StackCheck(), RelocInfo::CODE_TARGET);
-    __ bind(&ok);
-}
-
-
 // Generate code for a JS function.  On entry to the function the receiver
 // and arguments have been pushed on the stack left to right, with the
 // return address on top of them.  The actual argument count matches the
@@ -168,7 +147,13 @@ void FullCodeGenerator::Generate() {
       __ PushRoot(Heap::kUndefinedValueRootIndex);
     } else if (locals_count > 1) {
       if (locals_count >= 128) {
-        EmitStackCheck(masm_, locals_count, rcx);
+        Label ok;
+        __ movp(rcx, rsp);
+        __ subp(rcx, Immediate(locals_count * kPointerSize));
+        __ CompareRoot(rcx, Heap::kRealStackLimitRootIndex);
+        __ j(above_equal, &ok, Label::kNear);
+        __ InvokeBuiltin(Builtins::STACK_OVERFLOW, CALL_FUNCTION);
+        __ bind(&ok);
       }
       __ LoadRoot(rdx, Heap::kUndefinedValueRootIndex);
       const int kMaxPushes = 32;
@@ -309,7 +294,11 @@ void FullCodeGenerator::Generate() {
 
     { Comment cmnt(masm_, "[ Stack check");
       PrepareForBailoutForId(BailoutId::Declarations(), NO_REGISTERS);
-      EmitStackCheck(masm_);
+       Label ok;
+       __ CompareRoot(rsp, Heap::kStackLimitRootIndex);
+       __ j(above_equal, &ok, Label::kNear);
+       __ call(isolate()->builtins()->StackCheck(), RelocInfo::CODE_TARGET);
+       __ bind(&ok);
     }
 
     { Comment cmnt(masm_, "[ Body");
@@ -1252,24 +1241,17 @@ void FullCodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
   Iteration loop_statement(this, stmt);
   increment_loop_depth();
 
-  // var iterator = iterable[@@iterator]()
-  VisitForAccumulatorValue(stmt->assign_iterator());
+  // var iterable = subject
+  VisitForAccumulatorValue(stmt->assign_iterable());
 
-  // As with for-in, skip the loop if the iterator is null or undefined.
+  // As with for-in, skip the loop if the iterable is null or undefined.
   __ CompareRoot(rax, Heap::kUndefinedValueRootIndex);
   __ j(equal, loop_statement.break_label());
   __ CompareRoot(rax, Heap::kNullValueRootIndex);
   __ j(equal, loop_statement.break_label());
 
-  // Convert the iterator to a JS object.
-  Label convert, done_convert;
-  __ JumpIfSmi(rax, &convert);
-  __ CmpObjectType(rax, FIRST_SPEC_OBJECT_TYPE, rcx);
-  __ j(above_equal, &done_convert);
-  __ bind(&convert);
-  __ Push(rax);
-  __ InvokeBuiltin(Builtins::TO_OBJECT, CALL_FUNCTION);
-  __ bind(&done_convert);
+  // var iterator = iterable[Symbol.iterator]();
+  VisitForEffect(stmt->assign_iterator());
 
   // Loop entry.
   __ bind(loop_statement.continue_label());
@@ -2294,7 +2276,7 @@ void FullCodeGenerator::EmitInlineSmiBinaryOp(BinaryOperation* expr,
       __ SmiShiftArithmeticRight(rax, rdx, rcx);
       break;
     case Token::SHL:
-      __ SmiShiftLeft(rax, rdx, rcx);
+      __ SmiShiftLeft(rax, rdx, rcx, &stub_call);
       break;
     case Token::SHR:
       __ SmiShiftLogicalRight(rax, rdx, rcx, &stub_call);
