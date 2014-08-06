@@ -289,8 +289,8 @@ LOCAL_C_INCLUDES_Debug := \
 	$(gyp_shared_intermediate_dir)/shim_headers/icui18n/target \
 	$(LOCAL_PATH)/v8 \
 	$(gyp_shared_intermediate_dir) \
-	$(PWD)/external/icu4c/common \
-	$(PWD)/external/icu4c/i18n \
+	$(PWD)/external/icu/icu4c/source/common \
+	$(PWD)/external/icu/icu4c/source/i18n \
 	$(PWD)/frameworks/wilhelm/include \
 	$(PWD)/bionic \
 	$(PWD)/external/stlport/stlport
@@ -395,8 +395,8 @@ LOCAL_C_INCLUDES_Release := \
 	$(gyp_shared_intermediate_dir)/shim_headers/icui18n/target \
 	$(LOCAL_PATH)/v8 \
 	$(gyp_shared_intermediate_dir) \
-	$(PWD)/external/icu4c/common \
-	$(PWD)/external/icu4c/i18n \
+	$(PWD)/external/icu/icu4c/source/common \
+	$(PWD)/external/icu/icu4c/source/i18n \
 	$(PWD)/frameworks/wilhelm/include \
 	$(PWD)/bionic \
 	$(PWD)/external/stlport/stlport
