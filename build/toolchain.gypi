@@ -472,6 +472,9 @@
                 'cflags': [ '<(m32flag)' ],
                 'ldflags': [ '<(m32flag)' ],
               }],
+              ['OS=="android"', {
+                'android_enable_fdo': 1,
+              }],
             ],
             'xcode_settings': {
               'ARCHS': [ 'i386' ],
@@ -499,6 +502,9 @@
               ['((OS!="android" and OS!="qnx") or clang==1)', {
                 'cflags': [ '<(m64flag)' ],
                 'ldflags': [ '<(m64flag)' ],
+              }],
+              ['OS=="android"', {
+                'android_enable_fdo': 1,
               }],
             ],
           }]
